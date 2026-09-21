@@ -232,20 +232,23 @@ export function buildReviewProposeInstruction(input: ReviewProposeInput): string
   const evidence = capsule.evidence.filter((e) => finding.evidence_ids.includes(e.id));
   const snippets = citedFileSnippets(input);
   const loop = input.loop !== false;
+  const citedPath = input.finding.paths.find(Boolean) ?? '<path/to/file>';
   const protocol = loop
     ? [
         `You have at most ${REVIEW_PROPOSE_LOOP_CAP} steps.`,
         'The finding already cites the file and evidence — do not search, list files, set_progress, or call graph_impact first.',
         'You must write the cited file before finish: call edit_file (SEARCH must match the current snippet), then call finish with a short summary.',
-        'A residual search/replace block is applied as edit_file — do not treat it as the final answer. Do not call finish until a write has landed.',
+        `A residual search/replace block, or a printed PatchIR / {path,search,replace} JSON dump, is applied as edit_file on ${citedPath} even without a path line. Do not treat residual text as the final answer. Do not call finish until a write has landed.`,
         'Smallest in-place edit only. Do not add files or invent an extra service.',
       ].join(' ')
     : [
-        'This is a one-shot residual turn: reply ONLY with edit blocks. Do not call tools and do not call finish.',
-        'Format:',
-        '<path/to/file>',
+        'This is a one-shot residual turn: reply ONLY with edit blocks in the message body.',
+        'Do not call tools, do not call finish, and do not use function calling or a tool_calls array.',
+        'Do not write JSON, a plan, or an explanation. The entire reply must be the edit block.',
+        'Format (copy the cited lines into SEARCH so they match exactly):',
+        citedPath,
         '<<<<<<< SEARCH',
-        '<exact current lines>',
+        '<exact current lines from Cited file contents>',
         '=======',
         '<replacement lines>',
         '>>>>>>> REPLACE',

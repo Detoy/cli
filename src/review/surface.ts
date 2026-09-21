@@ -19,13 +19,29 @@ export const DEPENDENCY_MANIFEST =
  * the analyzer failing to recognise a file.
  */
 const NON_CODE = /\.(md|mdx|markdown|txt|rst|adoc|png|jpe?g|gif|svg|ico|webp|woff2?|ttf|eot|pdf|csv|snap|lock)$/i;
-const NON_CODE_DIRS = /(^|\/)(docs?|\.github\/ISSUE_TEMPLATE|changelog|marketing)\//i;
+const NON_CODE_DIRS = /(^|\/)(docs?|\.github\/ISSUE_TEMPLATE|changelog|marketing|\.vscode|\.idea)\//i;
+
+/**
+ * Repository scaffolding, matched on the basename because most of it has no
+ * extension: ignore lists (`.gitignore`, `.dockerignore`, `.npmignore`, …),
+ * VCS attributes, editor and toolchain pins, and licence / ownership prose.
+ * "No test edge reaches `.gitignore`" is true of every repository and tells
+ * the reviewer nothing, so these get no coverage verdict and no
+ * `unverified_change` finding.
+ *
+ * Deliberately absent: anything that changes what code ends up in the tree or
+ * where it comes from — `.npmrc` / `.yarnrc` (registry routing), `.gitmodules`
+ * (submodule sources), `.pnpmfile.cjs` (resolution hooks), CI workflows. Those
+ * carry a supply-chain surface and stay on the normal path.
+ */
+const SCAFFOLDING =
+  /(^|\/)(\.[a-z0-9_-]*ignore|\.gitattributes|\.gitkeep|\.keep|\.mailmap|\.editorconfig|\.browserslistrc|\.nvmrc|\.node-version|\.python-version|\.ruby-version|\.tool-versions|(LICEN[CS]E|NOTICE|COPYING|PATENTS)(\.(md|txt|rst))?|CODEOWNERS|AUTHORS|CONTRIBUTORS|CHANGELOG|CITATION\.cff)$/i;
 
 export function isDependencyManifest(path: string): boolean {
   return DEPENDENCY_MANIFEST.test(path);
 }
 
-/** Prose, assets and generated output — nothing here has a call path. */
+/** Prose, assets, generated output and repository scaffolding — nothing here has a call path. */
 export function isNonCodePath(path: string): boolean {
-  return NON_CODE.test(path) || NON_CODE_DIRS.test(path);
+  return NON_CODE.test(path) || NON_CODE_DIRS.test(path) || SCAFFOLDING.test(path);
 }

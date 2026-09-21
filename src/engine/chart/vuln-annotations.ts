@@ -14,10 +14,14 @@
  * Matching is file-based, same precision tradeoff as `external-lane.ts`:
  * `ReachabilitySite.file` (+ its enclosing `function` when present) is
  * matched against a card's own file and its members' files/names.
+ * When a site has a line, that use-site is stamped on the badge so inspect
+ * / open-file can land on the call rather than the function header.
  */
 import type { ScanReachabilityFinding } from '../../core-open/index.js';
-import type { ArchCardVuln, ArchOverview, ArchPackageNode, ArchSlice } from './arch-types.js';
+import type { ArchCard, ArchCardVuln, ArchOverview, ArchPackageNode, ArchSlice } from './arch-types.js';
 import { loadScanArtifact, pathUnder, posixPath } from './overlay-context.js';
+
+type ReachabilitySite = NonNullable<ScanReachabilityFinding['sites']>[number];
 
 const MAX_VULNS_PER_CARD = 6;
 
@@ -30,6 +34,51 @@ export function loadReachabilityFindings(root: string): ScanReachabilityFinding[
 
 export function relevantVulnFindings(findings: ScanReachabilityFinding[]): ScanReachabilityFinding[] {
   return findings.filter((f) => f.tier === 'reachable' || f.tier === 'potentially_reachable');
+}
+
+function normName(s: string): string {
+  return s.replace(/[()`]/g, '').trim().toLowerCase();
+}
+
+function cardNames(card: ArchCard): Set<string> {
+  return new Set(
+    [card.title, card.symbolId, ...(card.members ?? []).map((m) => m.name)]
+      .filter(Boolean)
+      .map(normName),
+  );
+}
+
+function cardFiles(card: ArchCard): Set<string> {
+  return new Set([card.file, ...(card.members ?? []).map((m) => m.file)].filter(Boolean).map(posixPath));
+}
+
+/**
+ * Prefer a site in this card's files whose enclosing function matches a
+ * card/member name, then any lined site in those files, then any site.
+ */
+export function pickCardVulnSite(
+  finding: ScanReachabilityFinding,
+  files: Set<string>,
+  names: Set<string>,
+): ReachabilitySite | null {
+  const sites = (finding.sites ?? []).filter((s) => s.file && files.has(posixPath(s.file)));
+  if (!sites.length) return null;
+  const named = sites.filter((s) => s.function && names.has(normName(s.function)));
+  const pool = named.length ? named : sites;
+  return pool.find((s) => typeof s.line === 'number' && s.line > 0) ?? pool[0] ?? null;
+}
+
+function toCardVuln(finding: ScanReachabilityFinding, site: ReachabilitySite | null): ArchCardVuln {
+  const hit: ArchCardVuln = {
+    advisoryId: finding.advisoryId,
+    package: finding.package,
+    tier: finding.tier as 'reachable' | 'potentially_reachable',
+  };
+  if (finding.evidence) hit.evidence = finding.evidence;
+  if (site?.file) hit.file = posixPath(site.file);
+  if (typeof site?.line === 'number' && site.line > 0) hit.line = site.line;
+  if (site?.function) hit.function = site.function;
+  return hit;
 }
 
 /**
@@ -45,8 +94,7 @@ export function withVulnBadges(slice: ArchSlice, findings: ScanReachabilityFindi
   const columns = slice.columns.map((col) => {
     let colChanged = false;
     const cards = col.cards.map((card) => {
-      const files = new Set([card.file, ...(card.members ?? []).map((m) => m.file)].filter(Boolean));
-      const hits = vulnsForFiles(files, relevant);
+      const hits = vulnsForFiles(cardFiles(card), relevant, cardNames(card));
       if (!hits.length) return card;
       colChanged = true;
       return { ...card, vulnerabilities: hits };
@@ -83,25 +131,24 @@ function vulnsForPackage(pkg: ArchPackageNode, findings: ScanReachabilityFinding
       if (site.file && pathUnder(site.file, pkg.path)) files.add(posixPath(site.file));
     }
   }
-  return vulnsForFiles(files, findings);
+  return vulnsForFiles(files, findings, new Set());
 }
 
-function vulnsForFiles(files: Set<string>, findings: ScanReachabilityFinding[]): ArchCardVuln[] {
+function vulnsForFiles(
+  files: Set<string>,
+  findings: ScanReachabilityFinding[],
+  names: Set<string>,
+): ArchCardVuln[] {
   const hits: ArchCardVuln[] = [];
   const seen = new Set<string>();
   const normalised = new Set([...files].map(posixPath));
   for (const finding of findings) {
-    const matches = (finding.sites ?? []).some((site) => site.file && normalised.has(posixPath(site.file)));
-    if (!matches) continue;
+    const site = pickCardVulnSite(finding, normalised, names);
+    if (!site) continue;
     const key = `${finding.advisoryId}|${finding.package}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    hits.push({
-      advisoryId: finding.advisoryId,
-      package: finding.package,
-      tier: finding.tier as 'reachable' | 'potentially_reachable',
-      ...(finding.evidence ? { evidence: finding.evidence } : {}),
-    });
+    hits.push(toCardVuln(finding, site));
   }
   hits.sort((a, b) => (a.tier === b.tier ? 0 : a.tier === 'reachable' ? -1 : 1));
   return hits.slice(0, MAX_VULNS_PER_CARD);

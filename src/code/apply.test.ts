@@ -1,5 +1,17 @@
 import { describe, it, expect } from 'vitest';
-import { parseEdits, applyEdit, applyEdits, residualEditsToToolCalls, type SymbolSpan } from './apply.js';
+import {
+  parseEdits,
+  parseEditDump,
+  applyEdit,
+  applyEdits,
+  residualEditsToToolCalls,
+  dumpEditsToToolCalls,
+  collectProviderEdits,
+  editsFromUnifiedDiff,
+  pathFromLine,
+  type SymbolSpan,
+} from './apply.js';
+import { looksLikeToolCallDump, parseTextToolCalls } from './text-tool-protocol.js';
 
 describe('parseEdits', () => {
   it('parses a search/replace block with the file on the preceding line', () => {
@@ -20,6 +32,35 @@ describe('parseEdits', () => {
       { op: 'create', file: 'src/new.ts', content: 'export const y = 1;' },
       { op: 'delete', file: 'src/old.ts' },
     ]);
+  });
+
+  it('parses an inline path on the SEARCH line (live Code Mode shape)', () => {
+    const edits = parseEdits(['<<<<<<< SEARCH src/scan.ts', 'const timeout = 0;', '=======', 'const timeout = 5000;', '>>>>>>> REPLACE'].join('\n'));
+    expect(edits).toEqual([
+      { op: 'replace', file: 'src/scan.ts', search: 'const timeout = 0;', replace: 'const timeout = 5000;', anchorSymbol: undefined },
+    ]);
+  });
+
+  it('uses defaultFile when the residual has no path (cited-file handoff)', () => {
+    const edits = parseEdits(['<<<<<<< SEARCH', 'const timeout = 0;', '=======', 'const timeout = 5000;', '>>>>>>> REPLACE'].join('\n'), {
+      defaultFile: 'src/scan.ts',
+    });
+    expect(edits[0]).toMatchObject({ op: 'replace', file: 'src/scan.ts', search: 'const timeout = 0;', replace: 'const timeout = 5000;' });
+  });
+
+  it('accepts markdown / File: path lines and *** SEARCH markers', () => {
+    const edits = parseEdits(
+      ['File: `src/scan.ts`', '*** SEARCH', 'const timeout = 0;', '=======', 'const timeout = 5000;', '*** REPLACE'].join('\n'),
+    );
+    expect(edits[0]).toMatchObject({ file: 'src/scan.ts', search: 'const timeout = 0;', replace: 'const timeout = 5000;' });
+  });
+
+  it('extracts a path from a short prose line before SEARCH', () => {
+    expect(pathFromLine('I will edit src/scan.ts:')).toBe('src/scan.ts');
+    const edits = parseEdits(
+      ['I will edit src/scan.ts:', '<<<<<<< SEARCH', 'a', '=======', 'b', '>>>>>>> REPLACE'].join('\n'),
+    );
+    expect(edits[0]?.file).toBe('src/scan.ts');
   });
 
   it('parses multiple replace blocks with distinct files', () => {
@@ -57,6 +98,29 @@ describe('residualEditsToToolCalls', () => {
       },
     ]);
     expect(residualEditsToToolCalls(['<<<<<<< SEARCH', 'a', '=======', 'b', '>>>>>>> REPLACE'].join('\n'))).toEqual([]);
+    expect(
+      residualEditsToToolCalls(['<<<<<<< SEARCH', 'a', '=======', 'b', '>>>>>>> REPLACE'].join('\n'), {
+        defaultFile: 'src/scan.ts',
+      })[0],
+    ).toMatchObject({ name: 'edit_file', arguments: { path: 'src/scan.ts', search: 'a', replace: 'b' } });
+  });
+
+  it('collectProviderEdits prefers residual text, then native edit_file tool calls', () => {
+    expect(
+      collectProviderEdits({
+        text: '',
+        toolCalls: [
+          { id: 'c1', name: 'edit_file', arguments: { path: 'src/scan.ts', search: 'const timeout = 0;', replace: 'const timeout = 5000;' } },
+        ],
+      }),
+    ).toEqual([
+      { op: 'replace', file: 'src/scan.ts', search: 'const timeout = 0;', replace: 'const timeout = 5000;', anchorSymbol: undefined },
+    ]);
+    expect(
+      editsFromUnifiedDiff(
+        ['--- a/src/scan.ts', '+++ b/src/scan.ts', '@@ -1,1 +1,1 @@', '-const timeout = 0;', '+const timeout = 5000;'].join('\n'),
+      )[0],
+    ).toMatchObject({ file: 'src/scan.ts', search: 'const timeout = 0;', replace: 'const timeout = 5000;' });
   });
 
   it('lifts CREATE and DELETE', () => {
@@ -66,6 +130,98 @@ describe('residualEditsToToolCalls', () => {
     expect(calls.map((c) => c.name)).toEqual(['create_file', 'delete_file']);
     expect(calls[0].arguments).toEqual({ path: 'src/new.ts', content: 'export const y = 1;' });
     expect(calls[1].arguments).toEqual({ path: 'src/old.ts' });
+  });
+});
+
+/** Live Flow Review (#2662 Mac tip 14d3baaa0): happy-path-loop printed this class of dump. */
+const LIVE_FLOW_PATCHIR_DUMP = JSON.stringify({
+  schemaVersion: 'patch-ir/0',
+  operations: [
+    {
+      op: 'replace-text',
+      file: 'src/scan.ts',
+      search: 'const timeout = 0;',
+      replace: 'const timeout = 5000;',
+    },
+  ],
+});
+
+describe('dumpEditsToToolCalls — live Flow JSON / PatchIR residual', () => {
+  it('is the live miss: looksLikeToolCallDump, but parseTextToolCalls sees no {name,arguments}', () => {
+    expect(looksLikeToolCallDump(LIVE_FLOW_PATCHIR_DUMP)).toBe(true);
+    expect(parseTextToolCalls(LIVE_FLOW_PATCHIR_DUMP).calls).toEqual([]);
+    expect(LIVE_FLOW_PATCHIR_DUMP).not.toMatch(/<{5,}\s*SEARCH/);
+  });
+
+  it('lifts a PatchIR operations dump into edit_file', () => {
+    const calls = dumpEditsToToolCalls(LIVE_FLOW_PATCHIR_DUMP);
+    expect(calls).toEqual([
+      {
+        id: 'residual_0',
+        name: 'edit_file',
+        arguments: { path: 'src/scan.ts', search: 'const timeout = 0;', replace: 'const timeout = 5000;' },
+      },
+    ]);
+    expect(residualEditsToToolCalls(LIVE_FLOW_PATCHIR_DUMP)).toEqual(calls);
+    expect(parseEdits(LIVE_FLOW_PATCHIR_DUMP)[0]).toMatchObject({
+      op: 'replace',
+      file: 'src/scan.ts',
+      search: 'const timeout = 0;',
+      replace: 'const timeout = 5000;',
+    });
+  });
+
+  it('lifts {op:REPLACE,path,search,replace} and a path-less dump onto defaultFile', () => {
+    expect(
+      dumpEditsToToolCalls(
+        '{"op":"REPLACE","path":"src/scan.ts","search":"const timeout = 0;","replace":"const timeout = 5000;"}',
+      )[0],
+    ).toMatchObject({
+      name: 'edit_file',
+      arguments: { path: 'src/scan.ts', search: 'const timeout = 0;', replace: 'const timeout = 5000;' },
+    });
+    expect(
+      dumpEditsToToolCalls('{"search":"const timeout = 0;","replace":"const timeout = 5000;"}', {
+        defaultFile: 'src/scan.ts',
+      })[0],
+    ).toMatchObject({ arguments: { path: 'src/scan.ts', search: 'const timeout = 0;', replace: 'const timeout = 5000;' } });
+  });
+
+  it('lifts prose + PatchIR, apply_patch args-root operations, and old_string aliases', () => {
+    const withProse = `Here is the edit.\n${LIVE_FLOW_PATCHIR_DUMP}\n`;
+    expect(dumpEditsToToolCalls(withProse)[0]?.arguments).toMatchObject({
+      path: 'src/scan.ts',
+      replace: 'const timeout = 5000;',
+    });
+    const applyDump = JSON.stringify({
+      name: 'apply_patch',
+      arguments: {
+        schemaVersion: 'patch-ir/0',
+        operations: [
+          { op: 'replace-text', file: 'src/scan.ts', search: 'const timeout = 0;', replace: 'const timeout = 5000;' },
+        ],
+      },
+    });
+    expect(dumpEditsToToolCalls(applyDump)[0]?.name).toBe('edit_file');
+    expect(
+      parseEditDump(
+        '{"path":"src/scan.ts","old_string":"const timeout = 0;","new_string":"const timeout = 5000;"}',
+      )[0],
+    ).toMatchObject({ file: 'src/scan.ts', search: 'const timeout = 0;', replace: 'const timeout = 5000;' });
+  });
+
+  it('does not whole-file replace a REPLACED dump that has no SEARCH', () => {
+    expect(dumpEditsToToolCalls('{"id":"gREET.ts","op":"REPLACED","replacement":"Hi \\\\1!"}')).toEqual([]);
+    expect(parseEditDump('{"id":"gREET.ts","op":"REPLACED","replacement":"Hi \\\\1!"}')).toEqual([]);
+  });
+
+  it('collectProviderEdits lifts a oneshot PatchIR body (Relay no-patch hypothesis)', () => {
+    expect(collectProviderEdits({ text: LIVE_FLOW_PATCHIR_DUMP, toolCalls: [] })[0]).toMatchObject({
+      op: 'replace',
+      file: 'src/scan.ts',
+      search: 'const timeout = 0;',
+      replace: 'const timeout = 5000;',
+    });
   });
 });
 

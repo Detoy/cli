@@ -96,15 +96,19 @@ describe('buildReviewProposeInstruction', () => {
     expect(text).toContain(String(REVIEW_PROPOSE_LOOP_CAP));
     expect(text).toMatch(/must write|before finish/i);
     expect(text).toMatch(/residual search\/replace/i);
+    expect(text).toContain('src/scan.ts');
     expect(text).not.toMatch(/<<<<<<< SEARCH/);
   });
 
-  it('one-shot protocol asks for SEARCH/REPLACE residual, not tools', () => {
+  it('one-shot protocol asks for SEARCH/REPLACE residual, not tools or function calling', () => {
     const text = buildReviewProposeInstruction(baseInput({ loop: false }));
     expect(text).toContain('<<<<<<< SEARCH');
     expect(text).toContain('>>>>>>> REPLACE');
+    expect(text).toContain('src/scan.ts');
     expect(text).toMatch(/do not call tools/i);
     expect(text).toMatch(/do not call finish/i);
+    expect(text).toMatch(/function calling|tool_calls/i);
+    expect(text).toMatch(/entire reply must be the edit block/i);
     expect(text).toContain('const timeout = 0;');
   });
 });
@@ -338,6 +342,148 @@ describe('proposeFindingFix — Review contract', () => {
     expect(r.steps).toBeLessThanOrEqual(REVIEW_PROPOSE_LOOP_CAP);
     expect(r.applied).toBe(false);
     expect(fsImpl.files['src/scan.ts']).toBe(baseFile);
+  });
+
+  it('path-less live residual plus cited file still yields PatchIR (not no-tools)', async () => {
+    const residual = ['<<<<<<< SEARCH', 'const timeout = 0;', '=======', 'const timeout = 5000;', '>>>>>>> REPLACE'].join(
+      '\n',
+    );
+    const backend: Provider & { seen: number } = {
+      id: 'llama-cpp',
+      label: 'Vibgrate (local)',
+      local: true,
+      model: 'flow-pack',
+      supportsTools: false,
+      seen: 0,
+      async chat() {
+        backend.seen += 1;
+        return { text: residual, model: 'flow-pack', provider: 'llama-cpp' };
+      },
+    };
+    const fsImpl = memFs({ 'src/scan.ts': baseFile });
+    const r = await proposeFindingFix(
+      baseInput({
+        loop: true,
+        providers: [withToolCallFallback(backend)],
+        fsImpl,
+        modelId: 'flow',
+      }),
+    );
+    expect(r.ok).toBe(true);
+    expect(r.stopReason).toBe('finished');
+    expect(r.patch).toBeTruthy();
+    expect(r.toolTrace.map((t) => t.name)).toContain('edit_file');
+    expect(r.steps).toBeLessThanOrEqual(REVIEW_PROPOSE_LOOP_CAP);
+    expect(r.applied).toBe(false);
+  });
+
+  it('live Flow PatchIR dump drives the loop (not no-tools) and yields PatchIR', async () => {
+    const dump = JSON.stringify({
+      schemaVersion: 'patch-ir/0',
+      operations: [
+        { op: 'replace-text', file: 'src/scan.ts', search: 'const timeout = 0;', replace: 'const timeout = 5000;' },
+      ],
+    });
+    const backend: Provider & { seen: number } = {
+      id: 'llama-cpp',
+      label: 'Vibgrate (local)',
+      local: true,
+      model: 'flow',
+      supportsTools: false,
+      seen: 0,
+      async chat() {
+        backend.seen += 1;
+        return { text: dump, model: 'flow', provider: 'llama-cpp' };
+      },
+    };
+    const fsImpl = memFs({ 'src/scan.ts': baseFile });
+    const r = await proposeFindingFix(
+      baseInput({
+        loop: true,
+        providers: [withToolCallFallback(backend)],
+        fsImpl,
+        modelId: 'flow',
+      }),
+    );
+    expect(r.ok).toBe(true);
+    expect(r.stopReason).toBe('finished');
+    expect(r.stopReason).not.toBe('no-tools');
+    expect(r.patch).toBeTruthy();
+    expect(validatePatchIR(r.patch!).ok).toBe(true);
+    expect(r.proposedDiff).toContain('const timeout = 5000');
+    expect(r.toolTrace.map((t) => t.name)).toContain('edit_file');
+    expect(r.steps).toBeLessThanOrEqual(REVIEW_PROPOSE_LOOP_CAP);
+    expect(r.applied).toBe(false);
+    expect(fsImpl.files['src/scan.ts']).toBe(baseFile);
+  });
+
+  it('one-shot PatchIR JSON dump still yields PatchIR (Relay no-patch hypothesis)', async () => {
+    const dump = JSON.stringify({
+      schemaVersion: 'patch-ir/0',
+      operations: [
+        { op: 'replace-text', file: 'src/scan.ts', search: 'const timeout = 0;', replace: 'const timeout = 5000;' },
+      ],
+    });
+    const hosted: Provider = {
+      id: 'vibgrate-relay',
+      label: 'Vibgrate Relay',
+      local: false,
+      model: 'hosted-coder',
+      async chat() {
+        return { text: dump, model: 'hosted-coder', provider: 'vibgrate-relay' };
+      },
+    };
+    const fsImpl = memFs({ 'src/scan.ts': baseFile });
+    const r = await proposeFindingFix(
+      baseInput({
+        loop: false,
+        modelId: 'relay:hosted-coder',
+        providers: [hosted],
+        fsImpl,
+      }),
+    );
+    expect(r.ok).toBe(true);
+    expect(r.stopReason).toBe('finished');
+    expect(r.patch).toBeTruthy();
+    expect(r.proposedDiff).toContain('timeout = 5000');
+    expect(fsImpl.files['src/scan.ts']).toBe(baseFile);
+  });
+
+  it('one-shot native edit_file tool calls (empty body) still yield PatchIR', async () => {
+    const hosted: Provider = {
+      id: 'vibgrate-relay',
+      label: 'Vibgrate Relay',
+      local: false,
+      model: 'hosted-coder',
+      async chat() {
+        return {
+          text: '',
+          model: 'hosted-coder',
+          provider: 'vibgrate-relay',
+          toolCalls: [
+            {
+              id: 'call_1',
+              name: 'edit_file',
+              arguments: { path: 'src/scan.ts', search: 'const timeout = 0;', replace: 'const timeout = 5000;' },
+            },
+          ],
+        };
+      },
+    };
+    const fsImpl = memFs({ 'src/scan.ts': 'const timeout = 0;\n' });
+    const r = await proposeFindingFix(
+      baseInput({
+        loop: false,
+        modelId: 'relay:hosted-coder',
+        providers: [hosted],
+        fsImpl,
+      }),
+    );
+    expect(r.ok).toBe(true);
+    expect(r.stopReason).toBe('finished');
+    expect(r.patch).toBeTruthy();
+    expect(r.proposedDiff).toContain('+const timeout = 5000;');
+    expect(fsImpl.files['src/scan.ts']).toBe('const timeout = 0;\n');
   });
 
   it('plan-mode leakage (no mutations) is no-patch, not success', async () => {

@@ -75,6 +75,9 @@ describe('the CLI surface', () => {
     expect(proposeLongs).toContain('--loop');
     expect(proposeLongs).toContain('--apply');
     expect(proposeLongs).toContain('--model');
+    expect(proposeLongs).toContain('--base');
+    expect(proposeLongs).toContain('--diff');
+    expect(proposeLongs).toContain('--findings');
   });
 
   it('still accepts `vg bundle --offline`, whose own declaration was removed', () => {

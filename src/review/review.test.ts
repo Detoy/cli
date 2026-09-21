@@ -830,6 +830,29 @@ describe('vg review command surface', () => {
     );
     const findings = review!.commands.find((c) => c.name() === 'findings-from-diff');
     expect(findings!.options.map((o) => o.long)).toEqual(expect.arrayContaining(['--base', '--diff', '--format']));
+    const propose = review!.commands.find((c) => c.name() === 'propose');
+    expect(propose!.options.map((o) => o.long)).toEqual(
+      expect.arrayContaining(['--base', '--in-place', '--diff', '--findings', '--model', '--loop', '--single']),
+    );
+    const findingsHelp = findings!.helpInformation();
+    expect(findingsHelp).toMatch(/vg\.review\.findings\.v1/);
+    expect(findingsHelp).toMatch(/no hosted/);
+    expect(findingsHelp).toMatch(/publishable/);
+    expect(findingsHelp).toMatch(/review-propose-handoff\.json/);
+
+    const explainHelp = review!.commands.find((c) => c.name() === 'explain')!.helpInformation();
+    expect(explainHelp).toMatch(/blast:<node_id>/);
+    expect(explainHelp).toMatch(/arch:<rule>:<path>/);
+    expect(explainHelp).not.toMatch(/arch-01/);
+
+    const proposeHelp = propose!.helpInformation();
+    expect(proposeHelp).toMatch(/PatchIR/);
+    expect(proposeHelp).toMatch(/default branch/);
+    expect(proposeHelp).toMatch(/relay:<slug>/);
+    expect(proposeHelp).toMatch(/spark\|flow\|forge/);
+    expect(proposeHelp).toMatch(/--findings/);
+    expect(proposeHelp).toMatch(/review-propose-handoff\.json/);
+    expect(proposeHelp).toMatch(/same as findings-from-diff/);
   });
 
   it('refuses --push under --offline so an airgap cannot upload', () => {

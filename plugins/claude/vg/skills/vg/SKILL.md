@@ -3,7 +3,7 @@ name: vg
 description: Query the local code graph (vg) for structure, impact, and navigation instead of grepping/reading many files.
 ---
 
-<!-- vg:v2 · managed by `vg install` — auto-refreshed when these instructions evolve; remove this line to opt out -->
+<!-- vg:v3 · managed by `vg install` — auto-refreshed when these instructions evolve; remove this line to opt out -->
 
 # vg — the code map
 
@@ -48,9 +48,12 @@ When a task needs a library's API, use the docs tools before web search or
 training-data recall — they are official content matched to the version **this
 project has installed**, and they win when the two conflict.
 
-- **Workflow:** `resolve_library` once per library, then `library_docs` with the
-  returned `targetId` and a focused query (good: "zod refine custom error
-  message"; bad: "zod"). Never guess a targetId.
+- **Workflow:** `resolve_library` with the **package name only** (good: `"zod"`).
+  Then `library_docs` with the returned `targetId` and a topic (good: `"refine
+  custom error message"`). Do not send the whole phrase as the resolve query —
+  hosted resolve treats an unknown exact name as `not_found`. Never guess a
+  targetId. If docs return `entityCount` 0, the catalog has no snippet for that
+  version; read `node_modules` instead of retrying the same query.
 - **Budget:** at most **3 docs calls per task**. If 2 `library_docs` calls have
   not surfaced the section you need, read the package source under
   `node_modules` instead of searching again.

@@ -199,6 +199,12 @@ export interface ArchCardVuln {
   tier: 'reachable' | 'potentially_reachable';
   /** One-line human-readable evidence, e.g. "imported in src/api.ts, called at line 42". */
   evidence?: string;
+  /** Workspace-relative file of the matching reach site, when the scan supplied one. */
+  file?: string;
+  /** 1-based use line of the vulnerable symbol / enclosing function. */
+  line?: number;
+  /** Enclosing function at the reach site, when the graph named it. */
+  function?: string;
 }
 
 export interface ArchSliceColumn {

@@ -31,7 +31,7 @@ import { rankingAskFrom } from '../engine/user-ask.js';
 import { buildTaskCapsule, capsuleToCodeContext } from './capsule.js';
 import { recordCliCall, CLI_TOOL_ALIASES } from '../engine/savings.js';
 import { repositoryIdFromRoot } from '../runtime/paths.js';
-import { parseEdits, applyEdits, type SymbolSpan } from './apply.js';
+import { collectProviderEdits, applyEdits, type SymbolSpan } from './apply.js';
 import { unifiedDiff } from './diff.js';
 import { buildMessages } from './prompt.js';
 import { redactSecrets } from './providers.js';
@@ -147,7 +147,9 @@ export async function runCodeSession(options: RunSessionOptions): Promise<CodeSe
   const messages = buildMessages(context);
   const { result, provider, fellBack } = await complete(providers, messages, chatOptions, correlationId);
 
-  const edits = parseEdits(result.text);
+  const edits = collectProviderEdits(result, {
+    defaultFile: files?.length === 1 ? files[0] : undefined,
+  });
   const spans = spanIndex(graph);
   const applied = applyEdits(
     edits,

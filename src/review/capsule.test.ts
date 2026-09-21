@@ -300,6 +300,23 @@ describe('compileCapsule — verification', () => {
     expect(capsule.verification.map((v) => v.path)).toEqual([ROUTE]);
   });
 
+  it('gives repository scaffolding no coverage verdict — .gitignore is never reached by a test', () => {
+    const change = changeSet([
+      changed('.gitignore'),
+      changed('.dockerignore'),
+      changed('.gitattributes'),
+      changed('.editorconfig'),
+      changed('.nvmrc'),
+      changed('LICENSE'),
+      changed('.github/CODEOWNERS'),
+      changed('.vscode/settings.json'),
+      changed('packages/app/.npmignore'),
+      changed(ROUTE),
+    ]);
+    const { capsule } = compileCapsule(input({ change }));
+    expect(capsule.verification.map((v) => v.path)).toEqual([ROUTE]);
+  });
+
   it('has nothing to say about coverage without a graph', () => {
     expect(compileCapsule(input({ graph: null })).capsule.verification).toEqual([]);
   });

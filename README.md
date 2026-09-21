@@ -603,7 +603,20 @@ vg vex                          # generate an OpenVEX document for attestation
 
 ```bash
 vg review
+vg review findings-from-diff --base origin/main --format json
+vg review propose blast:<node_id> --model forge --json
+vg review propose arch:<rule>:<path> --model forge --json --findings findings.json
 ```
+
+`vg review findings-from-diff` prints the deterministic `vg.review.findings.v1`
+document (blast-radius and architecture-policy `correctness` rows plus security
+scanners) and writes `.vibgrate/review-propose-handoff.json`.
+`vg review propose <id>` attaches a PatchIR dry-run — `--model` is
+`relay:<slug>` (hosted Review) or `spark` | `flow` | `forge` (local Code Mode).
+Lookup is the current change set, then `--findings` JSON, then that last-run
+handoff; pass the same `--base` / `--in-place` / `--diff` as findings-from-diff
+when you want that change set explicitly. It writes nothing unless you pass
+`--apply --yes` on a topic branch.
 
 ---
 
@@ -747,7 +760,7 @@ All HCS computation runs in an optional, separately-licensed engine module that 
 | `vg fix` | Ranked, risk-tiered upgrade plans from the hosted planner — then apply the one you choose |
 | `vg init [path]` | Initialise config and `.vibgrate/` |
 | `vg report` | Generate a report from a scan artifact |
-| `vg review` | **Vibgrate Review** — architecture + security-control review of the current change, locally (`--in-place`, `--local`, `--loop`). Deterministic blast-radius findings from the code graph via `vg review findings-from-diff`; `vg review propose <id>` attaches a PatchIR dry-run. One decision (`pass` / `needs_review` / `fail` / `undetermined`) in a signed receipt (Ed25519 over the receipt digest; `vg review verify <receipt.json>` checks it offline); protected findings cannot be blessed into a pass. Reports change integrity, not a proof of security. Builds or refreshes the code map itself when it is missing or stale (`--no-auto-build` opts out) |
+| `vg review` | **Vibgrate Review** — architecture + security-control review of the current change, locally (`--in-place`, `--local`, `--loop`). Deterministic blast-radius findings from the code graph via `vg review findings-from-diff`; `vg review propose <id>` attaches a PatchIR dry-run (same `--base` / `--in-place` / `--diff`, `--findings`, or `.vibgrate/review-propose-handoff.json`). One decision (`pass` / `needs_review` / `fail` / `undetermined`) in a signed receipt (Ed25519 over the receipt digest; `vg review verify <receipt.json>` checks it offline); protected findings cannot be blessed into a pass. Reports change integrity, not a proof of security. Builds or refreshes the code map itself when it is missing or stale (`--no-auto-build` opts out) |
 | `vg sbom export` / `delta` / `vex` | Export CycloneDX/SPDX SBOM, diff two artifacts, or emit an OpenVEX document |
 | `vg scan [path]` | Scan for upgrade drift |
 | `vg scan --full` | Comprehensive scan: drift + vulnerabilities + a banned-dependency report |

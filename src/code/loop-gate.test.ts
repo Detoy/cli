@@ -70,6 +70,7 @@ function textBackend(
 describe('loop-gate gold — edit-ask heuristic', () => {
   it('flags edit/change/fix/replace and so-returns, not locate Q&A', () => {
     expect(instructionRequiresMutation('edit src/greet.ts so greet returns Hello, <name>!')).toBe(true);
+    expect(instructionRequiresMutation('Propose a minimal patch for this Review finding.')).toBe(true);
     expect(instructionRequiresMutation('Call edit_file on the cited path, then finish.')).toBe(true);
     expect(instructionRequiresMutation('edit the greeting')).toBe(true);
     expect(instructionRequiresMutation('fix the timeout in src/scan.ts')).toBe(true);
@@ -129,6 +130,174 @@ describe('loop-gate gold — Code Mode tool channel', () => {
     expect(events.filter((e) => e.type === 'tool-call').map((e) => e.name)).toContain('edit_file');
     expect(result.steps).toBeLessThanOrEqual(AGENT_NO_PROGRESS_STOP_AT);
     expect(result.steps).toBeLessThanOrEqual(AGENT_EMPTY_REPLY_RETRIES + 1);
+  });
+
+  it('lifts a path-less SEARCH/REPLACE onto the single cited file (live llama-cpp shape)', async () => {
+    // Live Flow (#2662 tip): the pack printed markers without a path line
+    // because the Review finding already cited the file. Without defaultFile
+    // that residual was skipped and happy-path-loop died as no-tools after 3.
+    const residual = ['<<<<<<< SEARCH', 'const timeout = 0;', '=======', 'const timeout = 5000;', '>>>>>>> REPLACE'].join('\n');
+    const backend = textBackend({ text: residual, model: 'flow-pack', provider: 'llama-cpp' }, false);
+    const fsImpl = memFs({ 'src/scan.ts': 'export function scanDir() {\n  const timeout = 0;\n  return timeout;\n}\n' });
+    const result = await runAgent({
+      graph: fixtureGraph(),
+      root: '/repo',
+      instruction: 'Propose a minimal patch for this Review finding. Call edit_file on src/scan.ts, then finish.',
+      files: ['src/scan.ts'],
+      providers: [withToolCallFallback(backend)],
+      fsImpl,
+      run: () => ({ stdout: '', exitCode: 0 }),
+      approve: async () => true,
+      maxSteps: AGENT_NO_PROGRESS_STOP_AT,
+      noAudit: true,
+    });
+    expect(result.stopped).toBe('finished');
+    expect(result.stopped).not.toBe('no-tools');
+    expect(result.changes).toHaveLength(1);
+    expect(fsImpl.files['src/scan.ts']).toContain('5000');
+    expect(result.steps).toBeLessThanOrEqual(AGENT_NO_PROGRESS_STOP_AT);
+  });
+
+  it('lifts a live Flow PatchIR dump on an edit-ask (not no-tools)', async () => {
+    // Live Flow review-gold (#2662, PR tip 14d3baaa0): happy-path-loop died
+    // stopReason no-tools at steps=4 — the pack printed PatchIR JSON that
+    // looksLikeToolCallDump flags, but parseTextToolCalls only accepts
+    // {name, arguments} and residual SEARCH/REPLACE was empty.
+    const dump = JSON.stringify({
+      schemaVersion: 'patch-ir/0',
+      operations: [
+        { op: 'replace-text', file: 'src/scan.ts', search: 'const timeout = 0;', replace: 'const timeout = 5000;' },
+      ],
+    });
+    const backend = textBackend({ text: dump, model: 'flow', provider: 'llama-cpp' }, false);
+    const fsImpl = memFs({ 'src/scan.ts': 'export function scanDir() {\n  const timeout = 0;\n  return timeout;\n}\n' });
+    const events: Array<{ type: string; name?: string }> = [];
+    const result = await runAgent({
+      graph: fixtureGraph(),
+      root: '/repo',
+      instruction: 'Propose a minimal patch for this Review finding. Call edit_file on src/scan.ts, then finish.',
+      files: ['src/scan.ts'],
+      providers: [withToolCallFallback(backend)],
+      fsImpl,
+      run: () => ({ stdout: '', exitCode: 0 }),
+      approve: async () => true,
+      maxSteps: AGENT_NO_PROGRESS_STOP_AT,
+      noAudit: true,
+      onEvent: (e) => events.push(e),
+    });
+    expect(result.stopped).toBe('finished');
+    expect(result.stopped).not.toBe('no-tools');
+    expect(result.changes).toHaveLength(1);
+    expect(fsImpl.files['src/scan.ts']).toContain('5000');
+    expect(events.filter((e) => e.type === 'tool-call').map((e) => e.name)).toContain('edit_file');
+    expect(result.steps).toBeLessThanOrEqual(AGENT_NO_PROGRESS_STOP_AT);
+  });
+
+  it('lifts a PatchIR dump after a read (live steps=4 shape)', async () => {
+    const dump = JSON.stringify({
+      op: 'REPLACE',
+      path: 'src/scan.ts',
+      search: 'const timeout = 0;',
+      replace: 'const timeout = 5000;',
+    });
+    const provider = new ScriptedProvider('flow', [
+      { toolCalls: [tc('read_file', { path: 'src/scan.ts' }, 'r1')] },
+      { text: dump },
+    ]);
+    const fsImpl = memFs({ 'src/scan.ts': 'export function scanDir() {\n  const timeout = 0;\n  return timeout;\n}\n' });
+    const result = await runAgent({
+      graph: fixtureGraph(),
+      root: '/repo',
+      instruction: 'Propose a minimal patch for this Review finding. Call edit_file on src/scan.ts, then finish.',
+      files: ['src/scan.ts'],
+      providers: [withToolCallFallback(provider)],
+      fsImpl,
+      run: () => ({ stdout: '', exitCode: 0 }),
+      approve: async () => true,
+      maxSteps: AGENT_NO_PROGRESS_STOP_AT,
+      noAudit: true,
+    });
+    expect(result.stopped).toBe('finished');
+    expect(result.stopped).not.toBe('no-tools');
+    expect(fsImpl.files['src/scan.ts']).toContain('5000');
+    expect(result.steps).toBeLessThanOrEqual(AGENT_NO_PROGRESS_STOP_AT);
+  });
+
+  it('apply_patch text dump with operations at args root writes (not no-tools)', async () => {
+    // Live Flow often prints apply_patch as {name, arguments:{operations}}
+    // without wrapping operations in `patch`. parseTextToolCalls rescues the
+    // call; apply_patch must accept the args-root shape or the loop burns
+    // a step then dies as no-tools at steps=4.
+    const dump = JSON.stringify({
+      name: 'apply_patch',
+      arguments: {
+        schemaVersion: 'patch-ir/0',
+        operations: [
+          { op: 'replace-text', file: 'src/scan.ts', search: 'const timeout = 0;', replace: 'const timeout = 5000;' },
+        ],
+      },
+    });
+    const provider = new ScriptedProvider('flow', [
+      { text: dump },
+      { toolCalls: [tc('finish', { summary: 'raised the timeout' }, 'f1')] },
+    ]);
+    const fsImpl = memFs({ 'src/scan.ts': 'export function scanDir() {\n  const timeout = 0;\n  return timeout;\n}\n' });
+    const result = await runAgent({
+      graph: fixtureGraph(),
+      root: '/repo',
+      instruction: 'Propose a minimal patch for this Review finding. Call edit_file on src/scan.ts, then finish.',
+      files: ['src/scan.ts'],
+      providers: [withToolCallFallback(provider)],
+      fsImpl,
+      run: () => ({ stdout: '', exitCode: 0 }),
+      approve: async () => true,
+      maxSteps: AGENT_NO_PROGRESS_STOP_AT,
+      noAudit: true,
+    });
+    expect(result.stopped).toBe('finished');
+    expect(result.stopped).not.toBe('no-tools');
+    expect(fsImpl.files['src/scan.ts']).toContain('5000');
+    expect(result.steps).toBeLessThanOrEqual(AGENT_NO_PROGRESS_STOP_AT);
+  });
+
+  it('captures the raw dump in finalText when a dump cannot be lifted', async () => {
+    const dump = '{"id":"gREET.ts","op":"REPLACED","replacement":"Hi \\\\1!"}';
+    const backend = textBackend({ text: dump, model: 'flow', provider: 'llama-cpp' }, false);
+    const result = await runAgent({
+      graph: fixtureGraph(),
+      root: '/repo',
+      instruction: 'edit src/greet.ts so greet returns Hello, <name>!',
+      providers: [withToolCallFallback(backend)],
+      fsImpl: memFs({ 'src/greet.ts': 'export function greet(name: string) { return `hi ${name}`; }\n' }),
+      run: () => ({ stdout: '', exitCode: 0 }),
+      approve: async () => true,
+      maxSteps: AGENT_NO_PROGRESS_STOP_AT,
+      noAudit: true,
+    });
+    expect(result.stopped).toBe('no-tools');
+    expect(result.changes).toHaveLength(0);
+    expect(result.finalText).toMatch(/printed a tool or edit dump/i);
+    expect(result.finalText).toContain('Last model text:');
+    expect(result.finalText).toContain('"op":"REPLACED"');
+  });
+
+  it('lifts a unified-diff residual on an edit-ask', async () => {
+    const residual = ['--- a/src/scan.ts', '+++ b/src/scan.ts', '@@ -1 +1 @@', '-const timeout = 0;', '+const timeout = 5000;'].join('\n');
+    const backend = textBackend({ text: residual, model: 'flow-pack', provider: 'llama-cpp' }, false);
+    const fsImpl = memFs({ 'src/scan.ts': 'const timeout = 0;\n' });
+    const result = await runAgent({
+      graph: fixtureGraph(),
+      root: '/repo',
+      instruction: 'edit src/scan.ts so the timeout is 5000',
+      providers: [withToolCallFallback(backend)],
+      fsImpl,
+      run: () => ({ stdout: '', exitCode: 0 }),
+      approve: async () => true,
+      maxSteps: AGENT_NO_PROGRESS_STOP_AT,
+      noAudit: true,
+    });
+    expect(result.stopped).toBe('finished');
+    expect(fsImpl.files['src/scan.ts']).toContain('5000');
   });
 
   it('does not end as silent no-tools when a Code Mode emits text-protocol markup', async () => {
@@ -507,7 +676,8 @@ describe('loop-gate gold — Code Mode tool channel', () => {
     expect(result.stopped).toBe('no-tools');
     expect(result.changes).toHaveLength(0);
     expect(fsImpl.files['src/greet.ts']).toBe(greet);
-    expect(result.finalText).not.toMatch(/"op"\s*:\s*"REPLACED"/);
+    expect(result.finalText).toMatch(/printed a tool or edit dump/i);
+    expect(result.finalText).toContain('Last model text:');
   });
 
   it('a spaced-name dump then empty reply is not a successful finish', async () => {
