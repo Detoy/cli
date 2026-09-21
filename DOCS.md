@@ -464,7 +464,7 @@ vg review --in-place                 # the same, stated explicitly
 vg review --local                    # deterministic scanners; no hosted model
 vg review --loop                     # review → deterministic patch → re-review
 vg review --base origin/main         # merge-base of HEAD and the base branch
-vg review explain arch-01            # the evidence behind one finding
+vg review explain arch:<rule>:<path> # the evidence behind one finding
 vg review findings-from-diff         # deterministic graph/policy findings only
 vg review propose blast:<node_id> --model forge --json
 ```
@@ -570,21 +570,60 @@ the signed receipt ceremony.
 vg review findings-from-diff
 vg review findings-from-diff --base origin/main
 vg review findings-from-diff --diff pr.patch --format json
-vg review propose blast:<node_id> --model forge --json
 ```
 
 `--diff` reads a unified diff (`-` is stdin). The patch names the files and
 hunks; the code map still has to be built (`vg` or `vg build`). `--format json`
-writes the findings document plus a `publishable` array of correctness rows
-(`kind: "correctness"`, stable `id` used as `finding_key`, producer metadata
-`blast_radius` or `architecture`) for App ingest. When capsule verification
-already emitted a fact for a finding's path, that evidence id is cited on the
-finding and on the publishable `receipts` array — no second receipt system.
-Suggested-fix on those rows is an honest skip — there is no computed PatchIR
-for blast-radius or architecture-policy rows. Propose is dry-run unless you pass
-`--apply --yes` on a topic branch — never the default branch. Local Code Mode
-ids are `spark`, `flow`, and `forge`; hosted Review uses `relay:<slug>`. This
-path does not post a comment or a check run.
+writes the findings document plus a `publishable` array of correctness rows.
+
+| Field | Blast-radius | Architecture-policy |
+| --- | --- | --- |
+| `kind` | `correctness` (top-level only) | `correctness` (top-level only) |
+| `id` / `finding_key` | `blast:{node_id}` or `blast:{path}:{name}` | `arch:{rule}:{path}` |
+| `source` | `scanner` | `scanner` |
+| producer / `scanner_kind` | `blast_radius` | `architecture` |
+| severity | `low` or `medium` | `low`, `medium`, or `high` — never `critical` from version lag |
+| `receipts` | existing capsule `verify:` / `scan:` / `attest:` ids when those facts already exist | same |
+
+Ids are stable across head SHAs: same symbol or rule+path keeps the same key.
+No spaces. Suggested-fix on publishable rows is an honest skip (`null` /
+`skipped_no_patch`) — there is no computed PatchIR for blast-radius or
+architecture-policy rows. Each run also writes
+`.vibgrate/review-propose-handoff.json` (`vg.review.propose-handoff.v1`) so
+`vg review propose` can resolve those ids without a second findings loop.
+This path does not post a comment or a check run.
+
+#### Propose a PatchIR dry-run — `vg review propose`
+
+```bash
+vg review propose blast:<node_id> --model forge --json
+vg review propose blast:<node_id> --model forge --json --base origin/main
+vg review propose arch:<rule>:<path> --model forge --json --findings findings.json
+vg review propose arch:<rule>:<path> --model relay:<slug> --json
+```
+
+Attaches a PatchIR dry-run to one finding id via the VG Code agent loop — there
+is no second Review runtime. Lookup is the current change set, then
+`--findings` JSON (a `vg.review.findings.v1` document or a review receipt),
+then the last-run `.vibgrate/review-propose-handoff.json`. Pass the same
+`--base` / `--in-place` / `--diff` as findings-from-diff when you want that
+change set explicitly.
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--model <id>` | required | `relay:<slug>` (hosted Review) or `spark` \| `flow` \| `forge` (local Code Mode). A bare slug is invalid — propose never calls a backend in that case. |
+| `--loop` | on | VG Code agent loop (capped; stops on no progress) |
+| `--single` | off | One-shot residual → patch → verify instead of the loop |
+| `--apply` | off | Write the patch (still requires `--yes`; refused on the default branch) |
+| `--yes` | off | Consent to write when `--apply` is set |
+| `--base <ref>` | — | Same change set as `findings-from-diff --base` |
+| `--in-place` | off | Same as `findings-from-diff --in-place` |
+| `--diff <file>` | — | Same as `findings-from-diff --diff` (`-` is stdin) |
+| `--findings <file>` | — | Findings JSON when the current change set does not list the id |
+
+Dry-run unless you pass `--apply --yes` on a **topic branch**. It never writes
+the default branch. The same Code Mode and Relay ids are used by `vg code`.
+This command does not post a check run or a review comment.
 
 #### Before you write it — `assess_change`
 

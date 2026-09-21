@@ -95,6 +95,74 @@ describe('runCodeSession — governance lifecycle', () => {
     expect(r.provider.fellBack).toBe(true);
   });
 
+  it('one-shot PatchIR JSON dump still produces a dry-run patch', async () => {
+    const dump = JSON.stringify({
+      schemaVersion: 'patch-ir/0',
+      operations: [
+        { op: 'replace-text', file: 'src/scan.ts', search: 'const timeout = 0;', replace: 'const timeout = 5000;' },
+      ],
+    });
+    const hosted: Provider = {
+      id: 'vibgrate-relay',
+      label: 'Vibgrate Relay',
+      local: false,
+      model: 'hosted-coder',
+      async chat() {
+        return { text: dump, model: 'hosted-coder', provider: 'vibgrate-relay' };
+      },
+    };
+    const fsImpl = memFs({ 'src/scan.ts': 'const timeout = 0;\n' });
+    const r = await runCodeSession({
+      graph: fixtureGraph(),
+      root: '/repo',
+      instruction: 'raise the timeout',
+      providers: [hosted],
+      fsImpl,
+      files: ['src/scan.ts'],
+    });
+    expect(r.applied).toBe(false);
+    expect(r.changes[0]?.diff).toContain('+const timeout = 5000;');
+    expect(fsImpl.files['src/scan.ts']).toBe('const timeout = 0;\n');
+  });
+
+  it('one-shot native edit_file tool calls still produce a dry-run patch', async () => {
+    // Hosted Review oneshot (#2662 Mac): Relay returned tool_calls and no
+    // SEARCH/REPLACE body — parseEdits on text alone was no-patch. Lift the
+    // native call so oneshot matches the loop path.
+    const hosted: Provider = {
+      id: 'vibgrate-relay',
+      label: 'Vibgrate Relay',
+      local: false,
+      model: 'hosted-coder',
+      async chat() {
+        return {
+          text: '',
+          model: 'hosted-coder',
+          provider: 'vibgrate-relay',
+          toolCalls: [
+            {
+              id: 'call_1',
+              name: 'edit_file',
+              arguments: { path: 'src/scan.ts', search: 'const timeout = 0;', replace: 'const timeout = 5000;' },
+            },
+          ],
+        };
+      },
+    };
+    const fsImpl = memFs({ 'src/scan.ts': 'const timeout = 0;\n' });
+    const r = await runCodeSession({
+      graph: fixtureGraph(),
+      root: '/repo',
+      instruction: 'raise the timeout',
+      providers: [hosted],
+      fsImpl,
+      files: ['src/scan.ts'],
+    });
+    expect(r.applied).toBe(false);
+    expect(r.changes[0]?.diff).toContain('+const timeout = 5000;');
+    expect(fsImpl.files['src/scan.ts']).toBe('const timeout = 0;\n');
+  });
+
   it('does not write when the model returns no applicable edit', async () => {
     const fsImpl = memFs({ 'src/scan.ts': 'const timeout = 0;\n' });
     const r = await runCodeSession({ graph: fixtureGraph(), root: '/repo', instruction: 'x', providers: [mock('no edits here')], apply: true, consent: true, fsImpl });

@@ -562,13 +562,20 @@ export async function executeTool(call: ToolCall, ctx: ToolContext): Promise<Too
       case 'library_docs':
         return libraryDocs(ctx, str(a.name));
       case 'edit_file':
-        return editFile(ctx, str(a.path), str(a.search), str(a.replace));
+        return editFile(
+          ctx,
+          str(a.path ?? a.file),
+          str(a.search ?? a.old_string ?? a.oldString ?? a.old_text ?? a.oldText),
+          str(a.replace ?? a.replacement ?? a.new_string ?? a.newString ?? a.new_text ?? a.newText),
+        );
       case 'create_file':
-        return createFile(ctx, str(a.path), str(a.content));
+        return createFile(ctx, str(a.path ?? a.file), str(a.content));
       case 'delete_file':
-        return deleteFile(ctx, str(a.path));
+        return deleteFile(ctx, str(a.path ?? a.file));
       case 'apply_patch':
-        return applyPatchTool(ctx, a.patch);
+        // Live Flow dumps PatchIR at the args root (`operations[]`) instead of
+        // wrapping it as `{patch:{…}}`. Accept either so the loop can write.
+        return applyPatchTool(ctx, a.patch ?? a);
       case 'run_command':
         return runCommand(ctx, str(a.command));
       case 'set_progress':

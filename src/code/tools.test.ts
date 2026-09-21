@@ -526,6 +526,35 @@ describe('mutating tools (gated)', () => {
     expect(c.files['src/scan.ts']).toContain('timeout = 0');
   });
 
+  it('apply_patch accepts operations at the args root (live Flow dump)', async () => {
+    const c = ctx();
+    const r = await executeTool(
+      call('apply_patch', {
+        schemaVersion: 'patch-ir/0',
+        operations: [
+          { op: 'replace-text', file: 'src/scan.ts', search: 'const timeout = 0;', replace: 'const timeout = 9;' },
+        ],
+      }),
+      c,
+    );
+    expect(r.mutated).toBe(true);
+    expect(c.files['src/scan.ts']).toContain('timeout = 9');
+  });
+
+  it('edit_file accepts old_string / new_string aliases', async () => {
+    const c = ctx();
+    const r = await executeTool(
+      call('edit_file', {
+        file: 'src/scan.ts',
+        old_string: 'const timeout = 0;',
+        new_string: 'const timeout = 7;',
+      }),
+      c,
+    );
+    expect(r.mutated).toBe(true);
+    expect(c.files['src/scan.ts']).toContain('timeout = 7');
+  });
+
   it('apply_patch applies a multi-op PatchIR when approved', async () => {
     const c = ctx();
     const r = await executeTool(

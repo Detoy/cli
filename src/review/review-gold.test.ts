@@ -105,6 +105,92 @@ describe('review-gold — proposeFindingFix (offline, no live model)', () => {
     expect(filesAfter['src/scan.ts']).toBe(fixture.files['src/scan.ts']);
   });
 
+  it('happy-path-loop lifts a path-less live residual onto the cited file', async () => {
+    const fixture = fixtures.find((f) => f.id === 'happy-path-loop')!;
+    const residual = ['<<<<<<< SEARCH', 'const timeout = 0;', '=======', 'const timeout = 5000;', '>>>>>>> REPLACE'].join(
+      '\n',
+    );
+    const backend: Provider = {
+      id: 'llama-cpp',
+      label: 'Vibgrate (local)',
+      local: true,
+      model: 'flow-pack',
+      supportsTools: false,
+      async chat() {
+        return { text: residual, model: 'flow-pack', provider: 'llama-cpp' };
+      },
+    };
+    const { result } = await runReviewGoldFixture(fixture, {
+      providers: [withToolCallFallback(backend)],
+    });
+    expect(result.ok, result.error ?? fixture.id).toBe(true);
+    expect(result.stopReason).toBe('finished');
+    expect(result.stopReason).not.toBe('no-tools');
+    expect(result.patch).toBeTruthy();
+    expect(result.steps).toBeLessThanOrEqual(5);
+  });
+
+  it('happy-path-loop lifts a live Flow PatchIR dump into PatchIR (not no-tools)', async () => {
+    const fixture = fixtures.find((f) => f.id === 'happy-path-loop')!;
+    const dump = JSON.stringify({
+      schemaVersion: 'patch-ir/0',
+      operations: [
+        { op: 'replace-text', file: 'src/scan.ts', search: 'const timeout = 0;', replace: 'const timeout = 5000;' },
+      ],
+    });
+    const backend: Provider = {
+      id: 'llama-cpp',
+      label: 'Vibgrate (local)',
+      local: true,
+      model: 'flow',
+      supportsTools: false,
+      async chat() {
+        return { text: dump, model: 'flow', provider: 'llama-cpp' };
+      },
+    };
+    const { result, filesAfter } = await runReviewGoldFixture(fixture, {
+      providers: [withToolCallFallback(backend)],
+    });
+    expect(result.ok, result.error ?? fixture.id).toBe(true);
+    expect(result.stopReason).toBe('finished');
+    expect(result.stopReason).not.toBe('no-tools');
+    expect(result.patch).toBeTruthy();
+    expect(validatePatchIR(result.patch!).ok).toBe(true);
+    expect(result.toolTrace.map((t) => t.name)).toContain('edit_file');
+    expect(result.applied).toBe(false);
+    expect(result.steps).toBeLessThanOrEqual(5);
+    expect(filesAfter['src/scan.ts']).toBe(fixture.files['src/scan.ts']);
+  });
+
+  it('happy-path-oneshot lifts a native edit_file tool call with an empty body', async () => {
+    const fixture = fixtures.find((f) => f.id === 'happy-path-oneshot')!;
+    const hosted: Provider = {
+      id: 'vibgrate-relay',
+      label: 'Vibgrate Relay',
+      local: false,
+      model: 'hosted-coder',
+      async chat() {
+        return {
+          text: '',
+          model: 'hosted-coder',
+          provider: 'vibgrate-relay',
+          toolCalls: [
+            {
+              id: 'call_1',
+              name: 'edit_file',
+              arguments: { path: 'src/scan.ts', search: 'const timeout = 0;', replace: 'const timeout = 5000;' },
+            },
+          ],
+        };
+      },
+    };
+    const { result } = await runReviewGoldFixture(fixture, { providers: [hosted] });
+    expect(result.ok, result.error ?? fixture.id).toBe(true);
+    expect(result.stopReason).toBe('finished');
+    expect(result.patch).toBeTruthy();
+    expect(result.steps).toBe(1);
+  });
+
   it('invalid-model never calls a backend (usage absent, not zero)', async () => {
     const fixture = fixtures.find((f) => f.id === 'invalid-model')!;
     const { result } = await runReviewGoldFixture(fixture);

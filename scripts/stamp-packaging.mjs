@@ -60,13 +60,14 @@ export function stampScoop(template, { version, sha256, tarballUrl }) {
 }
 
 // npm registry propagation after `npm publish` is eventually consistent — the
-// tarball can 404 for a couple of minutes even after the Release workflow's
-// publish step reports success. Retry generously (default ~4.5 minutes of
-// total backoff) before giving up, so a normal propagation lag doesn't fail
-// the packaging job.
+// tarball can 404 for several minutes even after the Release workflow's
+// publish step reports success (observed in practice exceeding the previous
+// ~4.5 minute budget — see github.com/vibgrate/cli run 35227261907). Retry
+// generously (default ~8 minutes of total backoff) before giving up, so a
+// normal propagation lag doesn't fail the packaging job.
 export async function sha256OfUrl(
   url,
-  { retries = 8, fetchImpl = fetch, baseDelayMs = 5000, maxDelayMs = 60_000 } = {},
+  { retries = 12, fetchImpl = fetch, baseDelayMs = 5000, maxDelayMs = 60_000 } = {},
 ) {
   let lastErr;
   for (let attempt = 1; attempt <= retries; attempt += 1) {

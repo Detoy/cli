@@ -18,9 +18,11 @@ export const NUDGE_END = '<!-- vg:end -->';
  * repos the first time a new CLI version builds there.
  *
  * History: v1 = the unversioned originals (detected by their headings);
- * v2 = versioned markers + the strong MCP-first recommendation.
+ * v2 = versioned markers + the strong MCP-first recommendation;
+ * v3 = library-docs workflow resolves by package name only, and an
+ * `entityCount` of 0 means read `node_modules` rather than retry.
  */
-export const INSTALL_CONTENT_VERSION = 2;
+export const INSTALL_CONTENT_VERSION = 3;
 
 const VERSION_MARKER_RE = /<!--\s*vg:v(\d+)\b[^>]*-->/;
 
@@ -99,9 +101,12 @@ When a task needs a library's API, use the docs tools before web search or
 training-data recall — they are official content matched to the version **this
 project has installed**, and they win when the two conflict.
 
-- **Workflow:** \`resolve_library\` once per library, then \`library_docs\` with the
-  returned \`targetId\` and a focused query (good: "zod refine custom error
-  message"; bad: "zod"). Never guess a targetId.
+- **Workflow:** \`resolve_library\` with the **package name only** (good: \`"zod"\`).
+  Then \`library_docs\` with the returned \`targetId\` and a topic (good: \`"refine
+  custom error message"\`). Do not send the whole phrase as the resolve query —
+  hosted resolve treats an unknown exact name as \`not_found\`. Never guess a
+  targetId. If docs return \`entityCount\` 0, the catalog has no snippet for that
+  version; read \`node_modules\` instead of retrying the same query.
 - **Budget:** at most **3 docs calls per task**. If 2 \`library_docs\` calls have
   not surfaced the section you need, read the package source under
   \`node_modules\` instead of searching again.

@@ -40,12 +40,18 @@ import { buildEnvelope, collectSpans, pushReceipt, rejectPushWhenOffline, type R
 import { applyPatches, collectLoopPatches, loopNote, REVIEW_LOOP_MAX } from '../review/loop.js';
 import { loadGraph } from '../engine/load.js';
 import { proposeFindingFix, REVIEW_PROPOSE_LOOP_CAP } from '../review/propose.js';
+import {
+  missingProposeFindingMessage,
+  readProposeHandoff,
+  resolveProposeFinding,
+  writeProposeHandoff,
+} from '../review/propose-handoff.js';
 import { runReview, type RunReviewResult } from '../review/run.js';
 import { resolveReviewSigningKey, verifyReceipt } from '../review/sign.js';
 import { injectContextBlock, renderContext, writeContextFile } from '../review/context-file.js';
 import { ensureCodeMap, reviewPolicyState, seedReviewPolicy } from '../review/prepare.js';
 import { exportCorrectnessPublishRows } from '../review/finding-publish.js';
-import { changeSetFromUnifiedDiff, collectChangeSet, defaultRun } from '../review/git.js';
+import { changeSetFromUnifiedDiff, collectChangeSet, defaultRun, type ChangeSet } from '../review/git.js';
 import { parseDsn } from '../reporting/commands/push.js';
 import { resolveDsn } from '../reporting/credentials.js';
 
@@ -220,7 +226,7 @@ export function registerReview(program: Command): void {
   const explain = cmd
     .command('explain')
     .description('show the evidence behind one finding from the current change')
-    .argument('<finding-id>', 'a finding id from the last `vg review` run (e.g. arch-01)')
+    .argument('<finding-id>', 'a finding id from the current change (e.g. blast:<node_id>, arch:<rule>:<path>)')
     .option('--base <ref>', 'review HEAD against the merge-base with <ref>')
     .action(async function (this: Command, findingId: string, opts: { base?: string }) {
       const global = readGlobal(this);
@@ -270,7 +276,7 @@ export function registerReview(program: Command): void {
   const findingsFromDiff = cmd
     .command('findings-from-diff')
     .description(
-      'emit deterministic Review findings from the change set and the code graph (blast radius + architecture/security scanners; no hosted model)',
+      'emit deterministic vg.review.findings.v1 rows from the change set and the code graph (correctness blast-radius + architecture/security scanners; no hosted model; writes .vibgrate/review-propose-handoff.json for vg review propose)',
     )
     .option('--base <ref>', 'review HEAD against the merge-base with <ref> (e.g. origin/main)')
     .option(
@@ -278,7 +284,11 @@ export function registerReview(program: Command): void {
       'include the working tree when --base is also set (the default without --base already is in-place)',
     )
     .option('--diff <file>', 'unified diff to treat as the change set (`-` reads stdin)')
-    .option('--format <fmt>', 'output format (text | json)', 'text')
+    .option(
+      '--format <fmt>',
+      'output format (text | json). json writes the findings document plus a publishable correctness array',
+      'text',
+    )
     .action(async function (
       this: Command,
       opts: { base?: string; inPlace?: boolean; diff?: string; format: string },
@@ -315,6 +325,12 @@ export function registerReview(program: Command): void {
         diffText,
       });
       const findings = reviewed.receipt.findings;
+      writeProposeHandoff(root, {
+        schema_version: 'vg.review.propose-handoff.v1',
+        findings,
+        capsule: reviewed.capsule,
+        change: { base: opts.base, inPlace: opts.inPlace, hasDiff: Boolean(opts.diff) },
+      });
       if (global.json || opts.format === 'json') {
         // Findings document plus App-ingestible correctness rows. The App
         // parses this JSON; it must not import the public CLI.
@@ -331,7 +347,7 @@ export function registerReview(program: Command): void {
         return;
       }
       if (!global.quiet) {
-        info(formatFindingsFromDiff(reviewed));
+        info(formatFindingsFromDiff(reviewed, opts.base));
       }
     });
   applyGlobalOptions(findingsFromDiff);
@@ -377,10 +393,22 @@ export function registerReview(program: Command): void {
   const propose = cmd
     .command('propose')
     .description(
-      `propose a PatchIR fix for one finding via the VG Code agent loop (dry-run; never writes the default branch)`,
+      'propose a PatchIR fix for one finding via the VG Code agent loop (dry-run; --apply --yes writes a topic branch only, never the default branch)',
     )
-    .argument('<finding-id>', 'a finding id from the current change (e.g. blast:<node_id>, arch:<rule>:<path>)')
-    .option('--base <ref>', 'review HEAD against the merge-base with <ref>')
+    .argument(
+      '<finding-id>',
+      'a finding id from the current change, --findings JSON, or the last-run .vibgrate/review-propose-handoff.json (e.g. blast:<node_id>, arch:<rule>:<path>)',
+    )
+    .option('--base <ref>', 'review HEAD against the merge-base with <ref> (same as findings-from-diff --base)')
+    .option(
+      '--in-place',
+      'include the working tree when --base is also set (same as findings-from-diff --in-place)',
+    )
+    .option('--diff <file>', 'unified diff to treat as the change set (`-` reads stdin; same as findings-from-diff --diff)')
+    .option(
+      '--findings <file>',
+      'findings JSON from `vg review findings-from-diff --format json` (or a review receipt) when the current change set does not list the id; else last-run .vibgrate/review-propose-handoff.json',
+    )
     .option('--model <id>', 'relay:<slug> (hosted Review) or spark|flow|forge (local Code Mode); a bare slug is invalid')
     .option('--loop', `use the VG Code agent loop (cap ${REVIEW_PROPOSE_LOOP_CAP}; stops on no progress)`, true)
     .option('--single', 'one-shot residual → patch → verify instead of the agent loop')
@@ -389,7 +417,17 @@ export function registerReview(program: Command): void {
     .action(async function (
       this: Command,
       findingId: string,
-      opts: { base?: string; model?: string; loop?: boolean; single?: boolean; apply?: boolean; yes?: boolean },
+      opts: {
+        base?: string;
+        inPlace?: boolean;
+        diff?: string;
+        findings?: string;
+        model?: string;
+        loop?: boolean;
+        single?: boolean;
+        apply?: boolean;
+        yes?: boolean;
+      },
     ) {
       const global = readGlobal(this);
       const root = rootOf(global);
@@ -407,25 +445,54 @@ export function registerReview(program: Command): void {
         }),
         Boolean(global.quiet) || Boolean(global.json),
       );
+      let change: ChangeSet | undefined;
+      let diffText: string | undefined;
+      if (opts.diff) {
+        diffText = readDiffFile(opts.diff, root);
+        change = changeSetFromUnifiedDiff(collectChangeSet(root, opts.base, defaultRun, { inPlace: opts.inPlace }), diffText);
+      }
       const reviewed = await runReview({
         root,
         base: opts.base,
+        inPlace: opts.inPlace,
         offline: global.offline,
         graphPath: global.graph,
         generatedAt: global.generatedAt,
         signingKey: null,
+        change,
+        diffText,
       });
-      const all = [
-        ...reviewed.receipt.findings.architecture_findings,
-        ...reviewed.receipt.findings.security_findings,
-      ];
-      const hit = all.find((f) => f.id === findingId);
-      if (!hit) {
-        throw new CliError(
-          `no finding "${findingId}" in this change set — run \`vg review\` to list the current findings`,
-          ExitCode.NOT_FOUND,
-        );
+      let findingsRaw: unknown;
+      if (opts.findings) {
+        const abs = path.resolve(root, opts.findings);
+        if (!fs.existsSync(abs)) {
+          throw new CliError(
+            `no findings JSON at ${opts.findings} — write one with \`vg review findings-from-diff --format json\``,
+            ExitCode.NOT_FOUND,
+          );
+        }
+        try {
+          findingsRaw = JSON.parse(fs.readFileSync(abs, 'utf8'));
+        } catch {
+          throw new CliError(
+            `${opts.findings} is not valid JSON — expected a findings-from-diff document or a vg.review.receipt.v1`,
+            ExitCode.USAGE_ERROR,
+          );
+        }
       }
+      const handoff = readProposeHandoff(root);
+      const resolved = resolveProposeFinding({
+        findingId,
+        reviewedFindings: reviewed.receipt.findings,
+        reviewedCapsule: reviewed.capsule,
+        findingsFile: findingsRaw,
+        handoff,
+      });
+      if (!resolved) {
+        throw new CliError(missingProposeFindingMessage(findingId, handoff), ExitCode.NOT_FOUND);
+      }
+      const hit = resolved.finding;
+      const capsule = resolved.capsule;
       const graph = loadGraph(root, global.graph);
       if (!graph) {
         throw new CliError(
@@ -434,13 +501,13 @@ export function registerReview(program: Command): void {
         );
       }
       const policySnippet = [
-        ...reviewed.capsule.policies.map((p) => `${p.id}: ${p.rule}`),
+        ...capsule.policies.map((p) => `${p.id}: ${p.rule}`),
         hit.remediation,
       ]
         .filter(Boolean)
         .join('\n');
       const result = await proposeFindingFix({
-        capsule: reviewed.capsule,
+        capsule,
         finding: hit,
         policySnippet,
         modelId: opts.model,
@@ -658,7 +725,7 @@ function readDiffFile(spec: string, root: string): string {
  * Human listing of the findings document. Points at `vg review propose`
  * so a PatchIR dry-run does not need a second loop.
  */
-function formatFindingsFromDiff(result: RunReviewResult): string {
+function formatFindingsFromDiff(result: RunReviewResult, base?: string): string {
   const all = [
     ...result.receipt.findings.architecture_findings,
     ...result.receipt.findings.security_findings,
@@ -695,6 +762,7 @@ function formatFindingsFromDiff(result: RunReviewResult): string {
   lines.push(
     c.dim(
       `  propose a PatchIR dry-run: vg review propose <id> --model forge --json` +
+        (base ? ` --base ${base}` : '') +
         (result.receipt.receipt_id ? ` · receipt ${result.receipt.receipt_id}` : ''),
     ),
   );

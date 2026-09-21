@@ -91,7 +91,7 @@ import {
 import { createToolOutputCompressor, RETRIEVE_TOOL_NAME, type CompressionStats, type ToolOutputCompressor } from './compress-tool-output.js';
 import { env as knobEnv } from '../compress/config.js';
 import { repositoryIdFromRoot } from '../runtime/paths.js';
-import { residualEditsToToolCalls, type SymbolSpan } from './apply.js';
+import { dumpEditsToToolCalls, residualEditsToToolCalls, type SymbolSpan } from './apply.js';
 import type { CodeFs } from './session.js';
 import type { ChatMessage, CodeContext, FileChange, ImageAttachment, Provider, ProviderResult, ReasoningEffort, ToolCall, ToolSpec } from './types.js';
 import type { VgGraph } from '../schema.js';
@@ -1088,9 +1088,26 @@ export async function runAgent(options: AgentOptions): Promise<AgentResult> {
       (result.text ?? '').trim() &&
       instructionRequiresMutation(instruction)
     ) {
-      const residual = residualEditsToToolCalls(result.text ?? '');
+      const defaultFile = options.files?.length === 1 ? options.files[0] : undefined;
+      const residual = residualEditsToToolCalls(result.text ?? '', { defaultFile });
       if (residual.length) {
         toolCalls = residual;
+        result = { ...result, text: '', toolCalls };
+      }
+    }
+    // Live Flow Review (#2662): the pack printed a PatchIR / `{path,search,
+    // replace}` / named-tool JSON dump. looksLikeToolCallDump flags that as
+    // a dump, but parseTextToolCalls only accepts `{name, arguments}`. Lift
+    // an applicable edit so happy-path-loop cannot die as no-tools.
+    if (
+      toolCalls.length === 0 &&
+      (result.text ?? '').trim() &&
+      instructionRequiresMutation(instruction)
+    ) {
+      const defaultFile = options.files?.length === 1 ? options.files[0] : undefined;
+      const dumped = dumpEditsToToolCalls(result.text ?? '', { defaultFile });
+      if (dumped.length) {
+        toolCalls = dumped;
         result = { ...result, text: '', toolCalls };
       }
     }
@@ -1207,10 +1224,22 @@ export async function runAgent(options: AgentOptions): Promise<AgentResult> {
         const files = [...new Set(changes.map((c) => c.file))];
         return finish('finished', `Edited ${files.join(', ')}.`, step);
       }
+      const rawDump = (result.text ?? fullText ?? '').trim();
+      if (dumpStop && rawDump) {
+        onEvent({ type: 'tool-call', name: 'unparsed-dump', args: {} });
+        onEvent({
+          type: 'tool-result',
+          name: 'unparsed-dump',
+          content: rawDump.length > 2_000 ? `${rawDump.slice(0, 2_000)}\n…` : rawDump,
+          mutated: false,
+          failed: true,
+        });
+      }
       return finish(
         'no-tools',
         dumpStop
-          ? `The model (${providerInfo.model}) printed a tool or edit dump instead of applying a change or writing an answer. Try a stronger model, or re-ask with a more specific instruction.`
+          ? `The model (${providerInfo.model}) printed a tool or edit dump instead of applying a change or writing an answer. Try a stronger model, or re-ask with a more specific instruction.` +
+            (rawDump ? `\nLast model text:\n${rawDump.length > 2_000 ? `${rawDump.slice(0, 2_000)}\n…` : rawDump}` : '')
           : stubAsk
             ? `The model (${providerInfo.model}) stopped without applying a required file change. Try a stronger model, or re-ask with a more specific instruction.`
           : fullText ||
@@ -1727,11 +1756,12 @@ async function createLoopCompressor(instruction: string, model: string, env: Nod
 const FILE_HINT_RE =
   /(?:^|[\s`'"])(?:[\w.-]+\/)+[\w.-]+\.[A-Za-z][\w.-]*\b|\b[\w.-]+\.(?:ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|swift|rb|php|cs|cpp|c|h|vue|svelte)\b/;
 
-/** Tight: `edit` / `edit_file`, or change/fix/replace plus a file path, or "so … return(s)". */
+/** Tight: `edit` / `edit_file`, Review propose, or change/fix/replace plus a file path, or "so … return(s)". */
 export function instructionRequiresMutation(instruction: string): boolean {
   const t = (instruction ?? '').trim();
   if (!t) return false;
   if (/\bedit(?:_file)?\b/i.test(t)) return true;
+  if (/\bpropose a minimal patch\b/i.test(t)) return true;
   if (/\b(change|fix|replace)\b/i.test(t) && FILE_HINT_RE.test(t)) return true;
   if (/\bso\b[\s\S]{0,120}\breturns?\b/i.test(t)) return true;
   return false;

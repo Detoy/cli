@@ -328,6 +328,13 @@ describe('looksLikeToolCallDump', () => {
     expect(looksLikeToolCallDump('{"op":"REPLACE","path":"src/greet.ts","search":"a","replace":"b"}')).toBe(true);
     expect(looksLikeToolCallDump('```json\n{"foo": 1}\n```')).toBe(false);
   });
+
+  it('does not parse a live Flow PatchIR dump as {name, arguments}', () => {
+    const dump =
+      '{"schemaVersion":"patch-ir/0","operations":[{"op":"replace-text","file":"src/scan.ts","search":"a","replace":"b"}]}';
+    expect(looksLikeToolCallDump(dump)).toBe(true);
+    expect(parseTextToolCalls(dump).calls).toEqual([]);
+  });
 });
 
 describe('textToolProtocolInstruction', () => {

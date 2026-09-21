@@ -136,6 +136,21 @@ describe('runReview — change class', () => {
     expect(receipt.versions.model).toBe('none');
   });
 
+  it('takes the quick path for a scaffolding-only change — .gitignore has no test edge to miss', async () => {
+    const { root, graphPath } = routeRepo();
+    fs.writeFileSync(path.join(root, '.gitignore'), 'node_modules/\n');
+    fs.writeFileSync(path.join(root, '.editorconfig'), 'root = true\n');
+    const { receipt } = await review(root, graphPath, {
+      status: ' M .gitignore\n M .editorconfig\n',
+      numstat: '1\t0\t.gitignore\n1\t0\t.editorconfig\n',
+    });
+    expect(receipt.change_class).toEqual(['none']);
+    expect(receipt.decision).toBe('pass');
+    expect(receipt.quick_path).toBe(true);
+    expect(receipt.findings.required_checks).toEqual([]);
+    expect(receipt.counts).toEqual({ architecture: 0, security: 0, protected: 0, unknowns: 0 });
+  });
+
   it('keeps a code file the classifier cannot place on the normal path — unknown is not absent', async () => {
     const { root, graphPath } = routeRepo();
     fs.writeFileSync(path.join(root, 'src/foo.ts'), 'export const x = 1;\n');

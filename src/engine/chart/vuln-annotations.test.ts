@@ -4,7 +4,7 @@ import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { ScanReachabilityFinding } from '../../core-open/index.js';
 import type { ArchSlice } from './arch-types.js';
-import { loadReachabilityFindings, withVulnBadges } from './vuln-annotations.js';
+import { loadReachabilityFindings, pickCardVulnSite, withVulnBadges } from './vuln-annotations.js';
 
 let dir: string | undefined;
 
@@ -97,6 +97,31 @@ describe('withVulnBadges', () => {
     expect(card?.vulnerabilities?.[0]).toMatchObject({ advisoryId: 'GHSA-xxxx', tier: 'reachable', package: 'left-pad' });
   });
 
+  it('stamps the use-line site onto the card so inspect can open it', () => {
+    const out = withVulnBadges(baseSlice(), [finding()]);
+    expect(out.columns[0]?.cards[0]?.vulnerabilities?.[0]).toMatchObject({
+      file: 'src/api/Billing.ts',
+      line: 12,
+      function: 'charge',
+      evidence: 'imported in src/api/Billing.ts, called at line 12',
+    });
+  });
+
+  it('prefers the site whose enclosing function matches the card', () => {
+    const out = withVulnBadges(baseSlice(), [
+      finding({
+        sites: [
+          { file: 'src/api/Billing.ts', line: 3, function: 'other' },
+          { file: 'src/api/Billing.ts', line: 42, function: 'BillingService' },
+        ],
+      }),
+    ]);
+    expect(out.columns[0]?.cards[0]?.vulnerabilities?.[0]).toMatchObject({
+      line: 42,
+      function: 'BillingService',
+    });
+  });
+
   it('is a no-op when no site matches a file in this slice', () => {
     const out = withVulnBadges(baseSlice(), [finding({ sites: [{ file: 'unrelated/File.ts' }] })]);
     expect(out.columns[0]?.cards[0]?.vulnerabilities).toBeUndefined();
@@ -119,5 +144,13 @@ describe('withVulnBadges', () => {
     ]);
     const vulns = out.columns[0]?.cards[0]?.vulnerabilities;
     expect(vulns?.map((v) => v.advisoryId)).toEqual(['GHSA-first', 'GHSA-later']);
+  });
+});
+
+describe('pickCardVulnSite', () => {
+  it('returns null when no site file matches', () => {
+    expect(
+      pickCardVulnSite(finding({ sites: [{ file: 'other.ts', line: 1 }] }), new Set(['src/api/Billing.ts']), new Set()),
+    ).toBeNull();
   });
 });
