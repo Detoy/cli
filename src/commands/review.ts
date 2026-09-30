@@ -570,8 +570,8 @@ function reportPrepare(prepared: Awaited<ReturnType<typeof ensureCodeMap>>, quie
 }
 
 /**
- * First run in a repository with no review policy: write the starter
- * `.vibgrate/review.toml` and say so. Skipped for `--base` runs (a PR review
+ * First run in a repository with no review policy: write the starter policy
+ * into the project config (see `seedReviewPolicy`) and say so. Skipped for `--base` runs (a PR review
  * must not mutate the tree it is reviewing) and under `--no-setup`.
  */
 function maybeSeedPolicy(result: RunReviewResult, opts: ReviewOpts, quiet: boolean): void {
@@ -588,9 +588,9 @@ function maybeSeedPolicy(result: RunReviewResult, opts: ReviewOpts, quiet: boole
     c.green(`\n  Review baseline ready — wrote ${seeded.path}`)
       + c.dim(
         seeded.targetPattern
-          ? `\n  target_pattern = "${seeded.targetPattern}" (derived from this repository). Edit it, commit it,`
+          ? `\n  Target pattern "${seeded.targetPattern}" (derived from this repository). Edit it, commit it,`
             + '\n  and future changes are judged against a declared architecture rather than a guess.'
-          : '\n  No layering shape dominates yet, so target_pattern is left commented out.'
+          : '\n  No layering shape dominates yet, so the target pattern is left commented out.'
             + '\n  Set one and commit the file to have future changes judged against it.',
       ),
   );

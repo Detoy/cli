@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { Area, GraphNode, VgGraph } from '../schema.js';
 import { versionMarker } from './content.js';
+import { readDataConfigSync } from '../core-open/config.js';
 
 /**
  * Per-area generated skills: one SKILL.md per top graph area, so the host
@@ -135,18 +136,12 @@ export interface AreaSkillChanges {
 }
 
 /**
- * Generated `vg-area-*` skills are off unless `vibgrate.config.json` sets
- * `"areaSkills": true`. Missing or malformed config keeps the default (off).
+ * Generated `vg-area-*` skills are off unless the project config
+ * (`.vibgrate/config.yml` or `vibgrate.config.json`) sets `areaSkills: true`.
+ * Missing or malformed config keeps the default (off).
  */
 export function areaSkillsEnabled(root: string): boolean {
-  try {
-    const parsed = JSON.parse(
-      fs.readFileSync(path.join(root, 'vibgrate.config.json'), 'utf8'),
-    ) as { areaSkills?: unknown };
-    return parsed.areaSkills === true;
-  } catch {
-    return false;
-  }
+  return readDataConfigSync(root).config?.areaSkills === true;
 }
 
 /**

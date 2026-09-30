@@ -1397,7 +1397,7 @@ export async function runAgent(options: AgentOptions): Promise<AgentResult> {
   return finish(
     'max-steps',
     `Stopped at the step limit (${maxSteps} steps) before the task was finished. ` +
-      'Re-run with `--max-steps <n>`, or set `maxSteps` in vibgrate.config.json, to give it more room.',
+      'Re-run with `--max-steps <n>`, or set `maxSteps` in .vibgrate/code.json, to give it more room.',
     maxSteps,
   );
 }

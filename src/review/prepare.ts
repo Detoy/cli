@@ -39,7 +39,8 @@ import { refreshIfStale } from '../engine/refresh.js';
 import { acquireLock, releaseLock } from '../engine/lock.js';
 import { cacheDir } from '../engine/cache.js';
 import { ProgressBar } from '../util/progress.js';
-import { REVIEW_CONFIG_PATH } from './config.js';
+import { REVIEW_CONFIG_PATH, loadReviewConfig } from './config.js';
+import { CONFIG_FILES, isDataConfigFile, parseDataConfig, readDataConfigSync } from '../core-open/config.js';
 import type { GitRunner } from './git.js';
 
 /** Matches `refresh.ts` — one lock, so a refresh and an auto-build never race. */
@@ -150,7 +151,7 @@ async function firstBuild(
 }
 
 export interface ReviewPolicyState {
-  /** A committed or working-tree `.vibgrate/review.toml` was found. */
+  /** A review policy (config `review` block or `.vibgrate/review.toml`) was found. */
   present: boolean;
   where: 'base-branch' | 'head' | 'working-tree' | null;
 }
@@ -158,60 +159,150 @@ export interface ReviewPolicyState {
 /**
  * Is a review policy already set up for this repository?
  *
- * Mirrors {@link import('./config.js').loadReviewConfig}'s search order, so
- * "present" here means exactly "that loader will find something", never merely
- * "a file exists on disk".
+ * Answered by {@link loadReviewConfig} itself, so "present" means exactly
+ * "the loader will find something", never merely "a file exists on disk".
  */
 export function reviewPolicyState(
   root: string,
   base: string | undefined,
   run: GitRunner,
 ): ReviewPolicyState {
-  const inRef = (ref: string): boolean => {
-    const res = run(['show', `${ref}:${REVIEW_CONFIG_PATH}`], root);
-    return res.status === 0 && res.stdout.trim().length > 0;
-  };
-  if (base && inRef(base)) return { present: true, where: 'base-branch' };
-  if (inRef('HEAD')) return { present: true, where: 'head' };
-  if (fs.existsSync(path.join(root, REVIEW_CONFIG_PATH))) {
-    return { present: true, where: 'working-tree' };
-  }
-  return { present: false, where: null };
+  const config = loadReviewConfig(root, base, run);
+  return config.source === 'defaults'
+    ? { present: false, where: null }
+    : { present: true, where: config.source };
 }
 
 export interface SeedPolicyOptions {
   root: string;
   /**
    * The shape the repository already exhibits
-   * (`capsule.patterns.observed_dominant_pattern`). Seeded as `target_pattern`
-   * when present — a *declared* target is what lets Review call a layer
-   * traversal a regression instead of an unknown.
+   * (`capsule.patterns.observed_dominant_pattern`). Seeded as the target
+   * pattern, so the first review has a declared shape to judge against.
    */
-  observedPattern?: string | null;
+  observedPattern: string | null;
 }
 
 export interface SeedPolicyResult {
   written: boolean;
+  /** The file the policy was (or would have been) written to. */
   path: string;
   targetPattern: string | null;
 }
 
 /**
- * Write the starter `.vibgrate/review.toml`. Never overwrites: the caller
- * checks {@link reviewPolicyState} first, and this re-checks the file on disk
- * so a concurrent run cannot clobber a hand-edited policy.
+ * Write the starter review policy — into the project config, so the
+ * repository keeps one settings file:
+ *
+ * - no config yet → create `.vibgrate/config.yml` with a `review` block;
+ * - `.vibgrate/config.yml` → append a `review` block (existing text untouched);
+ * - `vibgrate.config.json` → add a `review` object;
+ * - `vibgrate.config.ts` / `.js` → code is never rewritten, so write the
+ *   older `.vibgrate/review.toml`, which is still honoured.
+ *
+ * Never overwrites a policy that exists anywhere, and never writes a file it
+ * cannot read back.
  */
 export function seedReviewPolicy(opts: SeedPolicyOptions): SeedPolicyResult {
-  const target = path.join(opts.root, REVIEW_CONFIG_PATH);
   const pattern = opts.observedPattern ?? null;
-  if (fs.existsSync(target)) return { written: false, path: REVIEW_CONFIG_PATH, targetPattern: pattern };
+  const skip = (at: string): SeedPolicyResult => ({ written: false, path: at, targetPattern: pattern });
 
-  fs.mkdirSync(path.dirname(target), { recursive: true });
-  fs.writeFileSync(target, renderReviewPolicy(pattern), 'utf8');
-  return { written: true, path: REVIEW_CONFIG_PATH, targetPattern: pattern };
+  if (fs.existsSync(path.join(opts.root, REVIEW_CONFIG_PATH))) return skip(REVIEW_CONFIG_PATH);
+  const project = readDataConfigSync(opts.root);
+  if (project.config?.review !== undefined) return skip(project.file as string);
+
+  if (project.file === null) {
+    const file = CONFIG_FILES[0];
+    const target = path.join(opts.root, file);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, renderReviewPolicyYaml(pattern), 'utf8');
+    return { written: true, path: file, targetPattern: pattern };
+  }
+
+  if (!isDataConfigFile(project.file)) {
+    const target = path.join(opts.root, REVIEW_CONFIG_PATH);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, renderReviewPolicy(pattern), 'utf8');
+    return { written: true, path: REVIEW_CONFIG_PATH, targetPattern: pattern };
+  }
+
+  // A data config that does not parse is the user's to fix; do not touch it.
+  if (!project.config) return skip(project.file);
+
+  const target = path.join(opts.root, project.file);
+  const current = fs.readFileSync(target, 'utf8');
+  const next = project.file.endsWith('.json')
+    ? `${JSON.stringify({ ...project.config, review: reviewPolicyBlock(pattern) }, null, 2)}\n`
+    : `${current}${current === '' || current.endsWith('\n') ? '' : '\n'}\n${renderReviewPolicyYaml(pattern)}`;
+
+  // Appending to YAML is safe only when the result still parses to the same
+  // settings plus `review` (a flow-style document would not).
+  try {
+    const reread = parseDataConfig(next, project.file);
+    const { review, ...rest } = reread;
+    if (JSON.stringify(rest) !== JSON.stringify(project.config) || review === undefined) return skip(project.file);
+  } catch {
+    return skip(project.file);
+  }
+  fs.writeFileSync(target, next, 'utf8');
+  return { written: true, path: project.file, targetPattern: pattern };
 }
 
-/** The seeded policy document. Pure, so its bytes are covered by a test. */
+/** The seeded policy as config data (camelCase), for JSON configs. */
+export function reviewPolicyBlock(observedPattern: string | null): Record<string, unknown> {
+  return {
+    enforcement: 'advisory',
+    failOn: 'fail',
+    ...(observedPattern ? { targetPattern: observedPattern } : {}),
+    approvedExceptions: [],
+    protected: { unguardedEntrypoint: true, knownVulnerableDependency: true, validatedTaint: true },
+  };
+}
+
+/** The seeded `review` block for `.vibgrate/config.yml`. Pure, so its bytes are covered by a test. */
+export function renderReviewPolicyYaml(observedPattern: string | null): string {
+  const lines = [
+    '# Vibgrate Review policy — written by `vg review` on its first run.',
+    '# Commit this file: Review reads it from the *base branch*, so a pull',
+    '# request cannot weaken the policy that judges it.',
+    'review:',
+    '  # "advisory" reports without ever gating. Switch to "enforced" when you',
+    '  # want failOn to decide the exit code in CI.',
+    '  enforcement: advisory',
+    '  failOn: fail',
+  ];
+  if (observedPattern) {
+    lines.push(
+      '  # Derived from the layering this repository already exhibits. Change it',
+      '  # to the shape you want — Review judges changes against this, not against',
+      '  # the majority.',
+      `  targetPattern: ${JSON.stringify(observedPattern)}`,
+    );
+  } else {
+    lines.push(
+      '  # No single layering shape dominates this repository yet, so nothing is',
+      '  # declared. Set one (e.g. clean, layered, hexagonal) to have Review',
+      '  # judge layer traversals instead of reporting them as unknown.',
+      '  # targetPattern: clean',
+    );
+  }
+  lines.push(
+    '  # Layer pairs an author may traverse without it counting as a regression.',
+    '  approvedExceptions: []',
+    '  # Protected findings can never be blessed into a pass.',
+    '  protected:',
+    '    unguardedEntrypoint: true',
+    '    knownVulnerableDependency: true',
+    '    validatedTaint: true',
+    '',
+  );
+  return lines.join('\n');
+}
+
+/**
+ * The seeded `review.toml` — used only when the project config is `.ts`/`.js`
+ * (code, which is never rewritten). Pure, so its bytes are covered by a test.
+ */
 export function renderReviewPolicy(observedPattern: string | null): string {
   const lines = [
     '# Vibgrate Review policy — written by `vg review` on its first run.',

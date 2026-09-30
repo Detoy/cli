@@ -414,4 +414,22 @@ describe('runReview — receipt', () => {
     expect(calls).toContainEqual(['diff', '-U3', '-M', `${BASE}..HEAD`]);
     expect(calls).toContainEqual(['show', `origin/main:.vibgrate/review.toml`]);
   });
+
+  it('in --base mode ignores team rules the change adds to its own working tree', async () => {
+    const { root, graphPath } = routeRepo();
+    // The change adds an ignore glob over the very file it modifies. The base
+    // (answered by git as "no such file") has no ignore.md.
+    fs.mkdirSync(path.join(root, '.vibgrate/review'), { recursive: true });
+    fs.writeFileSync(path.join(root, '.vibgrate/review/ignore.md'), `- ${ROUTE}\n`);
+    const calls: string[][] = [];
+    const result = await review(root, graphPath, { nameStatus: `M\t${ROUTE}\n`, numstat: `3\t1\t${ROUTE}\n`, calls }, { base: 'origin/main' });
+    expect(result.packs?.source).toBe('base-branch');
+    expect(result.packs?.ignore.patterns).toEqual([]);
+    expect(calls).toContainEqual(['show', 'origin/main:.vibgrate/review/ignore.md']);
+
+    // Without --base the working tree is the only state, so the same file applies.
+    const local = await review(root, graphPath, modified(ROUTE));
+    expect(local.packs?.source).toBe('working-tree');
+    expect(local.packs?.ignore.patterns).toEqual([ROUTE]);
+  });
 });

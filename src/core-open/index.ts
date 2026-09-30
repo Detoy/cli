@@ -10,7 +10,31 @@
 export type * from './types.js';
 
 // ── Config ─────────────────────────────────────────────────────────────────
-export { loadConfig, appendExcludePatterns, writeDefaultConfig } from './config.js';
+export {
+  loadConfig,
+  appendExcludePatterns,
+  writeDefaultConfig,
+  CONFIG_FILES,
+  findConfigFile,
+  shadowedConfigFiles,
+  isDataConfigFile,
+  parseDataConfig,
+  readDataConfigSync,
+  type ConfigFile,
+  type DataConfigRead,
+} from './config.js';
+export {
+  parseDriftBudget,
+  evaluateDriftBudget,
+  worseningPercent,
+  type AuthorClass,
+  type DriftBudget,
+  type DriftBudgetConfig,
+  type DriftBudgetMode,
+  type DriftBudgetParse,
+  type DriftBudgetRuleResult,
+  type DriftBudgetVerdict,
+} from './drift-budget.js';
 
 // ── Scoring (open) ───────────────────────────────────────────────────────────
 export {

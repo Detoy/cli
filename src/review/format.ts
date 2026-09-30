@@ -89,7 +89,8 @@ export function formatText(result: RunReviewResult): string {
 function formatPacksText(result: RunReviewResult): string[] {
   const packs = result.packs;
   if (!packs) return [];
-  const lines = ['', c.dim('  Review packs (.vibgrate/review/)')];
+  const from = packs.source === 'base-branch' ? ' · from the base branch' : '';
+  const lines = ['', c.dim(`  Review packs (.vibgrate/review/)${from}`)];
   lines.push(c.dim(`    ignore: ${packs.ignore.patterns.length} pattern(s)`));
   lines.push(c.dim(packs.policy ? '    policy: present' : '    policy: none'));
   if (packs.mergeDecision) {

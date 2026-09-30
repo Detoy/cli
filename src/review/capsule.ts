@@ -17,7 +17,7 @@ import type { DeclaredIntent } from './intent.js';
 import type { ArchitectureLayer } from '../core-open/types.js';
 import type { GraphEdge, GraphNode, VgGraph } from '../schema.js';
 import { VERSION } from '../version.js';
-import type { ReviewConfig } from './config.js';
+import { REVIEW_CONFIG_PATH, type ReviewConfig } from './config.js';
 import { isIntroducedEdge, removedDestinations } from './delta.js';
 import { isDependencyManifest, isNonCodePath } from './surface.js';
 import type { ChangeSet, ChangedFile } from './git.js';
@@ -409,7 +409,9 @@ export function compileCapsule(input: CompileCapsuleInput): CompiledCapsule {
   // is intent, not review.toml — labelling it as the policy file would tell a
   // reader to look for a setting that is not there.
   const policySource: CapsulePolicyFact['source'] = config.target_pattern
-    ? 'review.toml'
+    ? config.file && config.file !== REVIEW_CONFIG_PATH
+      ? 'config'
+      : 'review.toml'
     : declared
       ? 'intent'
       : 'derived';

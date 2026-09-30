@@ -43,7 +43,7 @@ export function registerCode(program: Command): void {
     .option('--apply', 'one-shot path (--single/--mock) only: write the change (still requires --yes or an interactive confirm)')
     .option('--yes', 'consent to write / to a first-use package install, non-interactively')
     .option('--auto', 'autonomous agent: auto-approve every edit and command (use with care)')
-    .option('--max-steps <n>', 'cap the number of agent steps (default 24; also settable as maxSteps in vibgrate.config.json)')
+    .option('--max-steps <n>', 'cap the number of agent steps (default 24; also settable as maxSteps in .vibgrate/code.json)')
     .option('--single', 'one-shot planner (single edit) instead of the multi-step agent')
     .option('--stream', 'stream the model output live')
     .option('--stream-json', 'machine protocol: NDJSON agent events on stdout, approval decisions on stdin (for host UIs like the VS Code panel)')
@@ -388,7 +388,7 @@ export function registerCode(program: Command): void {
       const auto = opts.auto ?? config.auto;
       // No commander default here on purpose: a hard-coded default would always
       // populate opts.maxSteps and silently shadow `maxSteps` in
-      // vibgrate.config.json, so a raised project cap never took effect.
+      // .vibgrate/code.json, so a raised project cap never took effect.
       // Flag → config → the engine's own DEFAULT_MAX_STEPS (undefined).
       const parsedMaxSteps = opts.maxSteps === undefined ? NaN : Number(opts.maxSteps);
       const maxSteps =

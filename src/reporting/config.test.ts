@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { loadConfig, writeDefaultConfig, appendExcludePatterns } from './config.js';
+import { loadConfig, writeDefaultConfig, appendExcludePatterns } from '../core-open/config.js';
 
 async function createTempDir(): Promise<string> {
   return fs.mkdtemp(path.join(tmpdir(), 'vibgrate-config-test-'));
