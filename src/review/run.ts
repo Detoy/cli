@@ -316,7 +316,13 @@ export async function runReview(opts: RunReviewOptions): Promise<RunReviewResult
     graph,
   });
 
-  const packs = loadReviewPacks(repoRoot, change.files.map((f) => f.path));
+  // With --base the team rules come from the base ref, so this change cannot
+  // clear its own review (see packs.ts).
+  const packs = loadReviewPacks(
+    repoRoot,
+    change.files.map((f) => f.path),
+    opts.base ? { kind: 'ref', ref: opts.base, run } : { kind: 'working-tree' },
+  );
   const keepFinding = (f: { paths: string[] }): boolean => {
     if (packs.ignore.patterns.length === 0) return true;
     return !f.paths.every((p) => isIgnoredPath(p, packs.ignore));

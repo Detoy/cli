@@ -16,7 +16,9 @@ import {
   resolveRepositoryName,
   parseExcludePatterns,
   loadConfig,
+  findConfigFile,
 } from '../../core-open/index.js';
+import { evaluateConfigDriftBudget } from '../drift-budget-gate.js';
 import type { ScanOptions, ScanArtifact } from '../../core-open/index.js';
 import { analyzeReachability, collectPreflightDependencies } from '../reachability.js';
 import type { VgGraph } from '../../schema.js';
@@ -396,8 +398,8 @@ export const scanCommand = new Command('scan')
   .option('--iac', "Evaluate infrastructure misconfiguration rules (Terraform, Kubernetes, Helm, Dockerfiles) with the Architecture module's iac-cis-v1 pack; needs the code map")
   .option('--package-manifest <file>', 'Use local package-version manifest JSON/ZIP (for offline mode)')
   .option('--project-scan-timeout <seconds>', 'Per-project scan timeout in seconds (default: 180)')
-  .option('--drift-budget <score>', 'Fail if DriftScore is above budget (0-100)')
-  .option('--drift-worsening <percent>', 'Fail if drift worsens by more than % since baseline')
+  .option('--drift-budget <score>', 'Fail if DriftScore is above budget (0-100); overrides driftBudget in the project config')
+  .option('--drift-worsening <percent>', 'Fail if drift worsens by more than % since baseline; overrides driftBudget in the project config')
   .option('--repository-name <name>', 'Override the repository name recorded for this scan (defaults to the directory or package.json name)')
   .option('--force', 'Always create a fresh scan ingest, even if the repository is unchanged since the last scan (skips the unchanged/reuse optimization). Used by scheduled and dashboard-triggered scans.')
   .option('--no-graph', 'Skip building the local code map (the AI/docs index) that scan produces after scoring drift')
@@ -908,6 +910,24 @@ export const scanCommand = new Command('scan')
           process.exit(2);
         }
       }
+    }
+
+    // `driftBudget` in the project config — only when neither flag was passed,
+    // so an explicit flag keeps its exact historic meaning.
+    if (scanOpts.driftBudget === undefined && scanOpts.driftWorseningPercent === undefined) {
+      const projectConfig = await loadConfig(rootDir);
+      const gate = evaluateConfigDriftBudget({
+        raw: projectConfig.driftBudget,
+        configFile: findConfigFile(rootDir),
+        headScore: artifact.drift.score,
+        baseScore: artifact.delta === undefined ? null : artifact.drift.score - artifact.delta,
+      });
+      for (const line of gate.lines) {
+        if (line.level === 'error') console.error(chalk.red(line.text));
+        else if (line.level === 'warn') console.error(chalk.yellow(line.text));
+        else if (!opts.quiet) console.error(chalk.dim(line.text));
+      }
+      if (gate.exitCode === 2) process.exit(2);
     }
 
     // Reachability hand-off (before push): post the dependency coordinates the

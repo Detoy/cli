@@ -186,7 +186,8 @@ describe('long-session gold — max-steps names how to raise the cap', () => {
     expect(result.finalText).toMatch(/step limit \(2 steps\)/);
     expect(result.finalText).toMatch(/--max-steps/);
     expect(result.finalText).toMatch(/maxSteps/);
-    expect(result.finalText).toMatch(/vibgrate\.config\.json/);
+    // maxSteps lives in .vibgrate/code.json (loadCodeConfig), not the project config.
+    expect(result.finalText).toMatch(/\.vibgrate\/code\.json/);
   });
 });
 

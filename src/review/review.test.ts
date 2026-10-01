@@ -461,7 +461,55 @@ unguarded_entrypoint = false
     const cfg = loadReviewConfig('/repo', 'origin/main', run);
     expect(cfg.source).toBe('base-branch');
     expect(cfg.enforcement).toBe('enforced');
-    expect(calls[0]).toEqual(['show', 'origin/main:.vibgrate/review.toml']);
+    // Every lookup before a hit is at the base ref — the project config's
+    // review block first, then review.toml. HEAD is never consulted.
+    expect(calls.every((c) => c[1]?.startsWith('origin/main:'))).toBe(true);
+    expect(calls.at(-1)).toEqual(['show', 'origin/main:.vibgrate/review.toml']);
+  });
+
+  it('reads the review block of the project config at the base ref, over review.toml', () => {
+    const files: Record<string, string> = {
+      'origin/main:.vibgrate/config.yml': 'review:\n  enforcement: enforced\n  targetPattern: hexagonal\n  protected:\n    validatedTaint: false\n',
+      'origin/main:.vibgrate/review.toml': '[review]\nenforcement = "advisory"\n',
+      'HEAD:.vibgrate/config.yml': 'review:\n  enforcement: advisory\n',
+    };
+    const run: GitRunner = (args) =>
+      files[args[1] ?? ''] !== undefined ? { stdout: files[args[1] ?? '']!, status: 0 } : { stdout: '', status: 1 };
+    const cfg = loadReviewConfig('/repo', 'origin/main', run);
+    expect(cfg).toMatchObject({
+      source: 'base-branch',
+      file: '.vibgrate/config.yml',
+      enforcement: 'enforced',
+      target_pattern: 'hexagonal',
+      protected: { unguarded_entrypoint: true, validated_taint: false },
+    });
+  });
+
+  it('reads vibgrate.config.json when there is no YAML config, and falls back to review.toml without a review block', () => {
+    const json: GitRunner = (args) =>
+      args[1] === 'HEAD:vibgrate.config.json'
+        ? { stdout: '{"review":{"failOn":"needs_review"}}', status: 0 }
+        : { stdout: '', status: 1 };
+    expect(loadReviewConfig('/repo', undefined, json)).toMatchObject({ file: 'vibgrate.config.json', fail_on: 'needs_review' });
+
+    const noBlock: GitRunner = (args) =>
+      args[1] === 'HEAD:.vibgrate/config.yml'
+        ? { stdout: 'exclude: [legacy/**]\n', status: 0 }
+        : args[1] === 'HEAD:.vibgrate/review.toml'
+          ? { stdout: '[review]\nenforcement = "enforced"\n', status: 0 }
+          : { stdout: '', status: 1 };
+    expect(loadReviewConfig('/repo', undefined, noBlock)).toMatchObject({ file: '.vibgrate/review.toml', enforcement: 'enforced' });
+  });
+
+  it('never executes a .ts config to find a review block', () => {
+    const run: GitRunner = (args) =>
+      args[1] === 'HEAD:vibgrate.config.ts'
+        ? { stdout: 'export default { review: { enforcement: "enforced" } }', status: 0 }
+        : args[1] === 'HEAD:vibgrate.config.json'
+          ? { stdout: '{"review":{"enforcement":"enforced"}}', status: 0 }
+          : { stdout: '', status: 1 };
+    // The .ts file is the config in force; a shadowed JSON file is not consulted.
+    expect(loadReviewConfig('/repo', undefined, run).source).toBe('defaults');
   });
 
   it('prefers the base branch even when HEAD carries a weaker policy', () => {
@@ -475,6 +523,20 @@ unguarded_entrypoint = false
       return { stdout: '', status: 1 };
     };
     expect(loadReviewConfig('/repo', 'origin/main', run).protected.unguarded_entrypoint).toBe(true);
+  });
+
+  it('uses the defaults, not the change\'s own policy, when the base has none', () => {
+    const run: GitRunner = (args) =>
+      args[1] === 'HEAD:.vibgrate/review.toml'
+        ? { stdout: '[review]\n[review.protected]\nunguarded_entrypoint = false\n', status: 0 }
+        : args[1] === 'HEAD:.vibgrate/config.yml'
+          ? { stdout: 'review:\n  protected:\n    validatedTaint: false\n', status: 0 }
+          : { stdout: '', status: 1 };
+    const cfg = loadReviewConfig('/repo', 'origin/main', run);
+    expect(cfg.source).toBe('defaults');
+    expect(cfg.protected).toEqual({ unguarded_entrypoint: true, known_vulnerable_dependency: true, validated_taint: true });
+    // Without --base, HEAD is the trusted state and its policy applies.
+    expect(loadReviewConfig('/repo', undefined, run).source).toBe('head');
   });
 });
 

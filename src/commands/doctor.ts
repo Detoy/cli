@@ -18,6 +18,7 @@ import { parseDsn } from '../reporting/commands/push.js';
 import { gatherSystemMemory } from '../code/local-runtime.js';
 import { buildLocalInferenceStatus, type LocalInferenceStatus } from '../runtime/local-inference-status.js';
 import { VERSION } from '../version.js';
+import { findConfigFile, readDataConfigSync, shadowedConfigFiles } from '../core-open/config.js';
 import { c, info, json } from '../util/output.js';
 import { applyGlobalOptions, readGlobal, type GlobalOpts } from '../cli-options.js';
 import { rootOf } from './util.js';
@@ -54,7 +55,29 @@ export function registerDoctor(program: Command): void {
 /** How long the hosted reachability probe waits before reporting unreachable. */
 const REACH_TIMEOUT_MS = 3000;
 
-const CONFIG_BASENAMES = ['vibgrate.config.ts', 'vibgrate.config.js', 'vibgrate.config.json'];
+/** Review settings files the `review` block of the project config replaces. */
+const LEGACY_REVIEW_SETTINGS = ['.vibgrate/review.toml', '.vibgrate/review/settings.md'];
+
+/**
+ * Config files present but not read. Only one config file is ever used, so a
+ * second one — or a legacy review settings file behind a `review` block — is
+ * a trap worth naming.
+ */
+export function configNotes(root: string): string[] {
+  const file = findConfigFile(root);
+  if (!file) return [];
+  const notes = shadowedConfigFiles(root).map((other) => `${other} is ignored: ${file} is the config in use`);
+  const read = readDataConfigSync(root);
+  if (read.error && !read.error.includes('is code')) notes.push(read.error);
+  if (read.config?.review !== undefined) {
+    for (const legacy of LEGACY_REVIEW_SETTINGS) {
+      if (fs.existsSync(path.join(root, legacy))) {
+        notes.push(`${legacy} is ignored: review settings come from the review block in ${file}`);
+      }
+    }
+  }
+  return notes;
+}
 
 interface Diagnosis {
   version: string;
@@ -62,6 +85,8 @@ interface Diagnosis {
   platform: string;
   root: string;
   configFile: string | null;
+  /** Config files present but ignored, and config parse errors. */
+  configNotes: string[];
   map: {
     path: string;
     built: boolean;
@@ -140,7 +165,7 @@ async function runDoctor(global: GlobalOpts): Promise<void> {
   const local = global.offline === true;
   const graphPath = resolveGraphPath(root, global.graph);
 
-  const configFile = CONFIG_BASENAMES.find((f) => fs.existsSync(path.join(root, f))) ?? null;
+  const configFile = findConfigFile(root);
 
   const graph = loadGraph(root, graphPath);
   let staleFiles: number | null = null;
@@ -172,6 +197,7 @@ async function runDoctor(global: GlobalOpts): Promise<void> {
     platform: `${process.platform}/${process.arch}`,
     root,
     configFile,
+    configNotes: configNotes(root),
     map: {
       path: displayGraphPath(root, graphPath),
       built: graph !== null,
@@ -199,6 +225,7 @@ async function runDoctor(global: GlobalOpts): Promise<void> {
   info(`${c.cyan('vg')} doctor · v${d.version} · node ${d.node} · ${d.platform}`);
   info(`  root       ${d.root}`);
   info(`  config     ${d.configFile ? c.green(d.configFile) : c.dim('none (defaults) — `vg init` writes one')}`);
+  for (const note of d.configNotes) info(`             ${c.yellow(note)}`);
 
   if (!d.map.built) {
     info(`  map        ${c.yellow('none')} — run ${c.bold('vg')} to build ${c.dim(d.map.path)}`);

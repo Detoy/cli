@@ -3,15 +3,90 @@
 // and re-run the vendor script. Apache-2.0.
 import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
+import { existsSync, readFileSync } from 'node:fs';
 import type * as TsModule from 'typescript';
+import { parse as parseYaml } from 'yaml';
 import type { VibgrateConfig } from './types.js';
 import { pathExists, readTextFile } from './utils/fs.js';
 
-const CONFIG_FILES = [
+/**
+ * The project config, in lookup order. The FIRST file found is the config;
+ * files are never merged. `.vibgrate/config.yml` takes the same keys as
+ * `vibgrate.config.json` and wins over it when both exist.
+ *
+ * Keep in sync with the GitHub App's copy in
+ * `packages/vibgrate-api/src/lib/github-app/repo-config.ts`.
+ */
+export const CONFIG_FILES = [
+  '.vibgrate/config.yml',
+  '.vibgrate/config.yaml',
   'vibgrate.config.ts',
   'vibgrate.config.js',
   'vibgrate.config.json',
-];
+] as const;
+
+export type ConfigFile = (typeof CONFIG_FILES)[number];
+
+/** YAML and JSON are data; `.ts` / `.js` configs are code and need the loader. */
+export function isDataConfigFile(file: string): boolean {
+  return /\.(ya?ml|json)$/.test(file);
+}
+
+/**
+ * Parse a data config (YAML or JSON) into a plain object. Throws an Error
+ * naming the file when the text is not a valid mapping.
+ */
+export function parseDataConfig(text: string, file: string): Record<string, unknown> {
+  let parsed: unknown;
+  try {
+    parsed = /\.ya?ml$/.test(file) ? parseYaml(text) : JSON.parse(text);
+  } catch (err) {
+    const reason = err instanceof Error ? err.message.split('\n')[0] : 'unreadable';
+    throw new Error(`${file} is not valid ${/\.ya?ml$/.test(file) ? 'YAML' : 'JSON'}: ${reason}`);
+  }
+  // An empty YAML file is an empty config, not an error.
+  if (parsed === null || parsed === undefined) return {};
+  if (!isRecord(parsed)) throw new Error(`${file} must contain a mapping of settings.`);
+  return parsed;
+}
+
+/** The config file this project uses, relative to `rootDir`, or null. */
+export function findConfigFile(rootDir: string): ConfigFile | null {
+  return CONFIG_FILES.find((file) => existsSync(path.join(rootDir, file))) ?? null;
+}
+
+/** Config files present but not read, because an earlier one in the lookup order won. */
+export function shadowedConfigFiles(rootDir: string): ConfigFile[] {
+  const present = CONFIG_FILES.filter((file) => existsSync(path.join(rootDir, file)));
+  return present.slice(1);
+}
+
+export interface DataConfigRead {
+  /** The config file in effect, or null when the project has none. */
+  file: ConfigFile | null;
+  /** Parsed settings. Null for no config, a `.ts`/`.js` config, or an invalid file. */
+  config: Record<string, unknown> | null;
+  /** Why `config` is null despite a file existing. */
+  error?: string;
+}
+
+/**
+ * Synchronously read the project config when it is data (YAML or JSON), for
+ * callers that need one setting without running a scan. A `.ts`/`.js` config
+ * is reported, not executed — `loadConfig` is the only path that reads those.
+ */
+export function readDataConfigSync(rootDir: string): DataConfigRead {
+  const file = findConfigFile(rootDir);
+  if (!file) return { file: null, config: null };
+  if (!isDataConfigFile(file)) {
+    return { file, config: null, error: `${file} is code; this setting is read from .vibgrate/config.yml or vibgrate.config.json.` };
+  }
+  try {
+    return { file, config: parseDataConfig(readFileSync(path.join(rootDir, file), 'utf8'), file) };
+  } catch (err) {
+    return { file, config: null, error: err instanceof Error ? err.message : String(err) };
+  }
+}
 
 const TRUSTED_CONFIG_ENV = 'VIBGRATE_TRUST_CONFIG';
 
@@ -146,9 +221,9 @@ export async function loadConfig(rootDir: string): Promise<VibgrateConfig> {
   for (const file of CONFIG_FILES) {
     const configPath = path.join(rootDir, file);
     if (await pathExists(configPath)) {
-      if (file.endsWith('.json')) {
+      if (isDataConfigFile(file)) {
         const txt = await readTextFile(configPath);
-        config = { ...DEFAULT_CONFIG, ...JSON.parse(txt) };
+        config = { ...DEFAULT_CONFIG, ...parseDataConfig(txt, file) } as VibgrateConfig;
         break;
       }
       const txt = await readTextFile(configPath);

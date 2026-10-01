@@ -165,11 +165,12 @@ export interface CapsulePolicyFact {
   id: string;
   rule: string;
   /**
-   * Where the profile these rules enforce was declared: `.vibgrate/review.toml`,
-   * an agent-instruction file such as CLAUDE.md or AGENTS.md (`intent`), or
+   * Where the profile these rules enforce was declared: the `review` block of
+   * the project config (`config`), the older `.vibgrate/review.toml`, an
+   * agent-instruction file such as CLAUDE.md or AGENTS.md (`intent`), or
    * nothing — `derived` from the shape the repository is observed to have.
    */
-  source: 'review.toml' | 'intent' | 'derived';
+  source: 'config' | 'review.toml' | 'intent' | 'derived';
 }
 
 export interface CapsuleVerificationFact {

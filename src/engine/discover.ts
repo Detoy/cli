@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import ignore, { type Ignore } from 'ignore';
 import { langForExtension, langById, type LanguageDef } from './languages.js';
+import { readDataConfigSync } from '../core-open/config.js';
 
 /**
  * Deterministic file discovery.
@@ -172,19 +173,14 @@ function toPosix(p: string): string {
 }
 
 /**
- * Project-local exclude globs from `vibgrate.config.json`.
- * JSON only — `.ts`/`.js` configs stay scan-side (they can execute). A missing
- * or malformed file is an empty list, never an error.
+ * Project-local exclude globs from the project config (`.vibgrate/config.yml`
+ * or `vibgrate.config.json`). `.ts`/`.js` configs stay scan-side (they can
+ * execute). A missing or malformed file is an empty list, never an error.
  */
 export function readConfigExcludes(root: string): string[] {
-  const configPath = path.join(root, 'vibgrate.config.json');
-  try {
-    const parsed = JSON.parse(fs.readFileSync(configPath, 'utf8')) as { exclude?: unknown };
-    if (!Array.isArray(parsed.exclude)) return [];
-    return parsed.exclude.filter((x): x is string => typeof x === 'string' && x.trim() !== '');
-  } catch {
-    return [];
-  }
+  const exclude = readDataConfigSync(root).config?.exclude;
+  if (!Array.isArray(exclude)) return [];
+  return exclude.filter((x): x is string => typeof x === 'string' && x.trim() !== '');
 }
 
 /** Config excludes plus caller extras, de-duplicated, config-first. */

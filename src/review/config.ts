@@ -1,17 +1,26 @@
 /**
- * `.vibgrate/review.toml` — the review policy configuration (spec §5).
+ * Review policy configuration (spec §5).
+ *
+ * The policy is the `review` block of the project config
+ * (`.vibgrate/config.yml` or `vibgrate.config.json`). The older
+ * `.vibgrate/review.toml` is still read when the config has no `review` block.
  *
  * **Read from the trusted base branch, never the working tree.** A PR that
- * edits `review.toml` must not weaken the policy applied to itself, so when a
- * base ref is available the file is read via `git show <base>:.vibgrate/review.toml`.
- * The working-tree copy is used only when there is no base (a local
- * `vg review` against HEAD, where HEAD *is* the trusted state) — and even then
- * the committed HEAD copy wins over an uncommitted edit.
+ * edits the policy must not weaken the policy applied to itself, so when a
+ * base ref is given it is read via `git show <base>:<file>`, and only there:
+ * a base with no policy means the defaults, never the change's own copy.
+ * Without a base, the committed HEAD copy is used, and the working-tree copy
+ * only when git has nothing to show (no commits, or not a repository).
+ *
+ * A base-branch read is a data read: a `.ts`/`.js` project config is code and
+ * is never executed here, so its `review` block cannot be used — put review
+ * settings in `.vibgrate/config.yml` or `vibgrate.config.json`.
  */
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { parseToml } from '../core-open/utils/toml.js';
+import { CONFIG_FILES, isDataConfigFile, parseDataConfig, readDataConfigSync } from '../core-open/config.js';
 import type { GitRunner } from './git.js';
 import type { ReviewEnforcement } from './schemas.js';
 
@@ -44,6 +53,8 @@ export interface ReviewConfig {
   high_severity_decision: 'fail' | 'needs_review';
   /** Where the effective config came from — recorded for the human report. */
   source: 'base-branch' | 'head' | 'working-tree' | 'defaults';
+  /** The file that supplied it: a project config file, `.vibgrate/review.toml`, or null for defaults. */
+  file: string | null;
 }
 
 export const DEFAULT_REVIEW_CONFIG: ReviewConfig = {
@@ -59,6 +70,7 @@ export const DEFAULT_REVIEW_CONFIG: ReviewConfig = {
   high_confidence_threshold: 0.8,
   high_severity_decision: 'fail',
   source: 'defaults',
+  file: null,
 };
 
 function bool(value: unknown, fallback: boolean): boolean {
@@ -71,11 +83,46 @@ function str<T extends string>(value: unknown, allowed: readonly T[], fallback: 
     : fallback;
 }
 
+/**
+ * Map the `review` block of the project config (camelCase keys) onto the
+ * policy. Unknown keys are ignored, never fatal — the same contract as
+ * `review.toml`.
+ */
+export function reviewConfigFromBlock(
+  block: unknown,
+  source: ReviewConfig['source'],
+  file: string,
+): ReviewConfig {
+  const review = (block && typeof block === 'object' && !Array.isArray(block) ? block : {}) as Record<string, unknown>;
+  const prot = (review.protected ?? {}) as Record<string, unknown>;
+  return normalise(
+    {
+      enforcement: review.enforcement,
+      fail_on: review.failOn,
+      target_pattern: review.targetPattern,
+      approved_exceptions: review.approvedExceptions,
+      protected: {
+        unguarded_entrypoint: prot.unguardedEntrypoint,
+        known_vulnerable_dependency: prot.knownVulnerableDependency,
+        validated_taint: prot.validatedTaint,
+      },
+      high_confidence_threshold: review.highConfidenceThreshold,
+      high_severity_decision: review.highSeverityDecision,
+    },
+    source,
+    file,
+  );
+}
+
 /** Parse a `review.toml` document. Unknown keys are ignored, never fatal. */
 export function parseReviewConfig(text: string, source: ReviewConfig['source']): ReviewConfig {
   const doc = parseToml(text);
-  if (!doc) return { ...DEFAULT_REVIEW_CONFIG, source };
-  const review = (doc.review ?? {}) as Record<string, unknown>;
+  if (!doc) return { ...DEFAULT_REVIEW_CONFIG, source, file: REVIEW_CONFIG_PATH };
+  return normalise((doc.review ?? {}) as Record<string, unknown>, source, REVIEW_CONFIG_PATH);
+}
+
+/** Validate snake_case policy values, falling back to defaults per key. */
+function normalise(review: Record<string, unknown>, source: ReviewConfig['source'], file: string): ReviewConfig {
   const prot = (review.protected ?? {}) as Record<string, unknown>;
   const exceptions = Array.isArray(review.approved_exceptions)
     ? (review.approved_exceptions as unknown[]).filter((e): e is string => typeof e === 'string')
@@ -103,35 +150,67 @@ export function parseReviewConfig(text: string, source: ReviewConfig['source']):
       DEFAULT_REVIEW_CONFIG.high_severity_decision,
     ),
     source,
+    file,
   };
+}
+
+/**
+ * The project config's `review` block as committed at `ref`, when the config
+ * there is data. Returns `undefined` when there is no block to use — no
+ * config, a `.ts`/`.js` config, an unparseable file, or no `review` key.
+ */
+function reviewBlockAtRef(root: string, ref: string, run: GitRunner): { file: string; block: unknown } | undefined {
+  for (const file of CONFIG_FILES) {
+    const res = run(['show', `${ref}:${file}`], root);
+    if (res.status !== 0) continue;
+    // The first config file present is the config — never fall through to a
+    // shadowed one, or base and working tree could disagree about which file
+    // is in force.
+    if (!isDataConfigFile(file)) return undefined;
+    try {
+      const doc = parseDataConfig(res.stdout, file);
+      return doc.review === undefined ? undefined : { file, block: doc.review };
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
 }
 
 /**
  * Load the effective config for this review.
  *
- * Order: the base ref's committed copy (trusted), then HEAD's committed copy,
- * then the working tree (only when git can't answer at all), then defaults.
+ * With a base: the base ref's committed copy, else the defaults — nothing
+ * from the change itself. Without a base: HEAD's committed copy, then the
+ * working tree (only when git can't answer at all), then the defaults.
  */
 export function loadReviewConfig(
   root: string,
   base: string | undefined,
   run: GitRunner,
 ): ReviewConfig {
-  const fromRef = (ref: string): string | null => {
+  // At each ref the config's `review` block wins; `review.toml` is the
+  // fallback for repositories that have not moved their policy yet.
+  const fromRef = (ref: string, source: ReviewConfig['source']): ReviewConfig | null => {
+    const block = reviewBlockAtRef(root, ref, run);
+    if (block) return reviewConfigFromBlock(block.block, source, block.file);
     const res = run(['show', `${ref}:${REVIEW_CONFIG_PATH}`], root);
-    return res.status === 0 && res.stdout.trim() ? res.stdout : null;
+    return res.status === 0 && res.stdout.trim() ? parseReviewConfig(res.stdout, source) : null;
   };
 
-  if (base) {
-    const text = fromRef(base);
-    if (text) return parseReviewConfig(text, 'base-branch');
-  }
-  const head = fromRef('HEAD');
-  if (head) return parseReviewConfig(head, 'head');
+  // With a base, the base is the only source. Falling back to HEAD would let a
+  // change introduce a weaker policy in a repository whose base has none.
+  if (base) return fromRef(base, 'base-branch') ?? { ...DEFAULT_REVIEW_CONFIG };
+  const head = fromRef('HEAD', 'head');
+  if (head) return head;
 
   // No git-visible copy (a repo with no commits, or a non-repo). The working
   // tree is the only state there is, and it is not "a PR weakening its own
   // policy" — there is no base to weaken relative to.
+  const project = readDataConfigSync(root);
+  if (project.file && project.config?.review !== undefined) {
+    return reviewConfigFromBlock(project.config.review, 'working-tree', project.file);
+  }
   const local = path.join(root, REVIEW_CONFIG_PATH);
   if (fs.existsSync(local)) {
     try {

@@ -526,8 +526,8 @@ honestly and never blocks a merge.
 taint flow, a known-vulnerable dependency — carry `protected_finding: true`.
 While one is unresolved, policy cannot emit `pass`: not via an approved
 exception, not via low confidence, not via the quick path, and not via anything
-the model says. Turn a rule off in `.vibgrate/review.toml` if it does not apply
-to your repository; that is the only way to stop it gating.
+the model says. Turn a rule off in the review policy (`review.protected`) if it
+does not apply to your repository; that is the only way to stop it gating.
 
 #### What it looks for
 
@@ -548,7 +548,7 @@ convention". Where peers are too evenly split to have one, Review says *no
 convention* instead of naming a plurality winner.
 
 **A majority is never treated as correct.** Peers establish what is *normal*;
-only `target_pattern` establishes what is *right*. A file that goes through the
+only the declared `targetPattern` establishes what is *right*. A file that goes through the
 service layer while all its peers bypass it is the first one to improve — Review
 will not flag it. That is the difference between this and a consistency scanner,
 which by construction scores your best file worst.
@@ -653,25 +653,41 @@ to perpetuate the legacy it is migrating away from. `--inject-context` keeps the
 same content in a marked block inside `CLAUDE.md`, leaving everything a human
 wrote in that file untouched.
 
-#### Configuration — `.vibgrate/review.toml`
+#### Configuration — the `review` block
 
-```toml
-[review]
-enforcement = "advisory"          # advisory | enforced
-fail_on = "fail"                  # fail | needs_review
-target_pattern = "layered"        # the architecture you say you want
+The review policy is the `review` block of the project config
+(`.vibgrate/config.yml` or `vibgrate.config.json`, which take the same settings):
 
-[review.protected]
-unguarded_entrypoint = true
-known_vulnerable_dependency = true
-validated_taint = true
+```yaml
+# .vibgrate/config.yml
+review:
+  enforcement: advisory       # advisory | enforced
+  failOn: fail                # none | fail | needs_review
+  targetPattern: layered      # the architecture you say you want
+  protected:
+    unguardedEntrypoint: true
+    knownVulnerableDependency: true
+    validatedTaint: true
 ```
 
 Read from the **trusted base branch** when `--base` is given, so a pull request
-cannot weaken the policy applied to itself.
+cannot weaken the policy applied to itself. It is read as data: a `review` block
+in a `.ts`/`.js` config is never run, so keep it in YAML or JSON.
+
+The first `vg review` in a repository with no policy writes an advisory starter
+policy: a new `.vibgrate/config.yml` when there is no config, or a `review` block
+added to an existing `.vibgrate/config.yml` / `vibgrate.config.json`. A `.ts` or
+`.js` config is never rewritten, so those repositories get `.vibgrate/review.toml`.
+
+`.vibgrate/review.toml` keeps working wherever the config has no `review` block.
+Its keys are the snake_case forms of the ones above (`fail_on`, `target_pattern`,
+`[review.protected]`). `vg doctor` says when a `review` block makes it redundant.
 
 Team markdown packs live under `.vibgrate/review/` — the same tree the GitHub
-App reads. `ignore.md` drops matching finding paths; `policy.md` is attached to
+App reads. With `--base` they are read from the base branch, like the `review`
+policy, so a change cannot add an `ignore.md` glob over the files it breaks or
+delete a check to clear its own review; its edits apply after it merges.
+Without `--base`, the files on disk are used. `ignore.md` drops matching finding paths; `policy.md` is attached to
 the human report; `merge.md` is evaluated locally (docs-only may approve; a
 change to `merge.md` itself is refused); `checks/*.md` each produce one CLI
 pass or a skipped-with-reason line. Custom checks have no extra correctness
@@ -681,7 +697,7 @@ engine on the CLI either.
 (from a known current → latest pair). It does not rewrite lockfiles, does not
 open a hosted branch, and never starts unless you pass the flag.
 
-Declaring `target_pattern` is what turns a layering observation into a
+Declaring `targetPattern` is what turns a layering observation into a
 *regression*. Without it, a dependency that skips a tier is reported as a medium
 finding about the repository's own majority — because a majority is not the same
 thing as a decision, and Review will not treat it as one.
@@ -2530,7 +2546,41 @@ const config: VibgrateConfig = {
 export default config;
 ```
 
-Also supports `vibgrate.config.js` and `vibgrate.config.json`.
+Also supports `vibgrate.config.js`, `vibgrate.config.json`, and
+`.vibgrate/config.yml` (or `.config.yaml`). A project has one config file:
+Vibgrate reads the first it finds in the order `.vibgrate/config.yml`,
+`.vibgrate/config.yaml`, `vibgrate.config.ts`, `vibgrate.config.js`,
+`vibgrate.config.json`, and never merges two. YAML and JSON take exactly the
+same settings; `vg doctor` names any config file that is present but ignored.
+
+### Drift budget
+
+`driftBudget` sets limits on DriftScore that `vg scan` and the Vibgrate GitHub
+App check enforce:
+
+```yaml
+# .vibgrate/config.yml
+driftBudget:
+  mode: warn              # warn (default) | enforce | shadow
+  maxScore: 40            # DriftScore ceiling, 0-100
+  maxWorseningPercent: 5  # how much one change may worsen drift
+  agents:
+    maxWorseningPercent: 0  # stricter limit for bot and coding-agent pull requests
+```
+
+- `warn` prints a breach and exits `0`; `enforce` exits `2`; `shadow` reports only.
+- `maxWorseningPercent` compares against `--baseline`; without one it is reported
+  as not evaluated, never as a failure.
+- `agents.maxWorseningPercent` is checked by the GitHub App, which knows who
+  opened the pull request.
+- `--drift-budget` / `--drift-worsening` still work; passing either uses the flags
+  and ignores `driftBudget`.
+- Misspelt keys are reported, never silently ignored.
+
+The GitHub App reads `driftBudget` and `review` from the pull request's base
+branch, so a change cannot loosen the limits it is checked against. It reads
+`.vibgrate/config.yml` or `vibgrate.config.json` only; it never runs a `.ts`/`.js`
+config.
 
 ### Thresholds
 

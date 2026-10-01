@@ -3,6 +3,8 @@
 // and re-run the vendor script. Apache-2.0.
 // ── Core types for Vibgrate CLI ──
 
+import type { DriftBudgetConfig } from './drift-budget.js';
+
 export type DepSection = 'dependencies' | 'devDependencies' | 'peerDependencies' | 'optionalDependencies';
 
 export type RiskLevel = 'low' | 'moderate' | 'high' | 'none';
@@ -982,6 +984,44 @@ export interface VibgrateConfig {
       dependencyTwoPlusPercent?: number;
     };
   };
+  /** Generate per-area `vg-area-*` assistant skills. Default: false. */
+  areaSkills?: boolean;
+  /**
+   * Drift budget — a DriftScore ceiling and worsening limits, enforced by
+   * `vg scan` and the GitHub App check. See `drift-budget.ts`.
+   */
+  driftBudget?: DriftBudgetConfig;
+  /** Review settings for `vg review` and the GitHub App's Vibgrate Review check. */
+  review?: ReviewSettingsConfig;
+}
+
+/**
+ * `review` block of the project config. Structured settings only — the
+ * instructions a reviewer reads stay in `.vibgrate/review/*.md`.
+ *
+ * Replaces `.vibgrate/review.toml` (CLI policy) and
+ * `.vibgrate/review/settings.md` (App detection mode). Those files are still
+ * read when the config has no `review` block.
+ */
+export interface ReviewSettingsConfig {
+  /** `advisory` reports only; `enforced` gates at `failOn`. */
+  enforcement?: 'advisory' | 'enforced';
+  failOn?: 'none' | 'fail' | 'needs_review';
+  /** The layering the repository declares it wants, e.g. `hexagonal`. */
+  targetPattern?: string;
+  /** Layer pairs a change may cross without counting as a regression. */
+  approvedExceptions?: string[];
+  protected?: {
+    unguardedEntrypoint?: boolean;
+    knownVulnerableDependency?: boolean;
+    validatedTaint?: boolean;
+  };
+  highConfidenceThreshold?: number;
+  highSeverityDecision?: 'fail' | 'needs_review';
+  /** GitHub App Review: which deterministic packs run. */
+  detectionMode?: 'budget' | 'balanced' | 'precise' | 'ultra';
+  /** GitHub App Review: lowest severity that gets a PR comment. */
+  minSeverity?: 'low' | 'medium' | 'high' | 'critical';
 }
 
 // ── Extended scanner result types ──

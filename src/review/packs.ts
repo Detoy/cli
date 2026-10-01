@@ -4,11 +4,21 @@
  * Canonical tree only. Team ignore / policy / merge / checks live next to the
  * code they govern. This loader is local and deterministic — it never calls a
  * hosted model.
+ *
+ * **With `--base`, the packs are read from the base ref, never the working
+ * tree.** A change must not be able to clear its own review — by adding an
+ * `ignore.md` glob over the files it breaks, or deleting a check — so a PR
+ * review sees the rules as they are on the branch it merges into, the same as
+ * the GitHub App and the `review` policy block. A file the base does not have
+ * is absent; there is no fallback to the change's own copy. Without `--base`
+ * (a local review of uncommitted work) the working tree is the only state and
+ * is read directly.
  */
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { evaluateMergePolicy, matchSimpleGlob, type MergeDecision } from './merge-policy.js';
+import type { GitRunner } from './git.js';
 
 export const REVIEW_ROOT = '.vibgrate/review';
 export const REVIEW_CHECK_DIR = '.vibgrate/review/checks';
@@ -53,8 +63,10 @@ export interface ReviewCheckRun {
 }
 
 export interface ReviewPackReport {
-  /** True when at least one pack file existed on disk. */
+  /** True when at least one pack file was found. */
   loaded: boolean;
+  /** Where the packs were read from: the `--base` ref, or the working tree. */
+  source: 'base-branch' | 'working-tree';
   ignore: ReviewIgnore;
   policy: ReviewPolicyDoc | null;
   merge: ReviewMergeDoc | null;
@@ -93,14 +105,26 @@ export function isIgnoredPath(filePath: string, ignore: ReviewIgnore): boolean {
   return ignore.patterns.some((pattern) => matchSimpleGlob(pattern, value));
 }
 
+/** Where the packs are read from. */
+export type ReviewPackSource =
+  | { kind: 'working-tree' }
+  /** A committed ref (the `--base`), read with `git show` / `git ls-tree`. */
+  | { kind: 'ref'; ref: string; run: GitRunner };
+
+const MAX_CHECK_BYTES = 64 * 1024;
+
 export function loadReviewPacks(
   root: string,
   changedFiles: string[],
+  source: ReviewPackSource = { kind: 'working-tree' },
 ): ReviewPackReport {
-  const ignoreText = readIfPresent(root, REVIEW_IGNORE_PATH);
-  const policyText = readIfPresent(root, REVIEW_POLICY_PATH);
-  const mergeText = readIfPresent(root, REVIEW_MERGE_PATH);
-  const checkFiles = listCheckFiles(root);
+  const read = source.kind === 'ref'
+    ? (rel: string) => readAtRef(root, source.ref, rel, source.run)
+    : (rel: string) => readIfPresent(root, rel);
+  const ignoreText = read(REVIEW_IGNORE_PATH);
+  const policyText = read(REVIEW_POLICY_PATH);
+  const mergeText = read(REVIEW_MERGE_PATH);
+  const checkFiles = source.kind === 'ref' ? listCheckFilesAtRef(root, source.ref, source.run) : listCheckFiles(root);
 
   const loaded = Boolean(ignoreText || policyText || mergeText || checkFiles.length);
   const ignore = ignoreText ? parseIgnoreMarkdown(ignoreText) : { patterns: [] };
@@ -133,6 +157,7 @@ export function loadReviewPacks(
 
   return {
     loaded,
+    source: source.kind === 'ref' ? 'base-branch' : 'working-tree',
     ignore,
     policy,
     merge,
@@ -198,11 +223,41 @@ function listCheckFiles(root: string): { path: string; content: string }[] {
     const abs = path.join(root, rel);
     try {
       const st = fs.statSync(abs);
-      if (!st.isFile() || st.size > 64 * 1024) continue;
+      if (!st.isFile() || st.size > MAX_CHECK_BYTES) continue;
       out.push({ path: rel, content: fs.readFileSync(abs, 'utf8') });
     } catch {
       /* unreadable */
     }
+  }
+  return out;
+}
+
+/** A file as committed at `ref`, or null when the ref does not have it. */
+function readAtRef(root: string, ref: string, rel: string, run: GitRunner): string | null {
+  const res = run(['show', `${ref}:${rel}`], root);
+  return res.status === 0 ? res.stdout : null;
+}
+
+/** `checks/*.md` as committed at `ref`, in the same order and size limit as the working-tree walk. */
+function listCheckFilesAtRef(root: string, ref: string, run: GitRunner): { path: string; content: string }[] {
+  // `-l` adds the blob size, so an oversized check is skipped without reading it.
+  const res = run(['ls-tree', '-l', ref, '--', `${REVIEW_CHECK_DIR}/`], root);
+  if (res.status !== 0) return [];
+  const entries: { rel: string; size: number }[] = [];
+  for (const line of res.stdout.split('\n')) {
+    // <mode> SP <type> SP <object> SP+ <size> TAB <path>
+    const match = /^\d+ (\w+) [0-9a-f]+\s+(\S+)\t(.+)$/.exec(line);
+    if (!match || match[1] !== 'blob') continue;
+    const rel = match[3] ?? '';
+    const name = rel.slice(REVIEW_CHECK_DIR.length + 1);
+    if (!name.endsWith('.md') || name.includes('/')) continue;
+    entries.push({ rel, size: Number(match[2]) });
+  }
+  const out: { path: string; content: string }[] = [];
+  for (const entry of entries.sort((a, b) => a.rel.localeCompare(b.rel))) {
+    if (!(entry.size <= MAX_CHECK_BYTES)) continue;
+    const content = readAtRef(root, ref, entry.rel, run);
+    if (content !== null) out.push({ path: entry.rel, content });
   }
   return out;
 }
