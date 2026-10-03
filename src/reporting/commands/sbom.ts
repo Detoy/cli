@@ -101,7 +101,7 @@ const UNKNOWN_VERSION = 'unknown';
  * reads as "this exact version is installed" — that's not a smaller version
  * of the truth, it's a different claim.
  */
-function isConcreteVersion(spec: string | null | undefined): boolean {
+function isConcreteVersion(spec: string | null | undefined): spec is string {
   if (!spec || spec === '*' || spec === 'latest') return false;
   if (/[\^~*<>|]/.test(spec)) return false;
   if (/^(npm|workspace|patch|file|link|git|github|https?):/i.test(spec)) return false;
