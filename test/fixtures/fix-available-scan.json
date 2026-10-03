@@ -1,0 +1,68 @@
+{
+  "schemaVersion": "1.0",
+  "timestamp": "2026-02-16T00:00:00.000Z",
+  "vibgrateVersion": "0.1.0",
+  "rootPath": "/fixture",
+  "projects": [],
+  "drift": {
+    "score": 40,
+    "riskLevel": "moderate",
+    "components": {
+      "runtimeScore": 40,
+      "frameworkScore": 40,
+      "dependencyScore": 40,
+      "eolScore": 40
+    }
+  },
+  "findings": [
+    {
+      "ruleId": "vibgrate/vulnerability",
+      "level": "error",
+      "message": "lodash@4.17.20: GHSA-1 (CVE-2021-1) (critical 9.8)",
+      "location": "lodash",
+      "details": {
+        "package": "lodash",
+        "installedVersion": "4.17.20",
+        "advisoryId": "GHSA-1",
+        "fixedVersions": ["4.17.21", "4.17.21", " 5.0.0 "]
+      }
+    },
+    {
+      "ruleId": "vibgrate/vulnerability",
+      "level": "warning",
+      "message": "minimist@1.2.5: GHSA-2 (moderate 5.3) — no fix available",
+      "location": "minimist",
+      "details": {
+        "package": "minimist",
+        "installedVersion": "1.2.5",
+        "advisoryId": "GHSA-2",
+        "fixedVersions": []
+      }
+    },
+    {
+      "ruleId": "vibgrate/vulnerability",
+      "level": "note",
+      "message": "left-pad@1.3.0: GHSA-3 (low)",
+      "location": "left-pad",
+      "details": {
+        "package": "left-pad",
+        "remediation": "  Replace left-pad with\n  a direct implementation.  "
+      }
+    },
+    {
+      "ruleId": "vibgrate/runtime-lag",
+      "level": "warning",
+      "message": "Node.js runtime \">=20.0.0\" is 2 major versions behind.",
+      "location": "/fixture"
+    },
+    {
+      "ruleId": "vibgrate/dependency-major-lag",
+      "level": "note",
+      "message": "chalk is 1 major behind.",
+      "location": "/fixture",
+      "details": {
+        "fixedVersion": "5.4.0"
+      }
+    }
+  ]
+}

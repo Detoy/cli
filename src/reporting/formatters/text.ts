@@ -3,6 +3,7 @@ import type { ScanArtifact, ExtendedScanResults, InventoryItem, ServiceDependenc
 import { VERSION } from '../version.js';
 import { driftBar } from '../../core-open/ui/bar.js';
 import { titleBox } from '../../core-open/ui/box.js';
+import { presentFinding } from '../../core-open/formatters/fix-hint.js';
 
 export function formatText(artifact: ScanArtifact): string {
   const lines: string[] = [];
@@ -87,8 +88,10 @@ export function formatText(artifact: ScanArtifact): string {
     lines.push(chalk.bold.underline(`  Findings`) + chalk.dim(` (${summary})`));
     for (const f of artifact.findings) {
       const icon = f.level === 'error' ? chalk.red('✖') : f.level === 'warning' ? chalk.yellow('⚠') : chalk.blue('ℹ');
-      lines.push(`    ${icon} ${f.message}`);
+      const presented = presentFinding(f);
+      lines.push(`    ${icon} ${presented.message}`);
       lines.push(chalk.dim(`      ${f.ruleId} in ${f.location}`));
+      if (presented.hint) lines.push(chalk.green(`      ${presented.hint}`));
     }
     lines.push('');
   }

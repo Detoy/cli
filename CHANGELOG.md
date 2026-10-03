@@ -121,6 +121,13 @@ backward compatible.
 
 ### Changed
 
+- **`vg scan` and `vg report` text output shows when a fix is already known.**
+  A finding whose payload includes a fixed version (`fixedVersions` /
+  `fixedVersion`) or a `remediation` string is followed by `fix available: …`.
+  The hint is omitted when that metadata is absent — the report does not
+  claim "no fix", and it does not look anything up. `vg why` uses the same
+  rule for advisory lines.
+
 - **`vg show chart` is now `vg show arch`.** The local interactive map of the
   code graph takes the Architecture module's public name — it is the map that
   paints roles, purposes and boundary-rule breaks from `graph.arch.json` when

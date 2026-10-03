@@ -446,6 +446,8 @@ vg report [--in <file>] [--format md|text|json]
 | `--in`     | `.vibgrate/scan_result.json` | Input artifact file                    |
 | `--format` | `text`                       | Output format: `md`, `text`, or `json` |
 
+Text output follows each finding that already carries a fixed version or remediation with a `fix available: …` line. When that metadata is absent, the line is omitted — the report does not claim there is no fix.
+
 ---
 
 
@@ -2848,7 +2850,7 @@ The default output. A coloured, human-readable report showing:
 - Overall drift score and risk level
 - Score component breakdown with visual bars
 - Per-project details: runtime lag, framework versions, dependency distribution
-- Findings with severity icons
+- Findings with severity icons. A finding that already includes a fixed version or remediation is followed by `fix available: …`. The hint is omitted when that metadata is absent.
 
 ### JSON Artifact
 
