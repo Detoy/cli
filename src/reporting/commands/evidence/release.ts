@@ -74,6 +74,9 @@ export function componentsFromArtifact(artifact: ScanArtifact): FrozenComponent[
     const ecosystem = ecosystemForProjectType(project.type);
     for (const dep of project.dependencies) {
       const version = dep.resolvedVersion ?? dep.currentSpec;
+      // A require with no pin has no shipped version to freeze. Skip it rather
+      // than writing "" or a made-up pin into the component manifest.
+      if (!version) continue;
       const key = `${ecosystem ?? ''}|${dep.package}|${version}`;
       if (seen.has(key)) continue;
       seen.add(key);

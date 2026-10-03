@@ -112,8 +112,9 @@ function normalizeMajor(version: string | null | undefined): number | null {
   return parsed?.major ?? null;
 }
 
-function resolveCurrentVersion(dep: { resolvedVersion: string | null; currentSpec: string }): string | null {
+function resolveCurrentVersion(dep: { resolvedVersion: string | null; currentSpec: string | null }): string | null {
   if (dep.resolvedVersion && semver.valid(semver.coerce(dep.resolvedVersion))) return semver.coerce(dep.resolvedVersion)?.version ?? null;
+  if (!dep.currentSpec) return null;
   const min = semver.minVersion(dep.currentSpec);
   return min?.version ?? null;
 }

@@ -85,9 +85,24 @@ const KNOWN_GO_FRAMEWORKS: Record<string, string> = {
 
 interface GoDependency {
   path: string;
-  version: string;
+  /** Null when the require names a module and omits a version token. */
+  version: string | null;
   indirect: boolean;
 }
+
+/** go.mod directive keywords — never module paths. */
+const GO_MOD_DIRECTIVES = new Set([
+  'module',
+  'go',
+  'toolchain',
+  'tool',
+  'godebug',
+  'ignore',
+  'require',
+  'exclude',
+  'replace',
+  'retract',
+]);
 
 /**
  * Parse go.mod to extract dependencies and Go version.
@@ -126,9 +141,12 @@ function parseGoMod(content: string): { goVersion?: string; deps: GoDependency[]
       continue;
     }
 
-    // Parse dependency lines
+    // Parse dependency lines. A version token is optional: a bare module path
+    // is still a direct require (omitted pin / workspace inheritance). The
+    // version stays null — never "", 0, or a guessed pin.
     // Format: github.com/gin-gonic/gin v1.9.1
     // Format: github.com/gin-gonic/gin v1.9.1 // indirect
+    // Format: example.com/mod
     let depLine = trimmed;
     if (inRequireBlock) {
       depLine = trimmed;
@@ -140,18 +158,16 @@ function parseGoMod(content: string): { goVersion?: string; deps: GoDependency[]
 
     const indirect = depLine.includes('// indirect');
     depLine = depLine.replace(/\/\/.*$/, '').trim();
+    if (!depLine || depLine === '(' || depLine === ')' || depLine.includes('=>')) continue;
 
-    const parts = depLine.split(/\s+/);
-    if (parts.length >= 2) {
-      const [modulePath, version] = parts;
-      if (modulePath && version) {
-        deps.push({
-          path: modulePath,
-          version,
-          indirect,
-        });
-      }
-    }
+    const parts = depLine.split(/\s+/).filter((part) => part.length > 0);
+    const modulePath = parts[0];
+    if (!modulePath || modulePath === '(' || modulePath === ')' || GO_MOD_DIRECTIVES.has(modulePath)) continue;
+    deps.push({
+      path: modulePath,
+      version: parts[1] ?? null,
+      indirect,
+    });
   }
 
   return { goVersion, deps };
@@ -267,7 +283,7 @@ async function scanOneGoProject(
   const resolved = await Promise.all(metaPromises);
 
   for (const { dep, meta } of resolved) {
-    const resolvedVersion = semver.valid(semver.clean(dep.version));
+    const resolvedVersion = dep.version ? semver.valid(semver.clean(dep.version)) : null;
     const latestStable = meta.latestStableOverall;
 
     let majorsBehind: number | null = null;

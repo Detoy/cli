@@ -111,8 +111,13 @@ export interface DependencyDriftResult {
   weight: number;
   /** Guards that fired, for explainability. */
   flags: string[];
-  /** Excluded from scoring entirely (placeholder stub). */
+  /** Excluded from scoring entirely (placeholder stub, or no version to score). */
   excluded: boolean;
+}
+
+/** Null and "" are both "no version". A real pin, including "0.0.0", is not. */
+function versionMissing(value: string | null | undefined): boolean {
+  return value == null || value === '';
 }
 
 function clamp(v: number, min: number, max: number): number {
@@ -174,6 +179,17 @@ export function perDependencyDrift(
     return {
       package: dep.package, drift: 0, mode: 'estimated', unsupported: false,
       weight: 0, flags: ['placeholder-stub'], excluded: true,
+    };
+  }
+
+  // No declared or resolved version. The dependency stays visible on the scan
+  // row, but there is no number to score — excluding it keeps absence out of
+  // the mean (absent ≠ 0). The `drift: 0` here is unused; `excluded` is the
+  // signal, same as a placeholder stub.
+  if (versionMissing(dep.resolvedVersion) && versionMissing(dep.currentSpec)) {
+    return {
+      package: dep.package, drift: 0, mode: 'estimated', unsupported: false,
+      weight: 0, flags: ['version-absent'], excluded: true,
     };
   }
 

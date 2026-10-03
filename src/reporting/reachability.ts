@@ -400,7 +400,7 @@ export async function analyzeReachability(
 export function collectPreflightDependencies(
   projects: Array<{
     type: string;
-    dependencies: Array<{ package: string; resolvedVersion: string | null; currentSpec: string }>;
+    dependencies: Array<{ package: string; resolvedVersion: string | null; currentSpec: string | null }>;
   }>,
   projectTypeToEcosystem: Partial<Record<string, string>>,
 ): SymbolsPreflightDependency[] {
@@ -409,7 +409,7 @@ export function collectPreflightDependencies(
     const ecosystem = projectTypeToEcosystem[project.type];
     if (!ecosystem) continue;
     for (const dep of project.dependencies) {
-      const version = dep.resolvedVersion || normalizeVersionSpec(dep.currentSpec);
+      const version = dep.resolvedVersion || (dep.currentSpec ? normalizeVersionSpec(dep.currentSpec) : null);
       if (!version) continue;
       const key = `${ecosystem}:${dep.package}:${version}`;
       if (!deduped.has(key)) {

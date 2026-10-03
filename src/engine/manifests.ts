@@ -206,18 +206,24 @@ function ingestGoMod(
   });
 
   // require blocks and single-line requires (ignore replace/exclude).
+  // A version token is optional. `example.com/mod v1.2.3` and `example.com/mod`
+  // are both direct dependencies; the graph stores the module path only, so an
+  // omitted pin stays absent instead of becoming "" or a made-up version.
   const reqNames = new Set<string>();
   const block = /require\s*\(([\s\S]*?)\)/g;
   let bm: RegExpExecArray | null;
   while ((bm = block.exec(text)) !== null) {
     for (const line of bm[1].split('\n')) {
-      const m = /^\s*(\S+)\s+v\S+/.exec(line);
-      if (m && !line.trim().startsWith('//')) reqNames.add(m[1]);
+      const name = goRequireModulePath(line);
+      if (name) reqNames.add(name);
     }
   }
-  const single = /^\s*require\s+(\S+)\s+v\S+/gm;
+  const single = /^\s*require\s+(.+)$/gm;
   let sm: RegExpExecArray | null;
-  while ((sm = single.exec(text)) !== null) reqNames.add(sm[1]);
+  while ((sm = single.exec(text)) !== null) {
+    const name = goRequireModulePath(sm[1] ?? '');
+    if (name) reqNames.add(name);
+  }
 
   let n = 0;
   for (const name of [...reqNames].sort()) {
@@ -398,6 +404,34 @@ function ingestCargoToml(
   }
   return n;
 }
+
+/**
+ * Module path from one `require` spec. The version token is optional:
+ * `github.com/foo/bar v1.2.3` and a bare `github.com/foo/bar` both name a
+ * dependency. Comments, block punctuation, and `replace` (`=>`) lines are not
+ * modules. The returned path is the dependency identity; this parser does not
+ * invent a version when the spec omits one.
+ */
+function goRequireModulePath(line: string): string | null {
+  const stripped = line.replace(/\/\/.*$/, '').trim();
+  if (!stripped || stripped === '(' || stripped === ')' || stripped.includes('=>')) return null;
+  const name = stripped.split(/\s+/)[0];
+  if (!name || name === '(' || name === ')' || GO_MOD_DIRECTIVES.has(name)) return null;
+  return name;
+}
+
+const GO_MOD_DIRECTIVES = new Set([
+  'module',
+  'go',
+  'toolchain',
+  'tool',
+  'godebug',
+  'ignore',
+  'require',
+  'exclude',
+  'replace',
+  'retract',
+]);
 
 function isRecognizedManifest(base: string): boolean {
   return (

@@ -71,7 +71,11 @@ export interface NpmMeta {
 export interface DependencyRow {
   package: string;
   section: DepSection;
-  currentSpec: string;
+  /**
+   * Declared version requirement from the manifest. Null when the manifest
+   * names the dependency and does not pin a version — absent, not `""` or `0`.
+   */
+  currentSpec: string | null;
   resolvedVersion: string | null;
   latestStable: string | null;
   majorsBehind: number | null;

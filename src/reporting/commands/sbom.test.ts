@@ -226,6 +226,34 @@ describe('sbom helpers', () => {
     }
   });
 
+  it('keeps an unpinned Go require and does not write the missing pin into version', () => {
+    const artifact = makeArtifact('v1.2.3', 90);
+    artifact.projects[0]!.type = 'go';
+    const dep = artifact.projects[0]!.dependencies[0]!;
+    dep.package = 'example.com/unpinned';
+    dep.currentSpec = null;
+    dep.resolvedVersion = null;
+    dep.majorsBehind = null;
+    dep.drift = 'unknown';
+    const sbom = toCycloneDx(artifact) as {
+      components: Array<{
+        name: string;
+        version: string;
+        purl: string;
+        properties: Array<{ name: string; value: string }>;
+      }>;
+    };
+    expect(sbom.components).toHaveLength(1);
+    expect(sbom.components[0]!.name).toBe('example.com/unpinned');
+    expect(sbom.components[0]!.version).toBe('unknown');
+    expect(sbom.components[0]!.purl).toBe('pkg:golang/example.com/unpinned');
+    const props = sbom.components[0]!.properties;
+    expect(props.some((p) => p.name === 'vibgrate:currentSpec')).toBe(false);
+    expect(props.find((p) => p.name === 'vibgrate:majorsBehind')?.value).toBe('unknown');
+    const spdx = toSpdx(artifact) as { packages: Array<{ versionInfo: string }> };
+    expect(spdx.packages[0]!.versionInfo).toBe('unknown');
+  });
+
   it('still reports a concrete pinned version normally (no false positives from the range guard)', () => {
     const sbom = toCycloneDx(makeArtifact('5.3.0', 90)) as { components: Array<{ version: string; purl: string }> };
     expect(sbom.components[0]!.version).toBe('5.3.0');

@@ -13,7 +13,8 @@ interface FlattenedDependency {
   project: string;
   package: string;
   version: string;
-  currentSpec: string;
+  /** Null when the manifest named the dependency and did not pin a version. */
+  currentSpec: string | null;
   drift: DependencyRow['drift'];
   majorsBehind: number | null;
   /** 'direct' comes from a scanned manifest; 'transitive' is lockfile-only. */
@@ -100,7 +101,7 @@ const UNKNOWN_VERSION = 'unknown';
  * reads as "this exact version is installed" — that's not a smaller version
  * of the truth, it's a different claim.
  */
-function isConcreteVersion(spec: string): boolean {
+function isConcreteVersion(spec: string | null | undefined): boolean {
   if (!spec || spec === '*' || spec === 'latest') return false;
   if (/[\^~*<>|]/.test(spec)) return false;
   if (/^(npm|workspace|patch|file|link|git|github|https?):/i.test(spec)) return false;
@@ -193,7 +194,7 @@ function sbomSerialSeed(format: string, artifact: ScanArtifact, deps: FlattenedD
     artifact.rootPath ?? '',
     artifact.timestamp ?? '',
     artifact.vibgrateVersion ?? '',
-    ...deps.map((d) => `${d.package}|${d.version}|${d.currentSpec}|${d.project}|${d.drift}|${d.majorsBehind ?? ''}|${d.scope}`),
+    ...deps.map((d) => `${d.package}|${d.version}|${d.currentSpec ?? ''}|${d.project}|${d.drift}|${d.majorsBehind ?? ''}|${d.scope}`),
     ...(graph?.rootDependsOn.length ? [`root>${uniqSorted(graph.rootDependsOn).join(',')}`] : []),
     ...edgeLines,
   ].join('\n');
@@ -266,12 +267,14 @@ export function flattenDependencies(
   for (const project of artifact.projects) {
     const ecosystem = projectEcosystem(project.type);
     for (const dep of project.dependencies) {
-      // Go always pins an exact version in go.mod, but the scanner's
-      // `resolvedVersion` runs it through `semver.clean` (for semver math
-      // elsewhere) and drops the `v` prefix go.sum's transitive entries keep
-      // — matching on `currentSpec` instead is what lets a direct Go
-      // dependency dedupe against its own go.sum-derived component instead
-      // of appearing as two, differently-versioned components.
+      // When go.mod pins a version, the scanner's `resolvedVersion` runs it
+      // through `semver.clean` (for semver math elsewhere) and drops the `v`
+      // prefix go.sum's transitive entries keep — matching on `currentSpec`
+      // instead is what lets a direct Go dependency dedupe against its own
+      // go.sum-derived component instead of appearing as two, differently-
+      // versioned components. A require with no version token has a null spec;
+      // that is not a concrete version, and the sentinel below must not be
+      // replaced with a fabricated pin.
       const rawVersion = ecosystem === 'go' ? dep.currentSpec : (dep.resolvedVersion ?? dep.currentSpec);
       // A dependency with no lockfile/installed-tree resolution falls back
       // to its declared spec, which for npm/yarn/pnpm can be a semver range,
@@ -377,7 +380,9 @@ export function toCycloneDx(artifact: ScanArtifact, graph?: LockfileGraph): Reco
       purl: purlFor(dep.ecosystem, dep.package, dep.version),
       properties: [
         { name: 'vibgrate:project', value: dep.project },
-        { name: 'vibgrate:currentSpec', value: dep.currentSpec },
+        // Omit when the manifest did not declare a spec. Do not write "" or a
+        // guessed pin; `version` above is already the unknown sentinel.
+        ...(dep.currentSpec ? [{ name: 'vibgrate:currentSpec', value: dep.currentSpec }] : []),
         { name: 'vibgrate:drift', value: dep.drift },
         { name: 'vibgrate:majorsBehind', value: String(dep.majorsBehind ?? 'unknown') },
         { name: 'vibgrate:scope', value: dep.scope },
@@ -426,6 +431,11 @@ export function toSpdx(artifact: ScanArtifact, graph?: LockfileGraph): Record<st
   };
 }
 
+/** Text-delta label only. A missing pin is the word "unpinned", not a version. */
+function formatDeclaredVersion(dep: Pick<DependencyRow, 'resolvedVersion' | 'currentSpec'>): string {
+  return dep.resolvedVersion ?? dep.currentSpec ?? 'unpinned';
+}
+
 function projectDependencyMap(artifact: ScanArtifact): Map<string, DependencyRow> {
   const map = new Map<string, DependencyRow>();
   for (const project of artifact.projects) {
@@ -446,12 +456,12 @@ export function formatDeltaText(base: ScanArtifact, current: ScanArtifact): stri
 
   for (const [key, dep] of currentMap.entries()) {
     if (!baseMap.has(key)) {
-      added.push(`${key} @ ${dep.resolvedVersion ?? dep.currentSpec}`);
+      added.push(`${key} @ ${formatDeclaredVersion(dep)}`);
       continue;
     }
     const prev = baseMap.get(key)!;
-    const prevVersion = prev.resolvedVersion ?? prev.currentSpec;
-    const nowVersion = dep.resolvedVersion ?? dep.currentSpec;
+    const prevVersion = formatDeclaredVersion(prev);
+    const nowVersion = formatDeclaredVersion(dep);
     if (prevVersion !== nowVersion || prev.majorsBehind !== dep.majorsBehind) {
       changed.push(`${key} ${prevVersion} -> ${nowVersion} (majorsBehind ${prev.majorsBehind ?? 'unknown'} -> ${dep.majorsBehind ?? 'unknown'})`);
     }
@@ -459,7 +469,7 @@ export function formatDeltaText(base: ScanArtifact, current: ScanArtifact): stri
 
   for (const [key, dep] of baseMap.entries()) {
     if (!currentMap.has(key)) {
-      removed.push(`${key} @ ${dep.resolvedVersion ?? dep.currentSpec}`);
+      removed.push(`${key} @ ${formatDeclaredVersion(dep)}`);
     }
   }
 

@@ -36,6 +36,40 @@ describe('extractManifests', () => {
     expect(m.edges.some((e) => e.kind === 'import' && e.epistemic === 'declared')).toBe(true);
   });
 
+  it('folds an unpinned go.mod require into a full build', async () => {
+    const root = project({
+      'go.mod': [
+        'module example.com/svc',
+        '',
+        'go 1.22',
+        '',
+        'require (',
+        '  example.com/unpinned',
+        '  github.com/gin-gonic/gin v1.9.1',
+        ')',
+        '',
+      ].join('\n'),
+    });
+    const build = () =>
+      buildGraph({
+        root,
+        generatedAt: '2020-01-01T00:00:00.000Z',
+        noGround: true,
+        inline: true,
+        noTsc: true,
+      });
+    const { graph } = await build();
+    const again = await build();
+    const external = (nodes: typeof graph.nodes) =>
+      nodes.filter((n) => n.kind === 'external').map((n) => ({ id: n.id, name: n.name })).sort((a, b) => a.name.localeCompare(b.name));
+    expect(external(graph.nodes)).toEqual(external(again.graph.nodes));
+    const unpinned = graph.nodes.find((n) => n.kind === 'external' && n.name === 'example.com/unpinned');
+    const pkg = graph.nodes.find((n) => n.kind === 'package' && n.qualifiedName === 'example.com/svc');
+    expect(unpinned).toBeDefined();
+    expect(unpinned).not.toHaveProperty('version');
+    expect(graph.edges.some((e) => e.kind === 'import' && e.src === pkg?.id && e.dst === unpinned?.id)).toBe(true);
+  });
+
   it('reads go.mod require lines', () => {
     const root = project({
       'go.mod': [

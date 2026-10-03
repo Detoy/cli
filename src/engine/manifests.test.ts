@@ -117,6 +117,60 @@ serde = "1"
     expect(out.deps).toBe(1);
   });
 
+  it('keeps an unpinned go.mod require as a direct edge and does not invent a version', () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vg-manifest-'));
+    const gomod = [
+      'module example.com/svc',
+      '',
+      'go 1.22',
+      '',
+      'require (',
+      '\tgithub.com/gin-gonic/gin v1.9.1',
+      '\texample.com/unpinned',
+      '\texample.com/noprefix 1.4.0',
+      '\tgithub.com/stretchr/testify v1.8.4 // indirect',
+      '\texample.com/indirect-unpinned // indirect',
+      '\t// example.com/commented v9.9.9',
+      ')',
+      '',
+      'require example.com/single',
+      '',
+      'exclude example.com/excluded v1.0.0',
+      '',
+      'replace example.com/local => ../local',
+      '',
+    ].join('\n');
+    write(dir, 'go.mod', gomod);
+    const out = extractManifests(dir);
+    const again = extractManifests(dir);
+    expect(again).toEqual(out);
+
+    const extNames = out.nodes.filter((n) => n.kind === 'external').map((n) => n.name).sort();
+    expect(extNames).toEqual([
+      'example.com/indirect-unpinned',
+      'example.com/noprefix',
+      'example.com/single',
+      'example.com/unpinned',
+      'github.com/gin-gonic/gin',
+      'github.com/stretchr/testify',
+    ]);
+    expect(out.deps).toBe(extNames.length);
+    expect(extNames).not.toContain('example.com/excluded');
+    expect(extNames).not.toContain('example.com/local');
+    expect(extNames).not.toContain('example.com/commented');
+
+    const pkg = out.nodes.find((n) => n.kind === 'package');
+    expect(pkg?.qualifiedName).toBe('example.com/svc');
+    for (const name of ['example.com/unpinned', 'example.com/single', 'example.com/indirect-unpinned']) {
+      const ext = out.nodes.find((n) => n.kind === 'external' && n.name === name);
+      expect(ext).toBeDefined();
+      expect(ext).not.toHaveProperty('version');
+      expect(out.edges.some((e) => e.kind === 'import' && e.src === pkg?.id && e.dst === ext?.id)).toBe(true);
+    }
+    expect(JSON.stringify(out)).not.toContain('"version":""');
+    expect(JSON.stringify(out)).not.toContain('"version":0');
+  });
+
   it('gives each ecosystem its own package node in a mixed-ecosystem tree', () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vg-manifest-'));
     write(dir, 'services/api/package.json', JSON.stringify({ name: 'api' }));

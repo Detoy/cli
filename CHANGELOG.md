@@ -131,6 +131,15 @@ backward compatible.
 
 ### Fixed
 
+- **Unpinned Go `require` lines stay in `vg build` and `vg scan`.** A direct
+  module with no version token (or a version that does not start with `v`) was
+  dropped, so impact and drift could not see it. The module is now a graph
+  edge and a scan dependency. The version stays null when the manifest omits
+  a pin — not `""`, `0`, or a guessed version — and that absence is left out
+  of the drift mean rather than scored as current. SBOM export still keeps the
+  row, with the existing `unknown` version sentinel and no `@version` on the
+  purl.
+
 - **`vg show arch` clipped the map to a fixed viewport.** Columns that ran off the
   bottom of the window could not be scrolled or zoomed; the canvas is now a
   pannable, zoomable map (scroll or drag, pinch / Ctrl-scroll, + / −).

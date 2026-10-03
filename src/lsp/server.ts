@@ -522,7 +522,8 @@ export interface BreakdownItem {
   drift: number;
   /** Band for `drift` — the client maps it to a colour; it never re-derives it. */
   band: Band;
-  currentSpec: string;
+  /** Null when the manifest names the dependency and does not pin a version. */
+  currentSpec: string | null;
   resolvedVersion: string | null;
   latestStable: string | null;
   majorsBehind: number | null;
@@ -2346,7 +2347,7 @@ function buildBreakdown(rootDir: string, projects: ProjectScan[]): BreakdownItem
       ecosystem,
       drift: scored.drift,
       band: bandForScore(scored.drift),
-      currentSpec: row.currentSpec ?? '',
+      currentSpec: row.currentSpec,
       resolvedVersion: row.resolvedVersion ?? null,
       latestStable: row.latestStable ?? null,
       majorsBehind: row.majorsBehind ?? null,
@@ -2607,7 +2608,7 @@ function inlineLabel(dep: DependencyRow, state?: { ignored?: boolean; isNew?: bo
   } else if (dep.drift === 'minor-behind') {
     bits.push('minor behind');
   }
-  if (dep.latestStable) bits.push(dep.latestStable);
+  if (dep.latestStable && (dep.resolvedVersion || dep.currentSpec)) bits.push(dep.latestStable);
   // ageDays is fractional off the wire — round it. "1,896.836d stale" in the
   // margin of someone's package.json is the kind of detail that reads as sloppy.
   if (dep.ageDays != null && dep.ageDays >= 1) {
@@ -2743,7 +2744,7 @@ function hoverMarkdown(
   const yours = dep.resolvedVersion ?? dep.currentSpec;
   const drifted = dep.drift === 'major-behind' || dep.drift === 'minor-behind';
 
-  if (dep.latestStable && dep.latestStable !== yours) {
+  if (yours && dep.latestStable && dep.latestStable !== yours) {
     lines.push('**Currency**');
     lines.push(`| | |`);
     lines.push(`|---|---|`);
