@@ -1081,7 +1081,7 @@ vg scan [path] [--vulns] [--full] [--format text|json|sarif|md] [--out <file>] [
 | `--format` | `text` | Output format: `text`, `json`, `sarif`, or `md` |
 | `--out <file>` | — | Write output to a file |
 | `--fail-on <level>` | — | Exit with code 2 if findings at this level exist. `warn` / `error` gate on drift findings. `architecture-finding` (hard boundary violations) and `architecture-warning` (violations and warnings) gate on the architecture module's boundary findings, judged under the policy pack in force — `hexagonal-v1` unless `.vibgrate/architecture.toml`, `VIBGRATE_ARCHITECTURE_POLICY` or `vg build --policy` says `layered-v1`. The output names the pack whether the gate passes or fails; each failing row is `file:line  symbol  violation: … (rule)`. Pick the pack before turning this on: see [Architecture policy packs](./docs/architecture-policies.md) |
-| `--baseline <file>` | — | Compare against a previous baseline |
+| `--baseline <file>` | — | Compare against a previous baseline. Matched findings stay in the report and are listed in `baselineComparison` (see [Drift Baselines](#drift-baselines--fitness-functions)) |
 | `--changed-only` | — | Only scan changed files |
 | `--concurrency <n>` | `8` | Max concurrent npm registry calls |
 | `--drift-budget <score>` | — | Fitness gate: fail if drift score is above this budget |
@@ -2808,6 +2808,37 @@ Recommended workflow:
 
 This makes drift a formal quality gate (fitness function), not just reporting.
 
+### What a baseline comparison records
+
+`vg scan --baseline` still reports the numeric drift delta (`delta`, and `--drift-worsening` uses that delta). It also writes an additive `baselineComparison` block on the scan artifact so a matched finding is not a silent drop. Findings stay in `findings`. The block is omitted when no baseline file was read.
+
+```json
+"baseline": ".vibgrate/baseline.json",
+"delta": 2,
+"baselineComparison": {
+  "compared": true,
+  "suppressedCount": 2,
+  "suppressed": [
+    {
+      "ruleId": "vibgrate/dependency-rot",
+      "location": "package.json",
+      "id": "c0ffee…"
+    }
+  ]
+}
+```
+
+| Field | Meaning |
+| ----- | ------- |
+| `baseline` | Repo-relative path of the file that was compared (basename if the file is outside the repo) |
+| `baselineComparison.compared` | `true` when that file was read |
+| `baselineComparison.suppressedCount` | How many current findings were already in the baseline |
+| `baselineComparison.suppressed` | `{ ruleId, location, id }` for each match, sorted by `ruleId`, then `location`, then `id` |
+
+`id` is 32 lowercase hex characters: the first 128 bits of SHA-256 over the length-prefixed `ruleId`, `level`, `location`, and `message`. The same finding always produces the same id. A changed message is a different finding and is not listed as suppressed. Text and Markdown reports include `Baseline suppressions: N` and mark matched rows `(baselined)`.
+
+`baseline` remains the path string it has always been. `baselineComparison` is the new audit record.
+
 ## DriftScore
 
 ### How the Score Is Calculated
@@ -2854,9 +2885,13 @@ The default output. A coloured, human-readable report showing:
 
 The full scan artifact in JSON format. Contains all raw data, scores, findings, and VCS metadata. Stable schema (`schemaVersion: "1.0"`). This is the same artifact saved to `.vibgrate/scan_result.json`.
 
+When the scan compared a baseline, the artifact also carries `baseline` (the file path) and `baselineComparison` (`compared`, `suppressedCount`, and `suppressed` — see [What a baseline comparison records](#what-a-baseline-comparison-records)). Matched findings remain in `findings`.
+
 ### SARIF
 
 [Static Analysis Results Interchange Format](https://sarifweb.azurewebsites.net/) — compatible with GitHub Code Scanning and Azure DevOps. Contains findings only (not all metrics). Ideal for integrating drift findings directly into your PR review workflow.
+
+A finding that matched the baseline stays in `runs[0].results`. Its result gains a SARIF `suppressions` entry (`kind: "external"`, `status: "accepted"`) whose `properties.id` is the same id as `baselineComparison.suppressed`. Results that did not match have no `suppressions` field.
 
 ### Markdown
 
