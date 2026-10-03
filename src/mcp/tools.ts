@@ -16,7 +16,7 @@ import { loadOrDiscoverFederation } from '../runtime/federation.js';
 import { highConfidenceBridges } from '../runtime/bridge-edges.js';
 import { repositoryIdFromRoot } from '../runtime/paths.js';
 import { parseGraph } from '../engine/serialize.js';
-import { loadVulnerabilities, filterBySeverity, resolvePackageTarget, openFixableAdvisories } from './vuln-data.js';
+import { loadVulnerabilities, filterBySeverity, resolvePackageTarget, openFixableAdvisories, advisoryExploitability } from './vuln-data.js';
 import { attributedInventory } from './attribution.js';
 import { computeUpgradeImpact, getChangelogSignals, type VulnSeverity } from '../core-open/index.js';
 import { discoverModels } from '../engine/models.js';
@@ -792,6 +792,7 @@ export const TOOLS: VgTool[] = [
           cve: a.aliases.find((x) => x.startsWith('CVE-')) ?? null,
           severity: a.severity,
           cvss: a.cvss,
+          ...advisoryExploitability(a),
           exposureDays: a.exposureDays ?? null,
           introduced: a.introduced ?? null,
           fixedVersions: a.fixedVersions,
@@ -802,7 +803,7 @@ export const TOOLS: VgTool[] = [
   },
   {
     name: 'list_vulnerabilities',
-    description: 'Known vulnerabilities from the last `vg scan --vulns`: id/CVE, severity, CVSS, fixed version.',
+    description: 'Known vulnerabilities from the last `vg scan --vulns`: id/CVE, severity, CVSS, EPSS and KEV when the scan recorded them (null if absent, never 0), fixed version.',
     inputSchema: obj(
       { severity: { type: 'string', enum: ['low', 'moderate', 'high', 'critical'], description: 'minimum severity' } },
       [],
@@ -831,6 +832,7 @@ export const TOOLS: VgTool[] = [
             cve: a.aliases.find((x) => x.startsWith('CVE-')) ?? null,
             severity: a.severity,
             cvss: a.cvss,
+            ...advisoryExploitability(a),
             fixedVersions: a.fixedVersions,
             summary: a.summary,
           })),

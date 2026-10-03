@@ -40,6 +40,7 @@ function writeArtifact(root: string, vulnerabilities?: VulnerabilityScanResult):
 }
 
 const listVulns = TOOLS.find((t) => t.name === 'list_vulnerabilities')!;
+const vulnAttribution = TOOLS.find((t) => t.name === 'vuln_attribution')!;
 const stubGraph = {} as VgGraph;
 
 describe('vuln-data + list_vulnerabilities MCP tool', () => {
@@ -71,6 +72,34 @@ describe('vuln-data + list_vulnerabilities MCP tool', () => {
     expect(res.totalAdvisories).toBe(2);
     expect(res.affectedPackages).toBe(2);
     expect(res.packages.find((p) => p.package === 'lodash')?.advisories[0].cve).toBe('CVE-2021-1');
+  });
+
+  it('returns EPSS and KEV from the scan, null when absent, and keeps a real 0', () => {
+    const data: VulnerabilityScanResult = structuredClone(VULNS);
+    data.packages[0].advisories[0].epss = 0;
+    data.packages[0].advisories[0].epssPercentile = 0.05;
+    data.packages[0].advisories[0].kev = false;
+    writeArtifact(dir, data);
+
+    const listed = listVulns.handler(stubGraph, {}, { root: dir }) as {
+      packages: Array<{ package: string; advisories: Array<{ epss: number | null; epssPercentile: number | null; kev: boolean | null }> }>;
+    };
+    expect(listed.packages.find((p) => p.package === 'lodash')?.advisories[0]).toMatchObject({
+      epss: 0,
+      epssPercentile: 0.05,
+      kev: false,
+    });
+    expect(listed.packages.find((p) => p.package === 'minimist')?.advisories[0]).toMatchObject({
+      epss: null,
+      epssPercentile: null,
+      kev: null,
+    });
+
+    const attributed = vulnAttribution.handler(stubGraph, {}, { root: dir }) as {
+      packages: Array<{ package: string; advisories: Array<{ epss: number | null; kev: boolean | null }> }>;
+    };
+    expect(attributed.packages.find((p) => p.package === 'lodash')?.advisories[0]).toMatchObject({ epss: 0, kev: false });
+    expect(attributed.packages.find((p) => p.package === 'minimist')?.advisories[0].epss).toBeNull();
   });
 
   it('filters by minimum severity', () => {

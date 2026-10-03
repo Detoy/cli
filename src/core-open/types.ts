@@ -492,6 +492,23 @@ export interface VulnerabilityAdvisory {
   cvss: number | null;
   /** Raw CVSS vector string, when the advisory carried one. */
   cvssVector: string | null;
+  /**
+   * FIRST EPSS probability of exploitation in the wild within 30 days (0–1).
+   * `null` when the advisory source did not carry a score. Absence is never
+   * coerced to 0 — a stored 0 is a real score. Copied from data the scan
+   * already has (the advisory body or a `--package-manifest` bundle); the
+   * scan does not fetch EPSS.
+   */
+  epss?: number | null;
+  /**
+   * EPSS percentile (0–1) when the source carried one. Same absence rule as `epss`.
+   */
+  epssPercentile?: number | null;
+  /**
+   * CISA Known Exploited Vulnerabilities listing, when the source recorded it.
+   * `null` means the source did not say — not the same as `false`.
+   */
+  kev?: boolean | null;
   /** First fixed version per affected range (empty when no fix is published). */
   fixedVersions: string[];
   /** ISO-8601 publish date, when known. */

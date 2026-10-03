@@ -19,6 +19,28 @@ export interface ManifestAdvisory {
   severity?: 'low' | 'moderate' | 'high' | 'critical' | 'unknown';
   cvss?: number;
   cvssVector?: string;
+  /**
+   * FIRST EPSS probability (0–1) when this bundle already carries one.
+   * Omit when unknown. A value of 0 is a real score — do not use it for "absent".
+   */
+  epss?: number | null;
+  /** EPSS percentile (0–1), when the bundle carries one. Same absence rule as `epss`. */
+  epssPercentile?: number | null;
+  /**
+   * CISA Known Exploited Vulnerabilities flag, when the bundle recorded it.
+   * `true` or `false` are explicit; omit when unknown (that is not the same as `false`).
+   */
+  kev?: boolean | null;
+  /**
+   * Same signals grouped under one object (`epss`, `epssPercentile` or `percentile`, `kev`).
+   * Flat fields above win when both are set.
+   */
+  exploitability?: {
+    epss?: number | null;
+    epssPercentile?: number | null;
+    percentile?: number | null;
+    kev?: boolean | null;
+  };
   /** Affected semver ranges as [introduced, fixed) pairs (either bound optional). */
   ranges?: Array<{ introduced?: string; fixed?: string }>;
   /** Explicit affected versions, as an alternative/complement to `ranges`. */

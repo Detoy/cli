@@ -26,6 +26,22 @@ export function loadVulnerabilities(root: string): VulnerabilityScanResult | nul
   return readScanArtifact(root)?.extended?.vulnerabilities ?? null;
 }
 
+/**
+ * EPSS / KEV for machine-readable vuln JSON.
+ * A missing key and an explicit null both mean "not supplied". A numeric 0 is kept.
+ */
+export function advisoryExploitability(advisory: {
+  epss?: number | null;
+  epssPercentile?: number | null;
+  kev?: boolean | null;
+}): { epss: number | null; epssPercentile: number | null; kev: boolean | null } {
+  return {
+    epss: advisory.epss ?? null,
+    epssPercentile: advisory.epssPercentile ?? null,
+    kev: advisory.kev ?? null,
+  };
+}
+
 /** The drift target for a package: ecosystem + installed/latest versions. */
 export interface PackageTarget {
   ecosystem: VulnEcosystem | 'unknown';

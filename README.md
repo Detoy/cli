@@ -419,7 +419,7 @@ One scan gives you:
 
 ## Find known vulnerabilities and who introduced them
 
-`vg scan --vulns` checks your installed dependencies against the public [OSV](https://vibgrate.com/glossary/osv) database and reports each known vulnerability with its severity, CVSS score, and the version that fixes it — as text, JSON, or SARIF. Add `--package-manifest` to run it fully offline from a local advisory bundle.
+`vg scan --vulns` checks your installed dependencies against the public [OSV](https://vibgrate.com/glossary/osv) database and reports each known vulnerability with its severity, CVSS score, and the version that fixes it — as text, JSON, or SARIF. When the advisory or an offline `--package-manifest` bundle already includes an [EPSS](https://vibgrate.com/glossary/epss) score, percentile, or [CISA KEV](https://vibgrate.com/glossary/kev) flag, the JSON artifact records `epss`, `epssPercentile`, and `kev` (`null` when absent, never coerced to `0`). The scan does not fetch EPSS. Add `--package-manifest` to run it fully offline from a local advisory bundle.
 
 ```bash
 vg scan --vulns                 # drift score + known vulnerabilities
