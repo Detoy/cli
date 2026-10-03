@@ -1,4 +1,5 @@
 import type { ScanArtifact } from '../types.js';
+import { baselineSuppressionPhraseFrom } from '../../core-open/baseline-audit.js';
 
 /** Generate a Markdown report from scan artifact */
 export function formatMarkdown(artifact: ScanArtifact): string {
@@ -127,6 +128,12 @@ export function formatMarkdown(artifact: ScanArtifact): string {
     const dir = artifact.delta > 0 ? '📈' : artifact.delta < 0 ? '📉' : '➡️';
     const trend = artifact.delta > 0 ? ' _(worsened)_' : artifact.delta < 0 ? ' _(improved)_' : '';
     lines.push(`## Drift Delta: ${dir} ${artifact.delta > 0 ? '+' : ''}${artifact.delta} vs baseline${trend}`);
+    lines.push('');
+  }
+
+  const baselinePhrase = baselineSuppressionPhraseFrom(artifact.baseline);
+  if (baselinePhrase) {
+    lines.push(`**Baseline:** ${baselinePhrase}`);
     lines.push('');
   }
 

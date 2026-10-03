@@ -557,6 +557,7 @@ vg scan --baseline .vibgrate/baseline.json --drift-budget 40 --drift-worsening 5
 
 - `--drift-budget <score>` fails the build if drift exceeds your budget.
 - `--drift-worsening <percent>` fails the build if drift worsens by more than X% vs baseline.
+- `--baseline <file>` keeps every finding and records which ones were already in the baseline (`baseline.suppressed` in JSON, the same ids on SARIF suppressions). The text report includes the count.
 
 Copy-paste CI templates live in `examples/github-actions/`. Azure DevOps and GitLab CI snippets are in [DOCS.md](./DOCS.md#ci-integration).
 

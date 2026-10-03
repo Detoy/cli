@@ -2,6 +2,7 @@
 // scripts/vendor-core-open.mjs. Do not edit here — change the source package
 // and re-run the vendor script. Apache-2.0.
 import type { ScanArtifact } from '../types.js';
+import { baselineSuppressionPhraseFrom } from '../baseline-audit.js';
 import { securityPacksLabel } from './text.js';
 
 /** Rows shown before the infrastructure-findings table is cut with an "… N more" line. */
@@ -183,6 +184,12 @@ export function formatMarkdown(artifact: ScanArtifact): string {
   if (artifact.delta !== undefined) {
     const dir = artifact.delta > 0 ? '📈' : artifact.delta < 0 ? '📉' : '➡️';
     lines.push(`## Drift Delta: ${dir} ${artifact.delta > 0 ? '+' : ''}${artifact.delta} vs baseline`);
+    lines.push('');
+  }
+
+  const baselinePhrase = baselineSuppressionPhraseFrom(artifact.baseline);
+  if (baselinePhrase) {
+    lines.push(`**Baseline:** ${baselinePhrase}`);
     lines.push('');
   }
 

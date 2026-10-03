@@ -3,6 +3,7 @@
 // and re-run the vendor script. Apache-2.0.
 import chalk from 'chalk';
 import type { ScanArtifact, BillingSummary, ExtendedScanResults, InventoryItem, ServiceDependencyItem, ArchitectureResult, SecurityFinding, SecuritySection } from '../types.js';
+import { baselineSuppressionPhraseFrom } from '../baseline-audit.js';
 import { driftBar } from '../ui/bar.js';
 import { titleBox, panelBox } from '../ui/box.js';
 
@@ -85,15 +86,21 @@ export function formatText(artifact: ScanArtifact, opts: FormatTextOptions = {})
     lines.push('');
   }
 
-  if (artifact.delta !== undefined) {
-    // Drift is "lower is better": a negative delta means drift fell (good),
-    // a positive delta means drift rose (bad).
-    const deltaStr = artifact.delta < 0
-      ? chalk.green(`${artifact.delta}`)
-      : artifact.delta > 0
-        ? chalk.red(`+${artifact.delta}`)
-        : chalk.dim('0');
-    lines.push(chalk.bold('  Drift Delta: ') + deltaStr + ' (vs baseline)');
+  const baselinePhrase = baselineSuppressionPhraseFrom(artifact.baseline);
+  if (artifact.delta !== undefined || baselinePhrase) {
+    if (artifact.delta !== undefined) {
+      // Drift is "lower is better": a negative delta means drift fell (good),
+      // a positive delta means drift rose (bad).
+      const deltaStr = artifact.delta < 0
+        ? chalk.green(`${artifact.delta}`)
+        : artifact.delta > 0
+          ? chalk.red(`+${artifact.delta}`)
+          : chalk.dim('0');
+      lines.push(chalk.bold('  Drift Delta: ') + deltaStr + ' (vs baseline)');
+    }
+    if (baselinePhrase) {
+      lines.push(chalk.bold('  Baseline: ') + baselinePhrase);
+    }
     lines.push('');
   }
 

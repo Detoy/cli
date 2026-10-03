@@ -33,6 +33,7 @@ import { Semaphore } from './utils/semaphore.js';
 import { computeDriftScore, generateFindings, computeProjectId, computeSolutionId } from './scoring/drift-score.js';
 import { formatText } from './formatters/text.js';
 import { formatSarif } from './formatters/sarif.js';
+import { baselineFileReference, suppressedBaselineFindings } from './baseline-audit.js';
 import { formatMarkdown } from './formatters/markdown.js';
 import { loadConfig, appendExcludePatterns } from './config.js';
 import { pathExists, readJsonFile, writeJsonFile, writeTextFile, ensureDir, FileCache, quickTreeCount } from './utils/fs.js';
@@ -818,12 +819,23 @@ export async function runCoreScan(
     if (await pathExists(baselinePath)) {
       try {
         const baseline = await readJsonFile<ScanArtifact>(baselinePath);
-        // Only a repo-relative reference may enter the artifact: the absolute
-        // path leaks the local username/home layout to the ingest server. A
-        // baseline outside the repo degrades to its basename for the same reason.
-        const relBaseline = path.relative(rootDir, baselinePath);
-        artifact.baseline = !relBaseline || relBaseline.startsWith('..') ? path.basename(baselinePath) : relBaseline;
-        artifact.delta = artifact.drift.score - baseline.drift.score;
+        const score = baseline?.drift?.score;
+        if (typeof score !== 'number' || !Number.isFinite(score) || !Array.isArray(baseline.findings)) {
+          throw new Error('baseline file is not a scan artifact');
+        }
+        // Findings stay on `artifact.findings`. This block is the auditable
+        // record of which of them were already in the baseline. Only a
+        // repo-relative reference (or a basename, when the file sits outside
+        // the repo) may enter the artifact: an absolute path leaks the local
+        // username and home layout.
+        const suppressed = suppressedBaselineFindings(artifact.findings, baseline.findings);
+        artifact.baseline = {
+          compared: true,
+          file: baselineFileReference(rootDir, baselinePath),
+          suppressedCount: suppressed.length,
+          suppressed,
+        };
+        artifact.delta = artifact.drift.score - score;
       } catch {
         console.error(chalk.yellow(`Warning: Could not read baseline file: ${baselinePath}`));
       }

@@ -626,6 +626,34 @@ export interface Finding {
   details?: Record<string, unknown>;
 }
 
+/**
+ * One current finding that was already present in the compared baseline.
+ * `id` is the content-derived finding id (see `findingId`). It is the
+ * identifier copied into SARIF suppressions. The finding message is absent.
+ */
+export interface BaselineSuppressedFinding {
+  ruleId: string;
+  location: string;
+  id: string;
+}
+
+/**
+ * Auditable `--baseline` comparison. Matching findings stay in
+ * {@link ScanArtifact.findings}; this block is the record that they were
+ * recognized as already baselined. `suppressed` is sorted by `ruleId`, then
+ * `location`, then `id`.
+ */
+export interface BaselineComparison {
+  compared: true;
+  /**
+   * Repo-relative path of the baseline file (`/` separators), or its basename
+   * when the file lives outside the repo. Absolute paths never enter the artifact.
+   */
+  file: string;
+  suppressedCount: number;
+  suppressed: BaselineSuppressedFinding[];
+}
+
 // ── Version control info ──
 
 export type VcsType = 'git' | 'unknown';
@@ -709,7 +737,12 @@ export interface ScanArtifact {
   solutions?: SolutionScan[];
   drift: DriftScore;
   findings: Finding[];
-  baseline?: string;
+  /**
+   * Present when `--baseline` read a scan artifact. Records which current
+   * findings were already in that baseline. Findings are not removed from
+   * {@link ScanArtifact.findings}.
+   */
+  baseline?: BaselineComparison;
   delta?: number;
   extended?: ExtendedScanResults;
   /** Scan wall-clock duration in milliseconds */

@@ -3,6 +3,7 @@ import { describe, it, expect } from 'vitest';
 // reporting-side copy was a stale duplicate and is gone. These tests keep
 // exercising the live writer.
 import { formatSarif as formatSarifCore } from '../../core-open/formatters/sarif.js';
+import { findingId } from '../../core-open/baseline-audit.js';
 import { formatMarkdown } from '../formatters/markdown.js';
 import { formatText } from '../formatters/text.js';
 import type { ScanArtifact } from '../types.js';
@@ -144,6 +145,45 @@ describe('formatSarif', () => {
 
     expect(sarif.runs[0].invocations[0].startTimeUtc).toBe('2026-02-16T00:00:00.000Z');
     expect(sarif.runs[0].invocations[0].executionSuccessful).toBe(true);
+    expect(sarif.runs[0].invocations[0].properties).toBeUndefined();
+    expect(sarif.runs[0].results[0].suppressions).toBeUndefined();
+  });
+
+  it('puts baseline ids on SARIF suppressions and keeps every result', () => {
+    const artifact = makeArtifact();
+    const rot = artifact.findings[1];
+    const id = findingId(rot);
+    artifact.baseline = {
+      compared: true,
+      file: '.vibgrate/baseline.json',
+      suppressedCount: 1,
+      suppressed: [{ ruleId: rot.ruleId, location: rot.location, id }],
+    };
+    const sarif = formatSarif(artifact) as any;
+    const results = sarif.runs[0].results;
+
+    expect(results).toHaveLength(2);
+    expect(results[0].suppressions).toBeUndefined();
+    expect(results[1].suppressions).toEqual([
+      {
+        kind: 'external',
+        status: 'accepted',
+        justification: 'Matched a finding recorded in the drift baseline.',
+        properties: { id },
+      },
+    ]);
+    expect(sarif.runs[0].invocations[0].properties).toEqual({
+      baselineCompared: true,
+      baselineSuppressedCount: 1,
+    });
+  });
+
+  it('does not treat a legacy baseline path string as suppressions', () => {
+    const artifact = makeArtifact();
+    (artifact as { baseline?: unknown }).baseline = '.vibgrate/baseline.json';
+    const sarif = formatSarif(artifact) as any;
+    expect(sarif.runs[0].results[0].suppressions).toBeUndefined();
+    expect(sarif.runs[0].invocations[0].properties).toBeUndefined();
   });
 });
 
@@ -210,6 +250,21 @@ describe('formatMarkdown', () => {
     const md = formatMarkdown(makeArtifact({ delta: -3 }));
     expect(md).toContain('-3');
     expect(md).toContain('📉');
+  });
+
+  it('includes the baselined finding count without dropping findings', () => {
+    const md = formatMarkdown(makeArtifact({
+      delta: 0,
+      baseline: {
+        compared: true,
+        file: '.vibgrate/baseline.json',
+        suppressedCount: 2,
+        suppressed: [],
+      },
+    }));
+    expect(md).toContain('**Baseline:** 2 findings suppressed');
+    expect(md).toContain('vibgrate/runtime-lag');
+    expect(md).toContain('vibgrate/dependency-rot');
   });
 
   it('handles empty findings', () => {
@@ -366,6 +421,27 @@ describe('formatText', () => {
     const text = formatText(makeArtifact({ delta: 10 }));
     expect(text).toContain('Drift Delta');
     expect(text).toContain('vs baseline');
+  });
+
+  it('includes the baselined finding count', () => {
+    const text = formatText(makeArtifact({
+      delta: 1,
+      baseline: {
+        compared: true,
+        file: 'baseline.json',
+        suppressedCount: 1,
+        suppressed: [],
+      },
+    }));
+    expect(text).toContain('Drift Delta');
+    expect(text).toContain('1 finding suppressed');
+    expect(text).toContain('vibgrate/dependency-rot');
+  });
+
+  it('ignores a legacy baseline path string', () => {
+    const artifact = makeArtifact({ delta: 1 });
+    (artifact as { baseline?: unknown }).baseline = 'baseline.json';
+    expect(formatText(artifact)).not.toContain('suppressed');
   });
 
   it('handles empty projects', () => {

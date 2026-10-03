@@ -67,6 +67,16 @@ export { formatText } from './formatters/text.js';
 export { formatSarif } from './formatters/sarif.js';
 export { formatMarkdown } from './formatters/markdown.js';
 
+// ── Baseline comparison (audit record; findings are not dropped) ────────────
+export {
+  baselineFileReference,
+  baselineSuppressionPhrase,
+  baselineSuppressionPhraseFrom,
+  findingId,
+  readBaselineComparison,
+  suppressedBaselineFindings,
+} from './baseline-audit.js';
+
 // ── Scanners (fact collection) ───────────────────────────────────────────────
 export { scanNodeProjects } from './scanners/node-scanner.js';
 export { scanDotnetProjects } from './scanners/dotnet-scanner.js';

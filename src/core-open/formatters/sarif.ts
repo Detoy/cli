@@ -2,20 +2,25 @@
 // scripts/vendor-core-open.mjs. Do not edit here — change the source package
 // and re-run the vendor script. Apache-2.0.
 import type { ScanArtifact, Finding, SecurityFinding, SecuritySection, SecuritySeverity } from '../types.js';
+import { findingId, readBaselineComparison } from '../baseline-audit.js';
 
 /**
  * Generate a SARIF 2.1.0 document from scan artifact.
  *
- * The first run carries the drift findings and is byte-for-byte what it has
- * always been. When the artifact carries security-pack findings
- * (`extended.security`, from `vg scan --iac`), a second run is appended for
- * them — one run per artifact, with every pack listed under
- * `tool.extensions`, so a scan that ran no pack produces exactly the same
- * bytes as before.
+ * The first run carries the drift findings. With no baseline comparison and
+ * no security-pack findings, that run is byte-for-byte what it has always
+ * been. A baseline comparison keeps every result and adds `suppressions`
+ * whose `properties.id` matches `baseline.suppressed` in the JSON artifact,
+ * plus an invocation property for the count (including zero). When the
+ * artifact carries security-pack findings (`extended.security`, from
+ * `vg scan --iac`), a second run is appended for them — one run per artifact,
+ * with every pack listed under `tool.extensions`.
  */
 export function formatSarif(artifact: ScanArtifact): object {
+  const comparison = readBaselineComparison(artifact.baseline);
+  const suppressedIds = comparison ? new Set(comparison.suppressed.map((row) => row.id)) : null;
   const rules = buildRules(artifact.findings);
-  const results = artifact.findings.map((f) => toSarifResult(f));
+  const results = artifact.findings.map((f) => toSarifResult(f, suppressedIds));
 
   const runs: object[] = [
     {
@@ -32,6 +37,17 @@ export function formatSarif(artifact: ScanArtifact): object {
         {
           executionSuccessful: true,
           startTimeUtc: artifact.timestamp,
+          // Present only after a baseline comparison, so a scan that did not
+          // compare stays byte-for-byte what it was. A count of zero is still
+          // recorded: comparison with nothing matched is not a silent omission.
+          ...(comparison
+            ? {
+                properties: {
+                  baselineCompared: true,
+                  baselineSuppressedCount: comparison.suppressedCount,
+                },
+              }
+            : {}),
         },
       ],
     },
@@ -179,7 +195,9 @@ function buildRules(findings: Finding[]) {
   });
 }
 
-function toSarifResult(finding: Finding) {
+function toSarifResult(finding: Finding, suppressedIds: ReadonlySet<string> | null) {
+  const id = suppressedIds ? findingId(finding) : undefined;
+  const suppressed = id !== undefined && suppressedIds?.has(id) === true;
   return {
     ruleId: finding.ruleId,
     level: finding.level === 'error' ? 'error' : finding.level === 'warning' ? 'warning' : 'note',
@@ -196,5 +214,19 @@ function toSarifResult(finding: Finding) {
     // Surface structured finding detail (e.g. advisory id, CVSS, fixed version)
     // to consumers like GitHub code scanning without bloating the message text.
     ...(finding.details && Object.keys(finding.details).length > 0 ? { properties: finding.details } : {}),
+    // The result stays in `results`. The suppression carries the same id as
+    // `baseline.suppressed` in the JSON artifact.
+    ...(suppressed && id
+      ? {
+          suppressions: [
+            {
+              kind: 'external',
+              status: 'accepted',
+              justification: 'Matched a finding recorded in the drift baseline.',
+              properties: { id },
+            },
+          ],
+        }
+      : {}),
   };
 }

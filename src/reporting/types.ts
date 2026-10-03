@@ -204,6 +204,25 @@ export interface Finding {
   details?: Record<string, unknown>;
 }
 
+/** One current finding that was already present in the compared baseline. */
+export interface BaselineSuppressedFinding {
+  ruleId: string;
+  location: string;
+  id: string;
+}
+
+/**
+ * Auditable `--baseline` comparison. Matching findings stay in `findings`.
+ * `suppressed` is sorted by `ruleId`, then `location`, then `id`.
+ */
+export interface BaselineComparison {
+  compared: true;
+  /** Repo-relative baseline path (`/` separators), or the basename when outside the repo. */
+  file: string;
+  suppressedCount: number;
+  suppressed: BaselineSuppressedFinding[];
+}
+
 // ── Version control info ──
 
 export type VcsType = 'git' | 'unknown';
@@ -245,7 +264,11 @@ export interface ScanArtifact {
   solutions?: SolutionScan[];
   drift: DriftScore;
   findings: Finding[];
-  baseline?: string;
+  /**
+   * Present when `--baseline` read a scan artifact. Records which current
+   * findings were already in that baseline. Findings stay in `findings`.
+   */
+  baseline?: BaselineComparison;
   delta?: number;
   extended?: ExtendedScanResults;
   /** Scan wall-clock duration in milliseconds */

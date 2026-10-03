@@ -1081,7 +1081,7 @@ vg scan [path] [--vulns] [--full] [--format text|json|sarif|md] [--out <file>] [
 | `--format` | `text` | Output format: `text`, `json`, `sarif`, or `md` |
 | `--out <file>` | — | Write output to a file |
 | `--fail-on <level>` | — | Exit with code 2 if findings at this level exist. `warn` / `error` gate on drift findings. `architecture-finding` (hard boundary violations) and `architecture-warning` (violations and warnings) gate on the architecture module's boundary findings, judged under the policy pack in force — `hexagonal-v1` unless `.vibgrate/architecture.toml`, `VIBGRATE_ARCHITECTURE_POLICY` or `vg build --policy` says `layered-v1`. The output names the pack whether the gate passes or fails; each failing row is `file:line  symbol  violation: … (rule)`. Pick the pack before turning this on: see [Architecture policy packs](./docs/architecture-policies.md) |
-| `--baseline <file>` | — | Compare against a previous baseline |
+| `--baseline <file>` | — | Compare against a previous baseline. Matched findings stay in the report and are listed on `baseline.suppressed` (and as SARIF suppressions); the text and Markdown reports include the count |
 | `--changed-only` | — | Only scan changed files |
 | `--concurrency <n>` | `8` | Max concurrent npm registry calls |
 | `--drift-budget <score>` | — | Fitness gate: fail if drift score is above this budget |
@@ -2808,6 +2808,21 @@ Recommended workflow:
 
 This makes drift a formal quality gate (fitness function), not just reporting.
 
+`vg scan --baseline` does not drop findings that were already in the baseline. The scan artifact records them so a suppression is visible in the same document:
+
+```json
+"baseline": {
+  "compared": true,
+  "file": ".vibgrate/baseline.json",
+  "suppressedCount": 2,
+  "suppressed": [
+    { "ruleId": "vibgrate/dependency-rot", "location": "package.json", "id": "af173ea1c1efa4fd" }
+  ]
+}
+```
+
+`suppressed` is sorted by `ruleId`, then `location`, then `id`. `file` is the repo-relative path (`/` separators), or the file's basename when the baseline sits outside the repo — an absolute path is never stored. `id` is 16 hex characters of SHA-256 over the rule, the location, and a stable subject: advisory id, ecosystem, and package for a vulnerability; the package or framework name for a major-lag finding; otherwise the rule and location. Text and Markdown reports include `suppressedCount`. SARIF keeps the same results and sets `suppressions[].properties.id` to that id.
+
 ## DriftScore
 
 ### How the Score Is Calculated
@@ -2854,9 +2869,13 @@ The default output. A coloured, human-readable report showing:
 
 The full scan artifact in JSON format. Contains all raw data, scores, findings, and VCS metadata. Stable schema (`schemaVersion: "1.0"`). This is the same artifact saved to `.vibgrate/scan_result.json`.
 
+When the scan was run with `--baseline`, the artifact also contains a `baseline` object: `compared`, `file`, `suppressedCount`, and `suppressed` (`ruleId`, `location`, `id`). Those entries are the findings that were already in the baseline. The same findings remain in `findings`. See [Drift Baselines & Fitness Functions](#drift-baselines--fitness-functions) for the field meanings and the id algorithm.
+
 ### SARIF
 
 [Static Analysis Results Interchange Format](https://sarifweb.azurewebsites.net/) — compatible with GitHub Code Scanning and Azure DevOps. Contains findings only (not all metrics). Ideal for integrating drift findings directly into your PR review workflow.
+
+A `--baseline` scan keeps every result. Each result that matches the baseline gets a SARIF `suppressions` entry whose `properties.id` is the same id as `baseline.suppressed` in the JSON artifact. The run invocation records `baselineCompared` and `baselineSuppressedCount`, including when the count is zero.
 
 ### Markdown
 
