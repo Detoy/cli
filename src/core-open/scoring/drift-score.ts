@@ -3,6 +3,7 @@
 // and re-run the vendor script. Apache-2.0.
 import * as crypto from 'node:crypto';
 import type { ProjectScan, DriftScore, Finding, RiskLevel, VibgrateConfig } from '../types.js';
+import { licenseFindingsForProjects } from '../licenses/project-license.js';
 import { aggregateDependencyDrift } from './dependency-drift-v3.js';
 
 /**
@@ -383,7 +384,7 @@ export function generateFindings(
     }
   }
 
-  return findings;
+  return [...findings, ...licenseFindingsForProjects(projects)];
 }
 
 /**

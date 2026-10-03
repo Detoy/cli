@@ -116,6 +116,12 @@ export interface DependencyLicense {
   source: 'manifest' | 'registry' | 'license-file' | 'none';
   /** 0–1 confidence in the captured signal. */
   confidence: number;
+  /**
+   * Repo-relative path (forward slashes) of the evidence file — the manifest,
+   * NOTICE, or declared license file — when the scan already had one.
+   * Omitted for registry-only signals, which have no local file to open.
+   */
+  path?: string;
 }
 
 // ── Per-dependency analysis row ──
@@ -211,6 +217,12 @@ export interface ProjectScan {
   packageManager?: string;
   frameworks: DetectedFramework[];
   dependencies: DependencyRow[];
+  /**
+   * License declared by this project, when a manifest `license` field or a
+   * LICENSE / NOTICE / COPYING file sits beside it. `path` is the evidence
+   * file. Absent when nothing was declared — not the same as an empty license.
+   */
+  license?: DependencyLicense;
   dependencyAgeBuckets: {
     current: number;
     oneBehind: number;

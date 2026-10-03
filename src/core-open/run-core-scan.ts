@@ -31,6 +31,7 @@ import { ComposerCache } from './scanners/composer-cache.js';
 import { PubCache } from './scanners/pub-cache.js';
 import { Semaphore } from './utils/semaphore.js';
 import { computeDriftScore, generateFindings, computeProjectId, computeSolutionId } from './scoring/drift-score.js';
+import { attachProjectLicenses } from './licenses/project-license.js';
 import { formatText } from './formatters/text.js';
 import { formatSarif } from './formatters/sarif.js';
 import { formatMarkdown } from './formatters/markdown.js';
@@ -722,6 +723,11 @@ export async function runCoreScan(
 
   // ── Step: Findings ──
   progress.startStep('findings');
+  await attachProjectLicenses(allProjects, rootDir, {
+    exists: (p) => fileCache.pathExists(p),
+    readText: (p) => fileCache.readTextFile(p),
+    readJson: (p) => fileCache.readJsonFile(p),
+  });
   const findings = [...generateFindings(allProjects, config), ...vulnFindings];
   const warnCount = findings.filter((f) => f.level === 'warning').length;
   const errCount = findings.filter((f) => f.level === 'error').length;
