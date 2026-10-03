@@ -51,10 +51,10 @@ describe('vg scan --package-manifest fails closed', () => {
     return [...logSpy.mock.calls, ...errorSpy.mock.calls].flat().join('\n');
   }
 
-  async function runScan(dir: string, outPath: string, manifestPath: string): Promise<unknown> {
+  async function runScan(dir: string, outPath: string, manifestPath: string, extra: string[] = []): Promise<unknown> {
     try {
       await scanCommand.parseAsync(
-        [dir, '--offline', '--no-graph', '--quiet', '--format', 'json', '--out', outPath, '--package-manifest', manifestPath],
+        [dir, '--offline', '--no-graph', '--quiet', '--format', 'json', '--out', outPath, '--package-manifest', manifestPath, ...extra],
         { from: 'user' },
       );
       return undefined;
@@ -208,7 +208,7 @@ describe('vg scan --package-manifest fails closed', () => {
       throw new Error('unexpected network access during offline scan');
     }));
 
-    const err = await runScan(dir, outPath, manifestPath);
+    const err = await runScan(dir, outPath, manifestPath, ['--vulns']);
     expect(err).toBeUndefined();
     expect(fs.existsSync(outPath)).toBe(true);
     const report = JSON.parse(fs.readFileSync(outPath, 'utf8')) as {
@@ -252,7 +252,7 @@ describe('vg scan --package-manifest fails closed', () => {
       throw new Error('unexpected network access during offline scan');
     }));
 
-    const err = await runScan(dir, outPath, manifestPath);
+    const err = await runScan(dir, outPath, manifestPath, ['--vulns']);
     expect(err).toBeUndefined();
     expect(fs.existsSync(outPath)).toBe(true);
     const report = JSON.parse(fs.readFileSync(outPath, 'utf8')) as {
