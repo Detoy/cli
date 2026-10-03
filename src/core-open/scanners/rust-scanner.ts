@@ -6,6 +6,7 @@ import * as semver from 'semver';
 import { readTextFile, readJsonFile, pathExists, FileCache } from '../utils/fs.js';
 import { withTimeout } from '../utils/timeout.js';
 import { CargoCache } from './cargo-cache.js';
+import { rethrowLockfileParseError } from '../utils/lockfile-parse.js';
 import { loadCargoLockIndex, type CargoLockIndex } from './cargo-lockfile.js';
 import type { LockfileIo } from './npm-lockfile.js';
 import type { ProjectScan, DependencyRow, DetectedFramework } from '../types.js';
@@ -216,6 +217,7 @@ export async function scanRustProjects(
         }
       }
     } catch (e: unknown) {
+      rethrowLockfileParseError(e);
       const msg = e instanceof Error ? e.message : String(e);
       console.error(`Error scanning Rust project ${dir}: ${msg}`);
     }
@@ -251,8 +253,12 @@ async function scanOneRustProject(
     readText: (p) => (cache ? cache.readTextFile(p) : readTextFile(p)),
     readJson: <T>(p: string) => (cache ? cache.readJsonFile<T>(p) : readJsonFile<T>(p)),
   };
-  let lockIndex: CargoLockIndex | null = await loadCargoLockIndex(dir, lockIo).catch(() => null);
-  if (!lockIndex && dir !== rootDir) lockIndex = await loadCargoLockIndex(rootDir, lockIo).catch(() => null);
+  const swallow = (err: unknown): null => {
+    rethrowLockfileParseError(err);
+    return null;
+  };
+  let lockIndex: CargoLockIndex | null = await loadCargoLockIndex(dir, lockIo).catch(swallow);
+  if (!lockIndex && dir !== rootDir) lockIndex = await loadCargoLockIndex(rootDir, lockIo).catch(swallow);
   
   // Filter out dev dependencies for main analysis
   const prodDeps = allDeps.filter(d => !d.isDev);

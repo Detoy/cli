@@ -9,7 +9,11 @@ import type { VgGraph } from '../schema.js';
  * When `graphPath` is omitted, prefers an existing global-store snapshot, then
  * the legacy `.vibgrate/graph.json`, matching {@link resolveGraphPath}.
  * Prefers the SQLite index when its corpusHash matches the committed map
- * (faster cold serve on large repos). Returns null if none exists.
+ * (faster cold serve on large repos). Returns null when no map exists.
+ *
+ * Throws `GraphLoadError` when a map file is present but truncated, not valid
+ * JSON, or not a schema this version of vg can read. The message says what
+ * failed and to rebuild with `vg build`; it does not include file contents.
  */
 export function loadGraph(root: string, graphPath?: string): VgGraph | null {
   const file = resolveGraphPath(root, graphPath);

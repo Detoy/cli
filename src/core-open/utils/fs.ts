@@ -9,7 +9,7 @@ import { promisify } from 'node:util';
 import type { Dirent } from 'node:fs';
 import ignore, { type Ignore } from 'ignore';
 import { Semaphore } from './semaphore.js';
-import { compileGlobs } from './glob.js';
+import { compileGlobs, gitignoreWithoutBlankLines } from './glob.js';
 
 
 const execFileAsync = promisify(execFile);
@@ -35,7 +35,9 @@ interface GitignoreLevel {
 async function extendGitignoreLevels(dir: string, levels: GitignoreLevel[]): Promise<GitignoreLevel[]> {
   try {
     const txt = await fs.readFile(path.join(dir, '.gitignore'), 'utf8');
-    return [...levels, { dir, ig: ignore().add(txt) }];
+    const rules = gitignoreWithoutBlankLines(txt);
+    if (!rules) return levels;
+    return [...levels, { dir, ig: ignore().add(rules) }];
   } catch {
     return levels;
   }

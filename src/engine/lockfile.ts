@@ -1,6 +1,43 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import {
+  assertLockfileText,
+  lockfileKind,
+  LockfileParseError,
+  parseLockfileJson,
+} from '../core-open/utils/lockfile-parse.js';
 import type { DepRecord } from './drift.js';
+
+/**
+ * Read a lockfile that may be absent. A missing file is `undefined` (the
+ * caller falls through). A truncated or invalid file throws
+ * {@link LockfileParseError} — never a partial graph, and never the file's
+ * contents (lockfiles can embed registry tokens).
+ */
+function readOptionalText(abs: string): string | undefined {
+  try {
+    return fs.readFileSync(abs, 'utf8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    throw new LockfileParseError(abs, 'unreadable');
+  }
+}
+
+function readCheckedText(root: string, file: string): string | undefined {
+  const abs = path.join(root, file);
+  const text = readOptionalText(abs);
+  if (text === undefined) return undefined;
+  const kind = lockfileKind(file);
+  if (kind) assertLockfileText(abs, text, kind);
+  return text;
+}
+
+function readCheckedJson(root: string, file: string): unknown | undefined {
+  const abs = path.join(root, file);
+  const text = readOptionalText(abs);
+  if (text === undefined) return undefined;
+  return parseLockfileJson(abs, text);
+}
 
 /**
  * Lockfile-pinned version resolution (VG-LIB-SUPERSET-PLAN A.2 / D13).
@@ -8,8 +45,10 @@ import type { DepRecord } from './drift.js';
  * The version we serve docs for should be the one your **lockfile** pins, not
  * whatever happens to be unpacked in `node_modules` (which is empty in CI / a
  * fresh clone). This reads the pin deterministically and offline. Where a lockfile
- * isn't present or parseable we return `undefined` and the caller falls back to the
+ * isn't present we return `undefined` and the caller falls back to the
  * installed tree, then the declared range — we never fabricate a version.
+ * A file that exists but is truncated or syntactically invalid throws
+ * {@link LockfileParseError} instead of pretending the pin is absent.
  *
  * npm covers `package-lock.json` (v1/v2/v3), `pnpm-lock.yaml` (v6/v9) and
  * `yarn.lock`. Other ecosystems follow the same shape and return `undefined`
@@ -30,27 +69,20 @@ export function lockfileVersion(root: string, ecosystem: DepRecord['ecosystem'],
 
 /** Gradle `gradle.lockfile` — lines `group:artifact:version=configurations…`. */
 function gradleLock(root: string, name: string): string | undefined {
-  let text: string;
-  try {
-    text = fs.readFileSync(path.join(root, 'gradle.lockfile'), 'utf8');
-  } catch {
-    return undefined;
-  }
+  const text = readCheckedText(root, 'gradle.lockfile');
+  if (text === undefined) return undefined;
   const m = new RegExp(`^${escapeRegExp(name)}:([^=\\s]+)=`, 'm').exec(text);
   return m ? m[1] : undefined;
 }
 
 /** Swift `Package.resolved` — JSON pins (v2/v3 `pins[]`, v1 `object.pins[]`); match `identity`. */
 function packageResolved(root: string, name: string): string | undefined {
-  let data: {
+  const parsed = readCheckedJson(root, 'Package.resolved');
+  if (!parsed || typeof parsed !== 'object') return undefined;
+  const data = parsed as {
     pins?: Array<{ identity?: string; package?: string; state?: { version?: string } }>;
     object?: { pins?: Array<{ identity?: string; package?: string; state?: { version?: string } }> };
   };
-  try {
-    data = JSON.parse(fs.readFileSync(path.join(root, 'Package.resolved'), 'utf8'));
-  } catch {
-    return undefined;
-  }
   const pins = data.pins ?? data.object?.pins;
   if (!Array.isArray(pins)) return undefined;
   const target = name.toLowerCase();
@@ -63,12 +95,8 @@ function packageResolved(root: string, name: string): string | undefined {
 
 /** Dart `pubspec.lock` — YAML; each `  <name>:` block carries `version: "x.y.z"`. */
 function pubspecLock(root: string, name: string): string | undefined {
-  let text: string;
-  try {
-    text = fs.readFileSync(path.join(root, 'pubspec.lock'), 'utf8');
-  } catch {
-    return undefined;
-  }
+  const text = readCheckedText(root, 'pubspec.lock');
+  if (text === undefined) return undefined;
   let inPkg = false;
   for (const line of text.split('\n')) {
     const key = /^  ([A-Za-z0-9_.]+):\s*$/.exec(line);
@@ -90,12 +118,8 @@ function escapeRegExp(s: string): string {
 
 /** Ruby `Gemfile.lock` — the `specs:` block lists `    name (1.2.3)` (4-space indent). */
 function gemfileLock(root: string, name: string): string | undefined {
-  let text: string;
-  try {
-    text = fs.readFileSync(path.join(root, 'Gemfile.lock'), 'utf8');
-  } catch {
-    return undefined;
-  }
+  const text = readCheckedText(root, 'Gemfile.lock');
+  if (text === undefined) return undefined;
   // Spec definitions are 4-space-indented with a concrete (digit-leading) version;
   // nested dep constraints (6-space) and the DEPENDENCIES list (2-space) don't match.
   const m = new RegExp(`^    ${escapeRegExp(name)} \\((\\d[^)]*)\\)`, 'm').exec(text);
@@ -104,12 +128,9 @@ function gemfileLock(root: string, name: string): string | undefined {
 
 /** PHP `composer.lock` — JSON `packages` / `packages-dev` arrays of `{ name, version }`. */
 function composerLock(root: string, name: string): string | undefined {
-  let data: Record<string, Array<{ name?: string; version?: string }>>;
-  try {
-    data = JSON.parse(fs.readFileSync(path.join(root, 'composer.lock'), 'utf8'));
-  } catch {
-    return undefined;
-  }
+  const parsed = readCheckedJson(root, 'composer.lock');
+  if (!parsed || typeof parsed !== 'object') return undefined;
+  const data = parsed as Record<string, Array<{ name?: string; version?: string }>>;
   for (const section of ['packages', 'packages-dev']) {
     const arr = data[section];
     if (!Array.isArray(arr)) continue;
@@ -121,12 +142,9 @@ function composerLock(root: string, name: string): string | undefined {
 
 /** .NET `packages.lock.json` — `dependencies.<framework>.<id>.resolved` (ids case-insensitive). */
 function packagesLock(root: string, name: string): string | undefined {
-  let data: { dependencies?: Record<string, Record<string, { resolved?: string }>> };
-  try {
-    data = JSON.parse(fs.readFileSync(path.join(root, 'packages.lock.json'), 'utf8'));
-  } catch {
-    return undefined;
-  }
+  const parsed = readCheckedJson(root, 'packages.lock.json');
+  if (!parsed || typeof parsed !== 'object') return undefined;
+  const data = parsed as { dependencies?: Record<string, Record<string, { resolved?: string }>> };
   const target = name.toLowerCase();
   for (const fw of Object.values(data.dependencies ?? {})) {
     if (!fw || typeof fw !== 'object') continue;
@@ -162,12 +180,8 @@ function pypiLockVersion(root: string, name: string): string | undefined {
  * header and match `name`/`version` string keys within a block.
  */
 function tomlPackageLock(root: string, file: string, name: string, normalize: (s: string) => string): string | undefined {
-  let text: string;
-  try {
-    text = fs.readFileSync(path.join(root, file), 'utf8');
-  } catch {
-    return undefined;
-  }
+  const text = readCheckedText(root, file);
+  if (text === undefined) return undefined;
   const target = normalize(name);
   for (const block of text.split(/\[\[package\]\]/)) {
     const nm = /(?:^|\n)\s*name\s*=\s*"([^"]+)"/.exec(block);
@@ -181,12 +195,9 @@ function tomlPackageLock(root: string, file: string, name: string, normalize: (s
 
 /** Pipenv `Pipfile.lock` — JSON; versions look like `"==1.2.3"`. */
 function pipfileLock(root: string, name: string): string | undefined {
-  let data: Record<string, Record<string, { version?: string }>>;
-  try {
-    data = JSON.parse(fs.readFileSync(path.join(root, 'Pipfile.lock'), 'utf8'));
-  } catch {
-    return undefined;
-  }
+  const parsed = readCheckedJson(root, 'Pipfile.lock');
+  if (!parsed || typeof parsed !== 'object') return undefined;
+  const data = parsed as Record<string, Record<string, { version?: string }>>;
   const target = pep503(name);
   for (const section of ['default', 'develop']) {
     const deps = data[section];
@@ -235,7 +246,8 @@ export interface LockfileGraph {
  * design. An SBOM needs the opposite shape: the whole installed graph, since
  * that is what a vulnerability scanner or supply-chain review actually
  * walks. Tries npm, then pnpm, then yarn; returns `undefined` when none is
- * present or parseable — honest degradation, same as `lockfileVersion`.
+ * present. A lockfile that exists but is truncated or invalid throws
+ * {@link LockfileParseError} — a partial prefix is not a graph.
  */
 export function fullDependencyTree(root: string): LockfileComponent[] | undefined {
   return fullDependencyGraph(root)?.components;
@@ -288,15 +300,12 @@ interface NpmV2Package {
  * `packages` encodes without needing a second (real) install.
  */
 function npmLockGraph(root: string): LockfileGraph | undefined {
-  let data: {
+  const parsed = readCheckedJson(root, 'package-lock.json');
+  if (!parsed || typeof parsed !== 'object') return undefined;
+  const data = parsed as {
     packages?: Record<string, NpmV2Package>;
     dependencies?: Record<string, { version?: string; dependencies?: Record<string, unknown> }>;
   };
-  try {
-    data = JSON.parse(fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8'));
-  } catch {
-    return undefined;
-  }
 
   if (!data.packages || typeof data.packages !== 'object') {
     if (!data.dependencies || typeof data.dependencies !== 'object') return undefined;
@@ -375,12 +384,8 @@ function walkNpmV1Tree(
  * (`/name/version:` / `/@scope/name/version:`), peer suffixes stripped.
  */
 function pnpmLockTree(root: string): LockfileComponent[] | undefined {
-  let text: string;
-  try {
-    text = fs.readFileSync(path.join(root, 'pnpm-lock.yaml'), 'utf8');
-  } catch {
-    return undefined;
-  }
+  const text = readCheckedText(root, 'pnpm-lock.yaml');
+  if (text === undefined) return undefined;
   const section = sectionOf(text, 'packages');
   if (!section) return undefined;
   const out = new Map<string, LockfileComponent>();
@@ -399,12 +404,8 @@ function pnpmLockTree(root: string): LockfileComponent[] | undefined {
 
 /** `yarn.lock` — every block's header name(s) paired with its resolved `version`. */
 function yarnLockTree(root: string): LockfileComponent[] | undefined {
-  let text: string;
-  try {
-    text = fs.readFileSync(path.join(root, 'yarn.lock'), 'utf8');
-  } catch {
-    return undefined;
-  }
+  const text = readCheckedText(root, 'yarn.lock');
+  if (text === undefined) return undefined;
   const out = new Map<string, LockfileComponent>();
   let pendingNames: string[] = [];
   for (const line of text.split('\n')) {
@@ -470,12 +471,8 @@ function yarnHeaderRealName(spec: string): string | undefined {
  * duplicating for a components-only SBOM listing.
  */
 function cargoLockTree(root: string): LockfileComponent[] | undefined {
-  let text: string;
-  try {
-    text = fs.readFileSync(path.join(root, 'Cargo.lock'), 'utf8');
-  } catch {
-    return undefined;
-  }
+  const text = readCheckedText(root, 'Cargo.lock');
+  if (text === undefined) return undefined;
   const out = new Map<string, LockfileComponent>();
   for (const block of text.split(/\[\[package\]\]/)) {
     const nm = /(?:^|\n)\s*name\s*=\s*"([^"]+)"/.exec(block);
@@ -492,12 +489,8 @@ function cargoLockTree(root: string): LockfileComponent[] | undefined {
  * go.sum records the flattened build list, not which module required which.
  */
 function goSumTree(root: string): LockfileComponent[] | undefined {
-  let text: string;
-  try {
-    text = fs.readFileSync(path.join(root, 'go.sum'), 'utf8');
-  } catch {
-    return undefined;
-  }
+  const text = readCheckedText(root, 'go.sum');
+  if (text === undefined) return undefined;
   const out = new Map<string, LockfileComponent>();
   for (const line of text.split('\n')) {
     // Each module has two lines — `module version h1:...` (the module zip)
@@ -517,12 +510,8 @@ function goSumTree(root: string): LockfileComponent[] | undefined {
  * in full for the SBOM's transitive component list.
  */
 function poetryLikeLockTree(root: string, file: string): LockfileComponent[] | undefined {
-  let text: string;
-  try {
-    text = fs.readFileSync(path.join(root, file), 'utf8');
-  } catch {
-    return undefined;
-  }
+  const text = readCheckedText(root, file);
+  if (text === undefined) return undefined;
   const out = new Map<string, LockfileComponent>();
   for (const block of text.split(/\[\[package\]\]/)) {
     const nm = /(?:^|\n)\s*name\s*=\s*"([^"]+)"/.exec(block);
@@ -534,12 +523,9 @@ function poetryLikeLockTree(root: string, file: string): LockfileComponent[] | u
 
 /** npm `package-lock.json` — JSON, deterministic, no dependency. */
 function packageLockVersion(root: string, name: string): string | undefined {
-  let data: { packages?: Record<string, { version?: string }>; dependencies?: Record<string, { version?: string }> };
-  try {
-    data = JSON.parse(fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8'));
-  } catch {
-    return undefined;
-  }
+  const parsed = readCheckedJson(root, 'package-lock.json');
+  if (!parsed || typeof parsed !== 'object') return undefined;
+  const data = parsed as { packages?: Record<string, { version?: string }>; dependencies?: Record<string, { version?: string }> };
   // v2/v3: packages keyed by install path; the top-level dep is "node_modules/<name>".
   const top = data.packages?.[`node_modules/${name}`]?.version;
   if (typeof top === 'string') return top;
@@ -562,12 +548,8 @@ function packageLockVersion(root: string, name: string): string | undefined {
  * other reader here — a lockfile is megabytes and only one line is wanted.
  */
 function pnpmLockVersion(root: string, name: string): string | undefined {
-  let text: string;
-  try {
-    text = fs.readFileSync(path.join(root, 'pnpm-lock.yaml'), 'utf8');
-  } catch {
-    return undefined;
-  }
+  const text = readCheckedText(root, 'pnpm-lock.yaml');
+  if (text === undefined) return undefined;
   const importers = sectionOf(text, 'importers');
   if (!importers) return undefined;
   // Entries look like:
@@ -600,12 +582,8 @@ function sectionOf(text: string, key: string): string | undefined {
  * return its version. Scoped names (`@scope/pkg@range`) are handled via lastIndexOf.
  */
 function yarnLockVersion(root: string, name: string): string | undefined {
-  let text: string;
-  try {
-    text = fs.readFileSync(path.join(root, 'yarn.lock'), 'utf8');
-  } catch {
-    return undefined;
-  }
+  const text = readCheckedText(root, 'yarn.lock');
+  if (text === undefined) return undefined;
   let inBlock = false;
   for (const line of text.split('\n')) {
     if (line && !/^\s/.test(line) && !line.startsWith('#')) {

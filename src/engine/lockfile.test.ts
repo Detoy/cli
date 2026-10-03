@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { discover } from './discover.js';
+import { LockfileParseError } from '../core-open/utils/lockfile-parse.js';
 import { lockfileVersion, fullDependencyTree, fullDependencyGraph } from './lockfile.js';
 
 /**
@@ -74,11 +76,34 @@ describe('lockfileVersion — pnpm', () => {
     expect(lockfileVersion(root, 'npm', 'not-a-dependency')).toBeUndefined();
   });
 
-  it('never throws on a truncated or non-YAML lockfile', () => {
+  it('returns undefined when a valid lockfile does not finish the dependency entry', () => {
     write('pnpm-lock.yaml', ['importers:', '  .:', '    dependencies:', '      commander:', ''].join('\n'));
     expect(lockfileVersion(root, 'npm', 'commander')).toBeUndefined();
-    write('pnpm-lock.yaml', '  not yaml at all');
-    expect(lockfileVersion(root, 'npm', 'commander')).toBeUndefined();
+  });
+
+  it('rejects a truncated pnpm lockfile instead of a partial graph', () => {
+    const secret = 'npm_AAAAAAAAAAAAAAAAAAAA';
+    write(
+      'pnpm-lock.yaml',
+      [
+        "lockfileVersion: '9.0'",
+        'packages:',
+        '  commander@15.0.0:',
+        '    resolution: {integrity: sha512-abc}',
+        '  chalk@5.0.0:',
+        `    resolution: {integrity: ${secret}`,
+      ].join('\n'),
+    );
+    expect(() => fullDependencyGraph(root)).toThrow(LockfileParseError);
+    try {
+      fullDependencyGraph(root);
+    } catch (err) {
+      const message = (err as Error).message;
+      expect(message).toContain('pnpm-lock.yaml');
+      expect(message).toContain('truncated or invalid YAML');
+      expect(message).toContain('package manager');
+      expect(message).not.toContain(secret);
+    }
   });
 
   it('does not confuse a name that is a prefix of another', () => {
@@ -218,9 +243,26 @@ describe('fullDependencyTree', () => {
     expect(fullDependencyTree(root)).toBeUndefined();
   });
 
-  it('never throws on a malformed package-lock.json', () => {
-    write('package-lock.json', '{ not valid json');
-    expect(fullDependencyTree(root)).toBeUndefined();
+  it('rejects a truncated package-lock.json instead of an empty graph', () => {
+    const secret = 'npm_BBBBBBBBBBBBBBBBBBBB';
+    write('package-lock.json', `{"lockfileVersion":3,"packages":{"node_modules/left-pad":{"version":"1.0.0","integrity":"${secret}"`);
+    expect(() => fullDependencyTree(root)).toThrow(LockfileParseError);
+    try {
+      fullDependencyGraph(root);
+    } catch (err) {
+      const message = (err as Error).message;
+      expect(message).toContain(path.join(root, 'package-lock.json'));
+      expect(message).toContain('truncated or invalid JSON');
+      expect(message).not.toContain(secret);
+      expect(message).not.toContain('left-pad');
+    }
+  });
+
+  it('does not fall through to another lockfile when package-lock.json is truncated', () => {
+    write('package-lock.json', '{"lockfileVersion":3,"packages":{');
+    write('yarn.lock', ['commander@^15.0.0:', '  version "15.2.1"', ''].join('\n'));
+    expect(() => fullDependencyGraph(root)).toThrow(/package-lock\.json/);
+    expect(() => fullDependencyGraph(root)).toThrow(/truncated or invalid JSON/);
   });
 });
 
@@ -268,6 +310,12 @@ describe('fullDependencyGraph', () => {
 
   it('returns undefined when there is no lockfile at all', () => {
     expect(fullDependencyGraph(root)).toBeUndefined();
+  });
+
+  it('discover fails a truncated lockfile before returning source files', () => {
+    write('package-lock.json', '{"name":"app","packages":{');
+    write('app.ts', 'export const n = 1;\n');
+    expect(() => discover({ root })).toThrow(LockfileParseError);
   });
 
   it('resolves an npm alias install (`"foo-cjs": "npm:foo@^1.0.0"`) to its real registry name, not the install-path segment', () => {

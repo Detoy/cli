@@ -14,6 +14,7 @@
  * AGPL library is used.
  */
 import * as path from 'node:path';
+import { assertLockfileText, LockfileParseError, rethrowLockfileParseError } from '../utils/lockfile-parse.js';
 import type { LockfileIo } from './npm-lockfile.js';
 export type { LockfileIo } from './npm-lockfile.js';
 
@@ -50,10 +51,13 @@ export async function loadGemfileLockIndex(dir: string, io: LockfileIo): Promise
   const lockPath = path.join(dir, 'Gemfile.lock');
   if (!(await io.exists(lockPath).catch(() => false))) return null;
   try {
-    const map = parseGemfileLock(await io.readText(lockPath));
+    const text = await io.readText(lockPath);
+    assertLockfileText(lockPath, text, 'Gemfile.lock');
+    const map = parseGemfileLock(text);
     if (!map.size) return null;
     return { size: map.size, resolve: (name) => map.get(name) ?? null };
-  } catch {
-    return null;
+  } catch (err) {
+    rethrowLockfileParseError(err);
+    throw new LockfileParseError(lockPath, 'Gemfile.lock');
   }
 }

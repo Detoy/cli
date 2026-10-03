@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as zlib from 'node:zlib';
 import { Packr } from 'msgpackr';
-import { parseGraph } from './serialize.js';
+import { assertReadableGraph, parseGraph, unreadableGraphError } from './serialize.js';
 import { VERSION } from '../version.js';
 import type { VgGraph } from '../schema.js';
 
@@ -216,24 +216,33 @@ function readSnapshotHeader(file: string): SnapshotHeader | null {
  * Load a map file, preferring the binary snapshot and self-healing it.
  * Fast path: valid snapshot (sidecar or standalone) → decode it. Fallback:
  * parse `graph.json`, then (best-effort) rewrite the sidecar so the next load
- * takes the fast path. Returns null only when neither representation yields a
- * graph — exactly the cases the pre-snapshot code treated as "no graph".
+ * takes the fast path.
+ *
+ * Returns null only when no map file exists. A file that is present but
+ * truncated, not JSON, or not a schema this vg reads throws GraphLoadError
+ * — absence and a broken map are different outcomes.
+ * A sidecar that fails that check is ignored when canonical JSON is present,
+ * so a stale snapshot cannot hide a readable `graph.json`.
  */
 export function loadGraphFileWithSnapshot(graphPath: string): VgGraph | null {
   const snap = readGraphSnapshot(graphPath);
-  if (snap) return snap;
+  if (snap) {
+    try {
+      return assertReadableGraph(snap);
+    } catch (err) {
+      // Standalone snapshots are the map. A sidecar can fall through to JSON.
+      if (!fs.existsSync(graphPath)) throw err;
+    }
+  }
   let json: string;
   try {
     json = fs.readFileSync(graphPath, 'utf8');
-  } catch {
-    return null;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') return null;
+    throw unreadableGraphError();
   }
-  let graph: VgGraph;
-  try {
-    graph = parseGraph(json);
-  } catch {
-    return null;
-  }
+  const graph = parseGraph(json);
   writeGraphSnapshot(graphPath, graph);
   return graph;
 }

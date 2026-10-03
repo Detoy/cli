@@ -46,10 +46,46 @@ export function parseExcludePatterns(input: string | string[] | undefined): stri
   return [...new Set(out)];
 }
 
-export function compileGlobs(patterns: string[]): ((relPath: string) => boolean) | null {
-  if (patterns.length === 0) return null;
+/**
+ * True when a pattern is empty or only whitespace.
+ *
+ * These are not rules. The `ignore` package skips a line of spaces, but a
+ * newline or carriage return is not in that check: it compiles to `/(?:)/`
+ * and matches every path. A blank exclude, or a blank line in `.gitignore`,
+ * would then hide the whole tree.
+ */
+export function isBlankPattern(pattern: string): boolean {
+  return pattern.trim() === '';
+}
 
-  const matchers = patterns.map((p) => compileOne(normalise(p)));
+/** Patterns with empty and whitespace-only entries removed. Order is kept. */
+export function dropBlankPatterns(patterns: readonly string[]): string[] {
+  const out: string[] = [];
+  for (const pattern of patterns) {
+    if (typeof pattern !== 'string' || isBlankPattern(pattern)) continue;
+    out.push(pattern);
+  }
+  return out;
+}
+
+/**
+ * `.gitignore` text with blank lines removed.
+ *
+ * Splits on LF and on a bare CR. A CR that is not part of CRLF survives the
+ * `ignore` package's own line splitter and matches every path.
+ */
+export function gitignoreWithoutBlankLines(text: string): string {
+  return text
+    .split(/\r\n|\n|\r/)
+    .filter((line) => !isBlankPattern(line))
+    .join('\n');
+}
+
+export function compileGlobs(patterns: string[]): ((relPath: string) => boolean) | null {
+  const usable = dropBlankPatterns(patterns);
+  if (usable.length === 0) return null;
+
+  const matchers = usable.map((p) => compileOne(normalise(p)));
 
   return (relPath: string) => {
     const norm = normalise(relPath);

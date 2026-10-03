@@ -239,11 +239,9 @@ packages:
     expect(result.duplicatedPackages[1]!.name).toBe('chalk');
   });
 
-  it('handles empty lockfile gracefully', async () => {
+  it('rejects an empty lockfile instead of reporting an empty graph', async () => {
     await fs.writeFile(path.join(tempDir, 'pnpm-lock.yaml'), '');
-    const result = await scanDependencyGraph(tempDir);
-    expect(result.lockfileType).toBe('pnpm');
-    expect(result.totalUnique).toBe(0);
-    expect(result.totalInstalled).toBe(0);
+    await expect(scanDependencyGraph(tempDir)).rejects.toThrow(/pnpm-lock\.yaml/);
+    await expect(scanDependencyGraph(tempDir)).rejects.toThrow(/truncated or invalid YAML/);
   });
 });

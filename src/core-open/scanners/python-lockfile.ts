@@ -20,6 +20,7 @@
  * is used. Only the two fields we need are read from each package entry.
  */
 import * as path from 'node:path';
+import { assertLockfileText, LockfileParseError, rethrowLockfileParseError } from '../utils/lockfile-parse.js';
 import { parseToml } from '../utils/toml.js';
 import type { LockfileIo } from './npm-lockfile.js';
 export type { LockfileIo } from './npm-lockfile.js';
@@ -93,20 +94,26 @@ export async function loadPythonLockIndex(dir: string, io: LockfileIo): Promise<
     const p = path.join(dir, file);
     if (!(await io.exists(p).catch(() => false))) continue;
     try {
-      const map = parsePyTomlLock(await io.readText(p));
+      const text = await io.readText(p);
+      assertLockfileText(p, text, 'TOML');
+      const map = parsePyTomlLock(text);
       if (map.size) return { source, size: map.size, resolve: (n) => map.get(normalizePyName(n)) ?? null };
-    } catch {
-      /* try the next */
+    } catch (err) {
+      rethrowLockfileParseError(err);
+      throw new LockfileParseError(p, 'TOML');
     }
   }
   const pipfile = path.join(dir, 'Pipfile.lock');
   if (await io.exists(pipfile).catch(() => false)) {
+    let json: unknown;
     try {
-      const map = parsePipfileLock(await io.readJson<unknown>(pipfile));
-      if (map.size) return { source: 'pipfile', size: map.size, resolve: (n) => map.get(normalizePyName(n)) ?? null };
-    } catch {
-      /* none usable */
+      json = await io.readJson<unknown>(pipfile);
+    } catch (err) {
+      rethrowLockfileParseError(err);
+      throw new LockfileParseError(pipfile, 'JSON');
     }
+    const map = parsePipfileLock(json);
+    if (map.size) return { source: 'pipfile', size: map.size, resolve: (n) => map.get(normalizePyName(n)) ?? null };
   }
   return null;
 }

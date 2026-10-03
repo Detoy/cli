@@ -15,6 +15,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { cacheDir } from './cache.js';
 import { loadGraphFileWithSnapshot } from './snapshot.js';
+import { assertReadableGraph } from './serialize.js';
 import type {
   Area,
   EpistemicTier,
@@ -351,7 +352,11 @@ export function loadGraphFromIndex(root: string): VgGraph | null {
 /**
  * Load the graph preferring the SQLite index when its corpusHash matches the
  * committed graph.json provenance (or when only the index exists). Falls back
- * to graph.json. Returns null if neither is usable.
+ * to graph.json. Returns null when neither exists.
+ *
+ * Throws `GraphLoadError` when the on-disk map (or, with no JSON beside it,
+ * the index) is truncated or not a schema this vg reads. A schema-mismatched
+ * index is ignored when the canonical JSON is readable.
  */
 export function loadGraphPreferIndex(
   root: string,
@@ -359,15 +364,21 @@ export function loadGraphPreferIndex(
 ): { graph: VgGraph; source: 'index' | 'json' } | null {
   // Snapshot-first: skips the large-string JSON.parse when a fresh binary
   // snapshot exists (sidecar or store-mode standalone), and self-heals the
-  // sidecar when not (see engine/snapshot.ts).
+  // sidecar when not (see engine/snapshot.ts). A broken JSON file throws
+  // here rather than looking like "no map".
   const jsonGraph: VgGraph | null = loadGraphFileWithSnapshot(graphJsonPath);
 
   const fromIndex = loadGraphFromIndex(root);
   if (fromIndex) {
-    if (!jsonGraph || fromIndex.provenance.corpusHash === jsonGraph.provenance.corpusHash) {
-      return { graph: fromIndex, source: 'index' };
+    try {
+      const indexGraph = assertReadableGraph(fromIndex);
+      if (!jsonGraph || indexGraph.provenance?.corpusHash === jsonGraph.provenance?.corpusHash) {
+        return { graph: indexGraph, source: 'index' };
+      }
+      // Index stale vs graph.json — prefer canonical JSON and let next build refresh.
+    } catch (err) {
+      if (!jsonGraph) throw err;
     }
-    // Index stale vs graph.json — prefer canonical JSON and let next build refresh.
   }
   if (jsonGraph) return { graph: jsonGraph, source: 'json' };
   return null;

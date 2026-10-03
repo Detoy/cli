@@ -5,9 +5,10 @@ import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
 import { existsSync, readFileSync } from 'node:fs';
 import type * as TsModule from 'typescript';
-import { parse as parseYaml } from 'yaml';
+import { parseDocument } from 'yaml';
 import type { VibgrateConfig } from './types.js';
 import { pathExists, readTextFile } from './utils/fs.js';
+import { redactSecrets } from './utils/redact.js';
 
 /**
  * The project config, in lookup order. The FIRST file found is the config;
@@ -33,20 +34,45 @@ export function isDataConfigFile(file: string): boolean {
 }
 
 /**
- * Parse a data config (YAML or JSON) into a plain object. Throws an Error
- * naming the file when the text is not a valid mapping.
+ * A project config file could not be read. The message names the file and,
+ * when the parser can say, the line and key — never a source excerpt, so a
+ * token sitting on the broken line is not echoed.
+ */
+export class ConfigFileError extends Error {
+  readonly file: string;
+  readonly line?: number;
+  readonly key?: string;
+
+  constructor(message: string, details: { file: string; line?: number; key?: string }) {
+    super(message);
+    this.name = 'ConfigFileError';
+    this.file = details.file;
+    this.line = details.line;
+    this.key = details.key;
+  }
+}
+
+export function isConfigFileError(err: unknown): err is ConfigFileError {
+  return err instanceof ConfigFileError || (err instanceof Error && err.name === 'ConfigFileError');
+}
+
+/**
+ * Parse a data config (YAML or JSON) into a plain object. Throws
+ * {@link ConfigFileError} naming the file (and the line or key when the
+ * parser can say) when the text is not a valid mapping.
  */
 export function parseDataConfig(text: string, file: string): Record<string, unknown> {
-  let parsed: unknown;
-  try {
-    parsed = /\.ya?ml$/.test(file) ? parseYaml(text) : JSON.parse(text);
-  } catch (err) {
-    const reason = err instanceof Error ? err.message.split('\n')[0] : 'unreadable';
-    throw new Error(`${file} is not valid ${/\.ya?ml$/.test(file) ? 'YAML' : 'JSON'}: ${reason}`);
-  }
+  const parsed = /\.ya?ml$/.test(file) ? parseYamlConfig(text, file) : parseJsonConfig(text, file);
   // An empty YAML file is an empty config, not an error.
   if (parsed === null || parsed === undefined) return {};
-  if (!isRecord(parsed)) throw new Error(`${file} must contain a mapping of settings.`);
+  if (!isRecord(parsed)) {
+    const found = Array.isArray(parsed) ? 'a list' : `a ${typeof parsed}`;
+    throw configFileError(
+      `${file} must contain a mapping of settings (found ${found}). Use key: value entries, for example exclude: ["legacy/**"].`,
+      { file },
+    );
+  }
+  assertKnownShapes(parsed, text, file);
   return parsed;
 }
 
@@ -84,8 +110,22 @@ export function readDataConfigSync(rootDir: string): DataConfigRead {
   try {
     return { file, config: parseDataConfig(readFileSync(path.join(rootDir, file), 'utf8'), file) };
   } catch (err) {
-    return { file, config: null, error: err instanceof Error ? err.message : String(err) };
+    const message = err instanceof Error ? err.message.split('\n')[0] : 'unreadable';
+    return { file, config: null, error: redactSecrets(message || 'unreadable') };
   }
+}
+
+/**
+ * Like {@link readDataConfigSync}, but a data file that does not parse is an
+ * error. A missing file and a `.ts`/`.js` config are unchanged: callers that
+ * cannot execute code keep their existing fallback.
+ */
+export function requireDataConfig(rootDir: string): DataConfigRead {
+  const read = readDataConfigSync(rootDir);
+  if (read.error && read.file && isDataConfigFile(read.file)) {
+    throw new ConfigFileError(read.error, { file: read.file });
+  }
+  return read;
 }
 
 const TRUSTED_CONFIG_ENV = 'VIBGRATE_TRUST_CONFIG';
@@ -108,6 +148,156 @@ function loadTypeScript(): Promise<typeof TsModule> {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function configFileError(
+  message: string,
+  details: { file: string; line?: number; key?: string },
+): ConfigFileError {
+  return new ConfigFileError(redactSecrets(message), details);
+}
+
+interface SourceLocation {
+  line?: number;
+  column?: number;
+}
+
+function locationOf(err: unknown): SourceLocation {
+  const tagged = err as { linePos?: Array<{ line?: number; col?: number }>; message?: string };
+  const pos = tagged?.linePos?.[0];
+  if (pos && typeof pos.line === 'number' && pos.line > 0) {
+    return { line: pos.line, column: typeof pos.col === 'number' && pos.col > 0 ? pos.col : undefined };
+  }
+  const first = typeof tagged?.message === 'string' ? (tagged.message.split('\n')[0] ?? '') : '';
+  const match = /at line (\d+), column (\d+)/.exec(first);
+  if (!match) return {};
+  return { line: Number(match[1]), column: Number(match[2]) };
+}
+
+/** Parser reason with the source preview and the repeated location stripped. */
+function parserReason(err: unknown): string {
+  const raw = err instanceof Error ? err.message : '';
+  let line = raw.split('\n')[0] ?? '';
+  line = line.replace(/\s+at line \d+, column \d+:?\s*$/i, '').trim();
+  line = redactSecrets(line).trim();
+  if (!line) return 'the syntax could not be read';
+  return line.length > 180 ? `${line.slice(0, 177)}...` : line;
+}
+
+function whereAt(loc: SourceLocation): string {
+  if (loc.line === undefined) return '';
+  return ` at line ${loc.line}${loc.column !== undefined ? `, column ${loc.column}` : ''}`;
+}
+
+function yamlFailure(file: string, err: unknown): ConfigFileError {
+  const loc = locationOf(err);
+  return configFileError(
+    `${file} is not valid YAML${whereAt(loc)}: ${parserReason(err)}. Fix the file and run the command again.`,
+    { file, line: loc.line },
+  );
+}
+
+function parseYamlConfig(text: string, file: string): unknown {
+  let doc: ReturnType<typeof parseDocument>;
+  try {
+    doc = parseDocument(text);
+  } catch (err) {
+    throw yamlFailure(file, err);
+  }
+  if (doc.errors.length > 0) throw yamlFailure(file, doc.errors[0]);
+  try {
+    return doc.toJS();
+  } catch (err) {
+    throw yamlFailure(file, err);
+  }
+}
+
+function jsonLocation(text: string, err: unknown): SourceLocation {
+  const message = err instanceof Error ? err.message : '';
+  // Use only the coordinates Node puts in the message. The rest of the
+  // message quotes a slice of the file, which is where a token would leak.
+  const explicit = /\(line (\d+) column (\d+)\)/.exec(message);
+  if (explicit) return { line: Number(explicit[1]), column: Number(explicit[2]) };
+  const pos = /position (\d+)/.exec(message);
+  if (pos) {
+    const index = Number(pos[1]);
+    if (Number.isFinite(index) && index >= 0) {
+      const slice = text.slice(0, index);
+      const parts = slice.split('\n');
+      return { line: parts.length, column: (parts[parts.length - 1]?.length ?? 0) + 1 };
+    }
+  }
+  if (/Unexpected end of JSON input/.test(message) && text.length > 0) {
+    const parts = text.split('\n');
+    const last = parts[parts.length - 1] ?? '';
+    return { line: parts.length, column: last.length + 1 };
+  }
+  return {};
+}
+
+function parseJsonConfig(text: string, file: string): unknown {
+  try {
+    return JSON.parse(text) as unknown;
+  } catch (err) {
+    const loc = jsonLocation(text, err);
+    // The JSON parser quotes a slice of the file. Do not repeat it — that
+    // slice is where a token would leak.
+    throw configFileError(
+      `${file} is not valid JSON${whereAt(loc)}. Fix the file and run the command again.`,
+      { file, line: loc.line },
+    );
+  }
+}
+
+interface ShapeCheck {
+  key: string;
+  ok: (value: unknown) => boolean;
+  expect: string;
+}
+
+function isStringList(value: unknown): boolean {
+  return Array.isArray(value) && value.every((item) => typeof item === 'string');
+}
+
+function isNonNegativeNumber(value: unknown): boolean {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+}
+
+const SHAPE_CHECKS: readonly ShapeCheck[] = [
+  { key: 'include', ok: isStringList, expect: 'a list of strings, for example include: ["src/**"]' },
+  { key: 'exclude', ok: isStringList, expect: 'a list of strings, for example exclude: ["legacy/**"]' },
+  { key: 'maxFileSizeToScan', ok: isNonNegativeNumber, expect: 'a number of bytes, for example maxFileSizeToScan: 5242880' },
+  { key: 'projectScanTimeout', ok: isNonNegativeNumber, expect: 'a number of seconds, for example projectScanTimeout: 180' },
+  { key: 'areaSkills', ok: (value) => typeof value === 'boolean', expect: 'true or false' },
+  { key: 'scanners', ok: (value) => value === false || isRecord(value), expect: 'a mapping of scanner settings, or false' },
+  { key: 'thresholds', ok: isRecord, expect: 'a mapping of threshold settings' },
+  { key: 'driftBudget', ok: isRecord, expect: 'a mapping of budget settings' },
+  { key: 'review', ok: isRecord, expect: 'a mapping of review settings' },
+];
+
+function lineOfKey(text: string, file: string, key: string): number | undefined {
+  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = /\.json$/.test(file)
+    ? new RegExp(`"${escaped}"\\s*:`)
+    : new RegExp(`^(?:"${escaped}"|'${escaped}'|${escaped})\\s*:`);
+  const lines = text.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    if (re.test(lines[i] ?? '')) return i + 1;
+  }
+  return undefined;
+}
+
+function assertKnownShapes(parsed: Record<string, unknown>, text: string, file: string): void {
+  for (const check of SHAPE_CHECKS) {
+    if (!Object.prototype.hasOwnProperty.call(parsed, check.key)) continue;
+    if (check.ok(parsed[check.key])) continue;
+    const line = lineOfKey(text, file, check.key);
+    const at = line !== undefined ? ` (line ${line})` : '';
+    throw configFileError(
+      `${file}: \`${check.key}\` must be ${check.expect}${at}. Fix that key and run the command again.`,
+      { file, line, key: check.key },
+    );
+  }
 }
 
 function toStaticValue(

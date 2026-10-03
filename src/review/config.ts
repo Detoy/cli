@@ -20,7 +20,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { parseToml } from '../core-open/utils/toml.js';
-import { CONFIG_FILES, isDataConfigFile, parseDataConfig, readDataConfigSync } from '../core-open/config.js';
+import { CONFIG_FILES, isDataConfigFile, parseDataConfig, requireDataConfig } from '../core-open/config.js';
 import type { GitRunner } from './git.js';
 import type { ReviewEnforcement } from './schemas.js';
 
@@ -167,12 +167,10 @@ function reviewBlockAtRef(root: string, ref: string, run: GitRunner): { file: st
     // shadowed one, or base and working tree could disagree about which file
     // is in force.
     if (!isDataConfigFile(file)) return undefined;
-    try {
-      const doc = parseDataConfig(res.stdout, file);
-      return doc.review === undefined ? undefined : { file, block: doc.review };
-    } catch {
-      return undefined;
-    }
+    // A file that is present but unreadable must not fall through to defaults
+    // or to a shadowed review.toml — that would review under a weaker policy.
+    const doc = parseDataConfig(res.stdout, file);
+    return doc.review === undefined ? undefined : { file, block: doc.review };
   }
   return undefined;
 }
@@ -207,7 +205,7 @@ export function loadReviewConfig(
   // No git-visible copy (a repo with no commits, or a non-repo). The working
   // tree is the only state there is, and it is not "a PR weakening its own
   // policy" — there is no base to weaken relative to.
-  const project = readDataConfigSync(root);
+  const project = requireDataConfig(root);
   if (project.file && project.config?.review !== undefined) {
     return reviewConfigFromBlock(project.config.review, 'working-tree', project.file);
   }

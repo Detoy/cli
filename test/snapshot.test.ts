@@ -19,13 +19,14 @@ import type { VgGraph } from '../src/schema.js';
 
 /**
  * The binary snapshot is a derived cache: graph.json stays canonical, and
- * every failure mode below must degrade to reading the JSON — never throw,
- * never serve stale data after the JSON changed.
+ * a bad sidecar degrades to reading the JSON and never serves stale data
+ * after the JSON changed. A present `graph.json` that is itself truncated
+ * or not JSON throws GraphLoadError instead of pretending the map is missing.
  */
 
 function sampleGraph(mutate?: (g: VgGraph) => void): VgGraph {
   const graph = {
-    schemaVersion: 1,
+    schemaVersion: 'vg-graph/1.1',
     generatedAt: '2026-01-01T00:00:00.000Z',
     provenance: { corpusHash: 'abc123' },
     nodes: [
@@ -126,10 +127,10 @@ describe('graph snapshot sidecar', () => {
     expect(readGraphSnapshot(graphPath)).toEqual(graph);
   });
 
-  it('returns null for missing or unparseable JSON (pre-snapshot behaviour)', () => {
+  it('returns null when the map is missing, and throws when the JSON is not parseable', () => {
     expect(loadGraphFileWithSnapshot(graphPath)).toBeNull();
     fs.writeFileSync(graphPath, '{ definitely not json');
-    expect(loadGraphFileWithSnapshot(graphPath)).toBeNull();
+    expect(() => loadGraphFileWithSnapshot(graphPath)).toThrow(/Rebuild it with `vg build`/);
   });
 
   it('write is best-effort: unwritable sidecar directory does not throw', () => {

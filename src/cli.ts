@@ -42,6 +42,8 @@ import { registerPolicy } from './commands/policy.js';
 import { registerLlmHost } from './commands/llm-host.js';
 import { registerHcs } from './commands/hcs.js';
 import { registerReview } from './commands/review.js';
+import { ConfigFileError } from './core-open/config.js';
+import { LockfileParseError } from './core-open/utils/lockfile-parse.js';
 import { CliError, ExitCode } from './util/exit.js';
 import { c, info, disableColor, exitAfterFlush } from './util/output.js';
 
@@ -431,10 +433,11 @@ function handleError(err: unknown): never {
       /* stdout closed */
     }
   };
-  if (err instanceof CliError) {
+  if (err instanceof CliError || err instanceof LockfileParseError || err instanceof ConfigFileError) {
+    const code = err instanceof CliError ? err.code : ExitCode.ERROR;
     emitHostError(err.message);
     info(c.red(`error: ${err.message}`));
-    return exitAfterFlush(err.code);
+    return exitAfterFlush(code);
   }
   const message = err instanceof Error ? err.message : String(err);
   const correlation = Math.random().toString(36).slice(2, 10);

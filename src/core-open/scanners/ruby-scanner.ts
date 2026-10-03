@@ -6,6 +6,7 @@ import * as semver from 'semver';
 import { readTextFile, readJsonFile, pathExists, FileCache } from '../utils/fs.js';
 import { withTimeout } from '../utils/timeout.js';
 import { RubyGemsCache } from './rubygems-cache.js';
+import { rethrowLockfileParseError } from '../utils/lockfile-parse.js';
 import { loadGemfileLockIndex, type GemfileLockIndex } from './gemfile-lock.js';
 import type { LockfileIo } from './npm-lockfile.js';
 import { latestStable, runtimeEolStatus, extractCycle, eolDate } from '../runtimes/catalog.js';
@@ -365,6 +366,7 @@ export async function scanRubyProjects(
         }
       }
     } catch (e: unknown) {
+      rethrowLockfileParseError(e);
       const msg = e instanceof Error ? e.message : String(e);
       console.error(`Error scanning Ruby project ${dir}: ${msg}`);
     }
@@ -448,7 +450,10 @@ async function scanOneRubyProject(
     readText: (p) => (cache ? cache.readTextFile(p) : readTextFile(p)),
     readJson: <T>(p: string) => (cache ? cache.readJsonFile<T>(p) : readJsonFile<T>(p)),
   };
-  const lockIndex: GemfileLockIndex | null = await loadGemfileLockIndex(dir, lockIo).catch(() => null);
+  const lockIndex: GemfileLockIndex | null = await loadGemfileLockIndex(dir, lockIo).catch((err: unknown) => {
+    rethrowLockfileParseError(err);
+    return null;
+  });
 
   // Resolve dependencies against RubyGems
   const dependencies: DependencyRow[] = [];

@@ -1,4 +1,88 @@
-import type { VgGraph } from '../schema.js';
+import { SUPPORTED_SCHEMA_VERSIONS, type SupportedSchemaVersion, type VgGraph } from '../schema.js';
+import { CliError, ExitCode } from '../util/exit.js';
+
+const REBUILD_HINT = 'Rebuild it with `vg build`.';
+
+const SUPPORTED_SCHEMA = new Set<string>(SUPPORTED_SCHEMA_VERSIONS);
+
+/**
+ * A code map on disk cannot be loaded.
+ *
+ * The message is the operator-facing error: what failed, and how to rebuild.
+ * It never includes file contents, parser excerpts, or any other bytes from
+ * the artifact (those can carry credentials). `code` is {@link ExitCode.ERROR}
+ * so a command that lets this propagate exits non-zero.
+ */
+export class GraphLoadError extends CliError {
+  readonly isGraphLoadError = true;
+  readonly kind: 'corrupt' | 'schema';
+
+  constructor(message: string, kind: 'corrupt' | 'schema') {
+    super(message, ExitCode.ERROR);
+    this.name = 'GraphLoadError';
+    this.kind = kind;
+  }
+}
+
+function supportedSchemaList(): string {
+  const versions = SUPPORTED_SCHEMA_VERSIONS;
+  if (versions.length <= 1) return versions.join('');
+  return `${versions.slice(0, -1).join(', ')} or ${versions[versions.length - 1]}`;
+}
+
+/** A schema token we are willing to echo. Anything else stays out of the message. */
+function echoableSchema(value: unknown): string | null {
+  if (typeof value !== 'string' || value.length > 32) return null;
+  return /^vg-graph\/\d{1,4}\.\d{1,4}$/.test(value) ? value : null;
+}
+
+function isSupportedSchema(value: unknown): value is SupportedSchemaVersion {
+  return typeof value === 'string' && SUPPORTED_SCHEMA.has(value);
+}
+
+function corruptMessage(): string {
+  return `The code map is truncated or not valid JSON. ${REBUILD_HINT}`;
+}
+
+function unreadableMessage(): string {
+  return `The code map could not be read. ${REBUILD_HINT}`;
+}
+
+function shapeMessage(): string {
+  return `The code map is not a readable code map. ${REBUILD_HINT}`;
+}
+
+function schemaMessage(version: unknown): string {
+  const echoed = echoableSchema(version);
+  const got = echoed
+    ? `schema \`${echoed}\``
+    : 'a schema this version of vg cannot read';
+  return `The code map uses ${got} (this version reads ${supportedSchemaList()}). ${REBUILD_HINT}`;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
+ * Accept a decoded map, or throw {@link GraphLoadError}.
+ * Checks version and shape only — it does not walk nodes or edges.
+ */
+export function assertReadableGraph(value: unknown): VgGraph {
+  if (!isPlainObject(value)) throw new GraphLoadError(shapeMessage(), 'corrupt');
+  if (!isSupportedSchema(value.schemaVersion)) {
+    throw new GraphLoadError(schemaMessage(value.schemaVersion), 'schema');
+  }
+  if (!Array.isArray(value.nodes) || !Array.isArray(value.edges)) {
+    throw new GraphLoadError(shapeMessage(), 'corrupt');
+  }
+  return value as unknown as VgGraph;
+}
+
+/** Read failed for a reason other than "the file is not there". */
+export function unreadableGraphError(): GraphLoadError {
+  return new GraphLoadError(unreadableMessage(), 'corrupt');
+}
 
 /**
  * Deterministic serialization of `graph.json`.
@@ -51,6 +135,19 @@ function sortKeys(value: unknown): unknown {
   return value;
 }
 
+/**
+ * Parse a code-map JSON document.
+ *
+ * Throws {@link GraphLoadError} when the text is truncated or not JSON, or
+ * when the document is not a schema this version of vg can read. The message
+ * names the failure and how to rebuild; it does not include the document.
+ */
 export function parseGraph(json: string): VgGraph {
-  return JSON.parse(json) as VgGraph;
+  let value: unknown;
+  try {
+    value = JSON.parse(json);
+  } catch {
+    throw new GraphLoadError(corruptMessage(), 'corrupt');
+  }
+  return assertReadableGraph(value);
 }

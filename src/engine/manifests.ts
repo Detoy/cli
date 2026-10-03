@@ -20,10 +20,10 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import ignore, { type Ignore } from 'ignore';
+import type { Ignore } from 'ignore';
 import { XMLParser } from 'fast-xml-parser';
 import { nodeId, edgeId } from './ids.js';
-import { isSkippedDirName } from './discover.js';
+import { isSkippedDirName, loadRootIgnore } from './discover.js';
 import { parseToml } from '../core-open/utils/toml.js';
 import type { GraphEdge, GraphNode } from '../schema.js';
 
@@ -65,7 +65,7 @@ export function extractManifests(
   opts: { exclude?: string[]; paths?: string[] } = {},
 ): ManifestExtract {
   const absRoot = path.resolve(root);
-  const ig = buildRootIgnore(absRoot, opts.exclude ?? []);
+  const ig = loadRootIgnore(absRoot, opts.exclude ?? []);
   const scopes = (opts.paths?.length ? opts.paths : ['.'])
     .map((p) => path.resolve(absRoot, p))
     .filter((p) => fs.existsSync(p));
@@ -448,20 +448,6 @@ function addEdge(
     epistemic: 'declared',
     count: 1,
   });
-}
-
-function buildRootIgnore(root: string, exclude: string[]): Ignore {
-  const ig = ignore();
-  const gitignorePath = path.join(root, '.gitignore');
-  if (fs.existsSync(gitignorePath)) {
-    try {
-      ig.add(fs.readFileSync(gitignorePath, 'utf8'));
-    } catch {
-      /* ignore */
-    }
-  }
-  if (exclude.length) ig.add(exclude);
-  return ig;
 }
 
 function walkManifests(

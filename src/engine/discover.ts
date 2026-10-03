@@ -2,7 +2,9 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import ignore, { type Ignore } from 'ignore';
 import { langForExtension, langById, type LanguageDef } from './languages.js';
-import { readDataConfigSync } from '../core-open/config.js';
+import { requireDataConfig } from '../core-open/config.js';
+import { dropBlankPatterns, gitignoreWithoutBlankLines } from '../core-open/utils/glob.js';
+import { assertLockfileFile, lockfileKind } from '../core-open/utils/lockfile-parse.js';
 
 /**
  * Deterministic file discovery.
@@ -175,19 +177,20 @@ function toPosix(p: string): string {
 /**
  * Project-local exclude globs from the project config (`.vibgrate/config.yml`
  * or `vibgrate.config.json`). `.ts`/`.js` configs stay scan-side (they can
- * execute). A missing or malformed file is an empty list, never an error.
+ * execute). A missing file is an empty list. A data file that does not parse
+ * throws — an unreadable config must not scan as if nothing were excluded.
  */
 export function readConfigExcludes(root: string): string[] {
-  const exclude = readDataConfigSync(root).config?.exclude;
+  const exclude = requireDataConfig(root).config?.exclude;
   if (!Array.isArray(exclude)) return [];
-  return exclude.filter((x): x is string => typeof x === 'string' && x.trim() !== '');
+  return dropBlankPatterns(exclude.filter((x): x is string => typeof x === 'string'));
 }
 
-/** Config excludes plus caller extras, de-duplicated, config-first. */
+/** Config excludes plus caller extras, de-duplicated, config-first. Blank entries are dropped. */
 export function mergeExcludes(root: string, extra?: string[]): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
-  for (const pattern of [...readConfigExcludes(root), ...(extra ?? [])]) {
+  for (const pattern of [...readConfigExcludes(root), ...dropBlankPatterns(extra ?? [])]) {
     if (seen.has(pattern)) continue;
     seen.add(pattern);
     out.push(pattern);
@@ -195,14 +198,24 @@ export function mergeExcludes(root: string, extra?: string[]): string[] {
   return out;
 }
 
-/** Build the ignore matcher from the repo's .gitignore plus extra excludes. */
-function buildRootIgnore(root: string, exclude: string[]): Ignore {
+/**
+ * Ignore matcher for a repo root: `.gitignore` plus extra exclude globs.
+ * Blank lines and blank excludes are omitted. A newline- or CR-only rule
+ * matches every path, which would skip the whole tree.
+ */
+export function loadRootIgnore(root: string, exclude: string[]): Ignore {
   const ig = ignore();
   const gitignorePath = path.join(root, '.gitignore');
-  if (fs.existsSync(gitignorePath)) {
-    ig.add(fs.readFileSync(gitignorePath, 'utf8'));
+  try {
+    if (fs.existsSync(gitignorePath)) {
+      const rules = gitignoreWithoutBlankLines(fs.readFileSync(gitignorePath, 'utf8'));
+      if (rules) ig.add(rules);
+    }
+  } catch {
+    // Unreadable .gitignore: walk the tree rather than fail the build.
   }
-  if (exclude.length) ig.add(exclude);
+  const patterns = dropBlankPatterns(exclude);
+  if (patterns.length) ig.add(patterns);
   return ig;
 }
 
@@ -219,7 +232,7 @@ export function discover(options: DiscoverOptions): DiscoveredFile[] {
     }
   }
 
-  const rootIg = buildRootIgnore(root, options.exclude ?? []);
+  const rootIg = loadRootIgnore(root, options.exclude ?? []);
 
   // Scope roots: explicit paths, or the whole repo.
   const scopeAbs = (options.paths && options.paths.length
@@ -233,7 +246,12 @@ export function discover(options: DiscoverOptions): DiscoveredFile[] {
     const rel = toPosix(path.relative(root, abs));
     if (rel.startsWith('..')) return; // outside root
     if (rel === '' || rootIg.ignores(rel)) return;
-    if (SKIP_FILES.has(path.basename(abs).toLowerCase())) return; // lockfiles etc.
+    if (SKIP_FILES.has(path.basename(abs).toLowerCase())) {
+      // Lockfiles are not source, but a truncated one must fail the build
+      // here — before the parse pool starts — rather than being skipped.
+      if (lockfileKind(path.basename(abs))) assertLockfileFile(abs);
+      return;
+    }
     const lang = langForExtension(path.extname(abs));
     if (!lang || !allowLang(lang)) return;
     found.set(rel, { rel, abs, lang });

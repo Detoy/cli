@@ -4,6 +4,7 @@
 import * as path from 'node:path';
 import * as semver from 'semver';
 import { readTextFile, FileCache } from '../utils/fs.js';
+import { parseLockfileJson, rethrowLockfileParseError } from '../utils/lockfile-parse.js';
 import { withTimeout } from '../utils/timeout.js';
 import { SwiftCache } from './swift-cache.js';
 import type { ProjectScan, DependencyRow, DetectedFramework } from '../types.js';
@@ -123,29 +124,22 @@ function parsePackageSwift(content: string): SwiftDependency[] {
  *   ]
  * }
  */
-function parsePackageResolved(content: string): Map<string, string> {
+function parsePackageResolved(filePath: string, content: string): Map<string, string> {
   const resolved = new Map<string, string>();
-  
-  try {
-    const data = JSON.parse(content) as {
-      pins?: Array<{
-        identity?: string;
-        state?: {
-          version?: string;
-        };
-      }>;
-    };
-    
-    if (!data.pins) return resolved;
-    
-    for (const pin of data.pins) {
-      if (!pin.identity || !pin.state?.version) continue;
-      resolved.set(pin.identity.toLowerCase(), pin.state.version);
-    }
-  } catch {
-    // Invalid JSON
+  const data = parseLockfileJson(filePath, content) as {
+    pins?: Array<{
+      identity?: string;
+      state?: {
+        version?: string;
+      };
+    }>;
+  } | null;
+
+  if (!data || typeof data !== 'object' || !data.pins) return resolved;
+  for (const pin of data.pins) {
+    if (!pin.identity || !pin.state?.version) continue;
+    resolved.set(pin.identity.toLowerCase(), pin.state.version);
   }
-  
   return resolved;
 }
 
@@ -200,6 +194,7 @@ export async function scanSwiftProjects(
         }
       }
     } catch (e: unknown) {
+      rethrowLockfileParseError(e);
       const msg = e instanceof Error ? e.message : String(e);
       console.error(`Error scanning Swift project ${dir}: ${msg}`);
     }
@@ -232,9 +227,10 @@ async function scanOneSwiftProject(
   let resolvedVersions = new Map<string, string>();
   try {
     const resolvedContent = cache ? await cache.readTextFile(resolvedPath) : await readTextFile(resolvedPath);
-    resolvedVersions = parsePackageResolved(resolvedContent);
-  } catch {
-    // No Package.resolved or can't read it
+    resolvedVersions = parsePackageResolved(resolvedPath, resolvedContent);
+  } catch (err) {
+    rethrowLockfileParseError(err);
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
   }
   
   // Determine Swift runtime version lag

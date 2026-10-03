@@ -20,10 +20,9 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import ignore, { type Ignore } from 'ignore';
 import { redactSecrets } from '../core-open/utils/redact.js';
 import { nodeId } from './ids.js';
-import { isSkippedDirName, SKIP_FILES } from './discover.js';
+import { isSkippedDirName, loadRootIgnore, SKIP_FILES } from './discover.js';
 import type { GraphNode } from '../schema.js';
 
 /** Soft cap on characters stored/embedded per document (keeps index snappy). */
@@ -303,20 +302,6 @@ function toPosix(p: string): string {
   return p.split(path.sep).join('/');
 }
 
-function buildRootIgnore(root: string, exclude: string[]): Ignore {
-  const ig = ignore();
-  const gitignorePath = path.join(root, '.gitignore');
-  if (fs.existsSync(gitignorePath)) {
-    try {
-      ig.add(fs.readFileSync(gitignorePath, 'utf8'));
-    } catch {
-      /* ignore */
-    }
-  }
-  if (exclude.length) ig.add(exclude);
-  return ig;
-}
-
 /**
  * Classify a path as project-context (document) or not. Pure — no I/O.
  * Live secret env files return false.
@@ -381,7 +366,7 @@ function isEnvExampleName(baseLower: string): boolean {
 export function discoverDocs(options: DiscoverDocsOptions): DiscoveredDoc[] {
   const root = path.resolve(options.root);
   const maxFiles = options.maxFiles ?? DOC_MAX_FILES;
-  const rootIg = buildRootIgnore(root, options.exclude ?? []);
+  const rootIg = loadRootIgnore(root, options.exclude ?? []);
   const scopeAbs = (options.paths?.length ? options.paths.map((p) => path.resolve(root, p)) : [root]).filter((p) =>
     fs.existsSync(p),
   );

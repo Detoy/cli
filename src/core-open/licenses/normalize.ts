@@ -53,6 +53,19 @@ export interface LicenseVerdict {
   components: string[];
 }
 
+/** Declared values that mean "no license asserted", not a failed parse. */
+const EXPLICIT_UNKNOWN_LICENSE = /^(unknown|noassertion|none|n\/a)$/i;
+
+/**
+ * True for an empty declaration or an explicit unknown sentinel
+ * (`NOASSERTION`, `unknown`, `none`, `n/a`). These stay `matchStatus: 'unknown'`
+ * and are not parse failures.
+ */
+export function isExplicitUnknownLicense(raw: string | null | undefined): boolean {
+  const input = (raw ?? '').trim();
+  return input.length === 0 || EXPLICIT_UNKNOWN_LICENSE.test(input);
+}
+
 const CATEGORY_RESTRICTIVENESS: Record<LicenseCategory, number> = {
   'public-domain': 0,
   permissive: 1,
@@ -112,7 +125,7 @@ function fuzzyMatch(raw: string): LicenseRecord | undefined {
  */
 export function normalizeLicense(raw: string | null | undefined): LicenseVerdict {
   const input = (raw ?? '').trim();
-  if (!input || /^(unknown|noassertion|none|n\/a)$/i.test(input)) {
+  if (isExplicitUnknownLicense(raw)) {
     return verdictFromRecord(unknownLicenseRecord(), 'unknown', 0);
   }
 

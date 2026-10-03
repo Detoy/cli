@@ -16,7 +16,13 @@ function makeSource(refreshImpl: RefreshImpl): { source: GraphSource; root: stri
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'staleness-'));
   const graphPath = path.join(root, '.vibgrate', 'graph.json');
   fs.mkdirSync(path.dirname(graphPath), { recursive: true });
-  fs.writeFileSync(graphPath, '{}');
+  // A readable map: get() loads it before the refresh probe. An empty object
+  // is a schema mismatch, not "no map".
+  fs.writeFileSync(graphPath, JSON.stringify({
+    schemaVersion: 'vg-graph/1.1',
+    nodes: [],
+    edges: [],
+  }));
   const source = new GraphSource(graphPath, true, { root, refreshImpl, probeIntervalMs: 0, refreshBudgetMs: 5_000 });
   return { source, root };
 }

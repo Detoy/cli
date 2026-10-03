@@ -5,6 +5,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import * as semver from 'semver';
 import { findPackageJsonFiles, readJsonFile, readTextFile, pathExists, FileCache } from '../utils/fs.js';
+import { rethrowLockfileParseError } from '../utils/lockfile-parse.js';
 import { loadNpmLockIndex, type NpmLockIndex, type LockfileIo } from './npm-lockfile.js';
 import { Semaphore } from '../utils/semaphore.js';
 import { withTimeout } from '../utils/timeout.js';
@@ -187,7 +188,10 @@ export async function scanNodeProjects(
     readText: (p) => (cache ? cache.readTextFile(p) : readTextFile(p)),
     readJson: <T>(p: string) => (cache ? cache.readJsonFile<T>(p) : readJsonFile<T>(p)),
   };
-  const lockIndex = await loadNpmLockIndex(rootDir, lockIo).catch(() => null);
+  const lockIndex = await loadNpmLockIndex(rootDir, lockIo).catch((err: unknown) => {
+    rethrowLockfileParseError(err);
+    return null;
+  });
 
   const STUCK_TIMEOUT_MS = projectScanTimeout ?? cache?.projectScanTimeout ?? 180_000;
   const cores = typeof os.availableParallelism === 'function' ? os.availableParallelism() : os.cpus().length || 4;
@@ -245,6 +249,7 @@ export async function scanNodeProjects(
       }
       return null;
     } catch (e: unknown) {
+      rethrowLockfileParseError(e);
       const msg = e instanceof Error ? e.message : String(e);
       console.error(`Error scanning ${pjPath}: ${msg}`);
       return null;
