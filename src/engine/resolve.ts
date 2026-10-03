@@ -2,6 +2,7 @@ import * as path from 'node:path';
 import { nodeId, edgeId } from './ids.js';
 import { relativeResolver, type ModuleResolver } from './module-resolver.js';
 import { isTestFile } from './tests.js';
+import { addEdgeSite } from './edge-sites.js';
 import type { FileParse } from './types.js';
 import type { DutyCandidate } from './duties.js';
 import type { EdgeKind, GraphEdge, GraphNode, NodeKind, ResolverKind } from '../schema.js';
@@ -245,7 +246,7 @@ export function resolve(parses: FileParse[], resolver?: ModuleResolver): Resolve
       const srcId = enclosingDefId(localDefs, call.byte) ?? fileId;
       const resolved = resolveCall(call, p.rel, p.lang, imported, defsByName, srcId, testCaller, nsReach, superTypesByType, modReach);
       if (resolved) {
-        edges.add('call', srcId, resolved.id, 'heuristic', resolved.confidence);
+        edges.add('call', srcId, resolved.id, 'heuristic', resolved.confidence, call.line, call.awaited);
         stats.callsResolved++;
       } else {
         stats.callsUnresolved++;
@@ -591,16 +592,21 @@ function resolveType(
 class EdgeSet {
   private map = new Map<string, GraphEdge>();
 
-  add(kind: EdgeKind, src: string, dst: string, resolution: ResolverKind, confidence: number): void {
+  add(kind: EdgeKind, src: string, dst: string, resolution: ResolverKind, confidence: number, line?: number, awaited?: boolean): void {
     const id = edgeId(kind, src, dst);
     const existing = this.map.get(id);
     if (existing) {
       existing.count = (existing.count ?? 1) + 1;
       // Keep the highest confidence seen for this logical edge.
       if (confidence > existing.confidence) existing.confidence = confidence;
+      if (line !== undefined) addEdgeSite(existing, line);
+      if (awaited && kind === 'call') existing.awaited = true;
       return;
     }
-    this.map.set(id, { id, kind, src, dst, resolution, confidence, count: 1 });
+    const edge: GraphEdge = { id, kind, src, dst, resolution, confidence, count: 1 };
+    if (line !== undefined) addEdgeSite(edge, line);
+    if (awaited && kind === 'call') edge.awaited = true;
+    this.map.set(id, edge);
   }
 
   toArray(): GraphEdge[] {

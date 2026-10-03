@@ -30,6 +30,8 @@ export interface RawCall {
   line: number; // 1-based
   /** True when the call site had a receiver/qualifier (`obj.foo()`, `pkg::foo()`); the receiver itself is not captured. */
   qualified?: boolean;
+  /** True when the call expression is awaited (`await f()`, `f().await`). */
+  awaited?: boolean;
 }
 
 export interface RawImport {

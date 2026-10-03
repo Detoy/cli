@@ -182,6 +182,10 @@ const DEFAULT_GITIGNORE = [
   // copies that must never be committed into the repository that hosts them
   // (code/worktree-session.ts).
   'worktrees',
+  // Saved review documents an agent or a person edited (review/doc-store.ts):
+  // per-machine working state with its own retention, never part of the
+  // change they describe.
+  'review-docs/',
 ];
 
 /** Marks a .vibgrate/.gitignore as vg-authored (safe to keep current). */

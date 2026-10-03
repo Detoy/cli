@@ -159,7 +159,7 @@ written to disk, and never phones home. `vg serve config` lists every knob and
 - **search_symbols** — find a symbol by name or literal string.
 - **query_graph** — find code by meaning: symptoms, relationships, what-breaks-if.
 - **get_node** — inspect one symbol: signature, callers, callees, area.
-- **find_path** — shortest connection between two symbols.
+- **find_path** — shortest connection between two symbols, with each hop's edge kind; `calls_only` follows calls and gives each call-site line.
 - **impact_of** — blast radius of a change: dependents, files, covering tests, risk.
 - **tests_for** — which tests cover a symbol.
 - **get_graph_summary** — code map overview: counts, languages, top areas and hubs.
@@ -176,10 +176,11 @@ written to disk, and never phones home. `vg serve config` lists every knob and
 - **library_docs** — version-correct usage docs for a library, sliced to a token budget.
 - **compress_content** / **retrieve_original** / **compression_stats** (with `--compress`) — shrink a tool output before it enters the context, expand a marker back to the original or just the slice you need, and report what compression saved.
 - **memory_search** / **memory_save** (with `--memory`) — project-scoped memory shared across your AI agents.
+- **review_doc** (with `--review`) — write the review document for a change: open it, patch a block by id, check every pin, read the history, restore a version, and read and answer the comments people left on the pushed document in Vibgrate Cloud. Saved under `.vibgrate/review-docs/`, never in the repository.
 
-The last two groups are listed only when you ask for them. Every advertised
+The last three groups are listed only when you ask for them. Every advertised
 tool schema is re-sent on every agent step, so a capability nobody enabled is a
-standing cost; both groups stay callable either way.
+standing cost.
 
 Prefer the hosted server over your team's scan data? **[Vibgrate Cloud MCP](https://vibgrate.com/mcp)** connects your assistant to Vibgrate Cloud (OAuth 2.1, 51 tools).
 
@@ -768,6 +769,8 @@ All HCS computation runs in an optional, separately-licensed engine module that 
 | `vg scan --vulns` | Also detect known vulnerabilities (OSV; offline via `--package-manifest`) |
 | `vg update` | Check for and install updates |
 | `vg why <package>` | Who introduced a dependency, its version history, and any open vulnerabilities |
+| `vg why <file:line>` | The commit that last changed a line, and the VG Code session that wrote it (opt in with `vg review trailer on`) |
+| `vg review trailer push` | Share the VG Code sessions behind your commits with Vibgrate Cloud, so `vg why <file:line> --cloud` works for teammates |
 
 ### Workspace auth & cloud upload
 

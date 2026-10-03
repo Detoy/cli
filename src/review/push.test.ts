@@ -3,7 +3,8 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { CliError, ExitCode } from '../util/exit.js';
-import { buildEnvelope, collectSpans, pushReceipt, type ParsedDsn, type ReviewPushBody } from './push.js';
+import { buildEnvelope, collectSpans, pushReceipt, pushReviewDoc, reviewDocEnvelope, type ParsedDsn, type ReviewPushBody } from './push.js';
+import type { ReviewDoc } from './doc.js';
 import type { CapsuleEvidence, ReviewReceipt } from './schemas.js';
 import { capsule, finding, findings } from './test-fixtures.js';
 
@@ -151,5 +152,36 @@ describe('pushReceipt', () => {
     }) as unknown as typeof fetch;
     await pushReceipt({ ...dsn, scheme: 'http', host: 'localhost:8787' }, body(), fetchImpl);
     expect(url).toBe('http://localhost:8787/v1/ingest/review');
+  });
+});
+
+// ── pushReviewDoc ───────────────────────────────────────────────────────────
+
+describe('pushReviewDoc', () => {
+  const docDsn: ParsedDsn = { keyId: 'k', secret: 's', host: 'us.ingest.vibgrate.com', workspaceId: 'ws_1', scheme: 'https' };
+  const doc = {
+    schema_version: 'vg.review.doc.v1',
+    title: 'Review: a..b',
+    target: { repo_key: `sha256:${'a'.repeat(64)}`, base_sha: 'a'.repeat(40), head_sha: 'b'.repeat(40), merge_base: null, dirty_tree_hash: null },
+    sections: [],
+    groups_digest: null,
+    generator: { by: 'vg', notes: [] },
+  } as unknown as ReviewDoc;
+
+  it('names the repository the way the receipt does, so the GitHub App finds both', () => {
+    const env = reviewDocEnvelope(doc, 'github.com/acme/ledger', '/work/ledger');
+    expect(env).toMatchObject({ kind: 'review_doc', schema_version: 'vg.review.doc.v1', repo: { name: 'acme/ledger', remote: 'github.com/acme/ledger', repo_key: doc.target.repo_key } });
+    expect(reviewDocEnvelope(doc, null, '/work/ledger').repo.name).toBe('ledger');
+  });
+
+  it('posts to the review-doc route and surfaces the server reason when the workspace has not opted in', async () => {
+    const calls: string[] = [];
+    const fetchImpl = (async (url: string) => {
+      calls.push(url);
+      return new Response(JSON.stringify({ status: 'error', code: 'review_doc_upload_disabled', error: 'off' }), { status: 403 });
+    }) as unknown as typeof fetch;
+    const res = await pushReviewDoc(docDsn, reviewDocEnvelope(doc, null, '/w'), fetchImpl);
+    expect(calls).toEqual(['https://us.ingest.vibgrate.com/v1/ingest/review-doc']);
+    expect(res).toMatchObject({ ok: false, status: 403, code: 'review_doc_upload_disabled', detail: 'off' });
   });
 });

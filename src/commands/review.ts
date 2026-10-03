@@ -36,7 +36,7 @@ import { c, info, out } from '../util/output.js';
 import { rootOf } from './util.js';
 import { formatExplain, formatMarkdown, formatSarif, formatText, type ReviewFormat } from '../review/format.js';
 import { exitCodeForDecision, resolveFailOn, FAIL_ON_LEVELS, type FailOnLevel } from '../review/policy.js';
-import { buildEnvelope, collectSpans, pushReceipt, rejectPushWhenOffline, type ReviewPushBody } from '../review/push.js';
+import { buildEnvelope, collectSpans, pushReceipt, pushReviewDoc, rejectPushWhenOffline, reviewDocEnvelope, type ReviewPushBody } from '../review/push.js';
 import { applyPatches, collectLoopPatches, loopNote, REVIEW_LOOP_MAX } from '../review/loop.js';
 import { loadGraph } from '../engine/load.js';
 import { proposeFindingFix, REVIEW_PROPOSE_LOOP_CAP } from '../review/propose.js';
@@ -51,7 +51,22 @@ import { resolveReviewSigningKey, verifyReceipt } from '../review/sign.js';
 import { injectContextBlock, renderContext, writeContextFile } from '../review/context-file.js';
 import { ensureCodeMap, reviewPolicyState, seedReviewPolicy } from '../review/prepare.js';
 import { exportCorrectnessPublishRows } from '../review/finding-publish.js';
-import { changeSetFromUnifiedDiff, collectChangeSet, defaultRun, type ChangeSet } from '../review/git.js';
+import { changeSetFromUnifiedDiff, collectChangeSet, defaultRun, gitTopLevel, isGitRepo, normalizeRemote, repoKey, type ChangeSet } from '../review/git.js';
+import { addSessionTrailers, hookPath, setTrailer, trailerState, TRAILER } from '../review/provenance.js';
+import { preparePush, pushProvenance, trailerSessionIds } from '../review/provenance-cloud.js';
+import { cloudDsn, fetchComments, formatThreads, replyToComment } from '../review/doc-comments.js';
+import { loadHaileProvider } from '../engine/haile/haile-provider.js';
+import { collectGroupSignals, formatGroupsText, groupChangeSet, GROUPS_SCHEMA, validateGroups } from '../review/groups.js';
+import { buildDocument, resolveScope, scopeResolver, type BuildOptions, type DocScope } from '../review/doc-build.js';
+import { mergeDocuments, multiResolver, parseAlso, repoId, type OtherDoc } from '../review/multi-repo.js';
+import { checkAgainstChange, documentHistory, getDocument, openDocument, patchDocument, restoreVersion, savedOrBuilt } from '../review/doc-store.js';
+import {
+  DOC_SCHEMA,
+  renderReviewDocMarkdown,
+  validateReviewDoc,
+  type PinResolver,
+  type ReviewDoc,
+} from '../review/doc.js';
 import { parseDsn } from '../reporting/commands/push.js';
 import { resolveDsn } from '../reporting/credentials.js';
 
@@ -390,6 +405,259 @@ export function registerReview(program: Command): void {
     });
   applyGlobalOptions(verify);
 
+  const groupsCmd = cmd
+    .command('groups')
+    .description(
+      'group the change for reading: implementation by area and layer first, then tests, config, dependencies, generated, docs, moves, formatting-only and import-only edits peeled off (deterministic; needs the Architecture module, no code map)',
+    )
+    .option('--base <ref>', 'group HEAD against the merge-base with <ref> (e.g. origin/main)')
+    .option('--in-place', 'include the working tree when --base is also set')
+    .option('--format <fmt>', 'output format (text | json)', 'text')
+    .option('--check <file>', 'validate an edited vg.review.groups.v1 file: every changed file in exactly one group (exit 2 if not)')
+    .option('--session <id>', 'only the files a VG Code session touched (`latest` for the most recent); a worktree chat is read from its worktree')
+    .action(async function (this: Command, opts: { base?: string; inPlace?: boolean; format: string; check?: string; session?: string }) {
+      const global = readGlobal(this);
+      const mainRoot = rootOf(global);
+      if (opts.format !== 'text' && opts.format !== 'json') {
+        throw new CliError('unknown --format (expected text | json)', ExitCode.USAGE_ERROR);
+      }
+      const resolved = resolveScope(mainRoot, scopeOf(opts));
+      const change = resolved.change;
+      if (opts.check) {
+        const issues = validateGroups(readJsonFile(opts.check, mainRoot, GROUPS_SCHEMA), change);
+        reportIssues(issues, Boolean(global.json), opts.check);
+        return;
+      }
+      const groups = groupChangeSet(change, collectGroupSignals(change, resolved.sides), await loadHaileProvider());
+      if (global.json || opts.format === 'json') out(JSON.stringify(groups, null, 2));
+      else if (!global.quiet) info(formatGroupsText(groups));
+    });
+  applyGlobalOptions(groupsCmd);
+
+  const trailer = cmd
+    .command('trailer')
+    .description(
+      'opt in to a Vibgrate-Session commit trailer naming the VG Code session that changed the staged files (a git hook; only the session id is committed); `vg why <file:line>` reads it back, and `push` shares those sessions with your Vibgrate Cloud workspace',
+    )
+    .argument('[state]', 'on | off | status | push', 'status')
+    .argument('[source]', 'internal: the commit message source git passes to the hook')
+    .option('--hook <message-file>', 'internal: run from the prepare-commit-msg hook')
+    .option('--base <ref>', 'push: the sessions named in <ref>..HEAD (default: commits no remote branch has yet)')
+    .option('--dsn <dsn>', 'push: DSN token (or use VIBGRATE_DSN / `vg login`)')
+    .option('--dry-run', 'push: list what would be sent, send nothing')
+    .action(async function (this: Command, state: string, source: string | undefined, opts: { hook?: string; base?: string; dsn?: string; dryRun?: boolean }) {
+      const global = readGlobal(this);
+      const root = rootOf(global);
+      const top = gitTopLevel(root);
+      if (opts.hook) {
+        // Called by git: never fail the commit, never print.
+        addSessionTrailers(top, opts.hook, state === 'status' ? source : state);
+        return;
+      }
+      if (!isGitRepo(root)) throw new CliError('`vg review trailer` needs a git repository', ExitCode.USAGE_ERROR);
+      if (state === 'push') {
+        await pushTrailerSessions(top, opts, Boolean(global.json));
+        return;
+      }
+      if (state !== 'on' && state !== 'off' && state !== 'status') {
+        throw new CliError('use `vg review trailer on`, `off`, `status` or `push`', ExitCode.USAGE_ERROR);
+      }
+      const now = state === 'status' ? trailerState(top) : setTrailer(top, state === 'on');
+      if (global.json) {
+        out(JSON.stringify({ trailer: now, hook: hookPath(top) }));
+        return;
+      }
+      if (now === 'other-hook') {
+        info(c.yellow(`  ${hookPath(top)} is another tool's hook, so it was left alone.`));
+        info(`  To add the trailer there, add this line to it: ${c.bold('vg review trailer --hook "$1" "$2" || true')}`);
+        return;
+      }
+      info(
+        now === 'on'
+          ? `  ${c.green('on')}: commits that include files a VG Code session changed get a ${TRAILER} trailer with the session id. Only the id is committed; \`vg why <file:line>\` reads it back.`
+          : `  ${c.dim('off')}: commits get no ${TRAILER} trailer.`,
+      );
+    });
+  applyGlobalOptions(trailer);
+
+  const docCmd = cmd
+    .command('doc')
+    .description(
+      'write the review document for this change (vg.review.doc.v1): what changed, grouped, with every hunk and finding pinned to verified lines; --check validates one an agent or person edited; --save keeps it so an agent can patch it block by block',
+    )
+    .option('--base <ref>', 'review HEAD against the merge-base with <ref> (e.g. origin/main)')
+    .option('--in-place', 'include the working tree when --base is also set')
+    .option('--format <fmt>', 'output format (md | json)', 'md')
+    .option('-o, --out <file>', 'write the document to a file')
+    .option('--no-findings', 'leave out deterministic findings')
+    .option('--no-diagrams', 'leave out the diagrams derived from the code map')
+    .option('--base-graph', 'also build the code map at the base commit, so call paths show before and after (slower; uses a temporary worktree)')
+    .option('--check <file>', 'validate a vg.review.doc.v1 file against this change: schema, section order, one primary diagram, every pin lands (exit 2 if not)')
+    .option('--session <id>', 'what a VG Code session did (`latest` for the most recent): only the files it touched, with each request as a pinned requirement; a worktree chat is read from its worktree')
+    .option('--save', 'save the document under .vibgrate/review-docs so an agent can patch it (the same scope always opens the same saved document)')
+    .option('--saved', 'show the saved document for this scope when one still matches the change, else build it (never saves)')
+    .option('--doc <id>', 'a saved document by id (rd_…), for --patch, --history and --restore, or to print it')
+    .option('--patch <file>', 'apply a JSON array of operations to the saved document named by --doc (needs --expect-version)')
+    .option('--expect-version <n>', 'the version the patch was written against; a patch against an older version is refused')
+    .option('--history', 'list the versions of the saved document named by --doc')
+    .option('--restore <n>', 'make version <n> of the saved document named by --doc current again, as a new version')
+    .option('--push', 'also upload the whole document to Vibgrate Cloud, so the GitHub App shows it on the pull request (needs a DSN, committed changes, and review documents turned on for the workspace)')
+    .option('--dsn <dsn>', 'DSN token for --push, --comments and --reply (or use VIBGRATE_DSN / `vg login`)')
+    .option('--comments', 'list the comments people left on the pushed document for this change, open threads first')
+    .option('--reply <comment-id>', 'answer a comment thread on the pushed document (with --text); the reply is shown as written by an agent')
+    .option('--text <text>', 'the reply for --reply')
+    .option(
+      '--also <dir[=ref]>',
+      'fold in the change in another checkout (an API and its client): built there, its pins name that repository; repeatable; `=ref` sets its base',
+      (v: string, prev: string[] = []) => [...prev, v],
+    )
+    .action(async function (
+      this: Command,
+      opts: {
+        base?: string;
+        inPlace?: boolean;
+        format: string;
+        out?: string;
+        findings?: boolean;
+        diagrams?: boolean;
+        baseGraph?: boolean;
+        check?: string;
+        session?: string;
+        save?: boolean;
+        saved?: boolean;
+        doc?: string;
+        patch?: string;
+        expectVersion?: string;
+        history?: boolean;
+        restore?: string;
+        push?: boolean;
+        dsn?: string;
+        comments?: boolean;
+        reply?: string;
+        text?: string;
+        also?: string[];
+      },
+    ) {
+      const global = readGlobal(this);
+      const mainRoot = rootOf(global);
+      if (opts.format !== 'md' && opts.format !== 'json') {
+        throw new CliError('unknown --format (expected md | json)', ExitCode.USAGE_ERROR);
+      }
+      const asJson = Boolean(global.json) || opts.format === 'json';
+      const emit = (doc: ReviewDoc): void => {
+        const text = asJson ? `${JSON.stringify(doc, null, 2)}\n` : renderReviewDocMarkdown(doc);
+        if (opts.out) {
+          fs.writeFileSync(path.resolve(mainRoot, opts.out), text);
+          if (!global.quiet) info(c.dim(`  review document written to ${opts.out}`));
+        } else {
+          out(text.replace(/\n$/, ''));
+        }
+      };
+      const say = (line: string): void => {
+        if (!global.quiet) info(c.dim(`  ${line}`));
+      };
+
+      if (opts.patch || opts.history || opts.restore !== undefined || (opts.doc && !opts.check)) {
+        if (!opts.doc) throw new CliError('--patch, --history and --restore need --doc <id> (from `vg review doc --save`)', ExitCode.USAGE_ERROR);
+        const id = opts.doc;
+        try {
+          if (opts.history) {
+            const h = documentHistory(mainRoot, id);
+            if (asJson) out(JSON.stringify(h, null, 2));
+            else for (const v of h.versions) info(`  v${v.version}${v.version === h.current ? ' (current)' : ''}  ${v.at}  ${v.by}  ${v.summary}`);
+            return;
+          }
+          if (opts.restore !== undefined || opts.patch) {
+            const outcome =
+              opts.restore !== undefined
+                ? restoreVersion(mainRoot, id, Number(opts.restore))
+                : patchDocument(mainRoot, id, Number(opts.expectVersion ?? NaN), readJsonFile(opts.patch!, mainRoot, 'patch operations'));
+            if (!outcome.ok) {
+              if (asJson) out(JSON.stringify(outcome, null, 2));
+              else {
+                info(`  ${c.red('NOT SAVED')}  ${id} is at version ${outcome.version}`);
+                for (const e of outcome.errors) info(`  ${e}`);
+                for (const i of outcome.issues) info(`  ${c.dim(i.path)}  ${i.message} ${c.dim(`[${i.code}]`)}`);
+              }
+              process.exitCode = ExitCode.GATE_FAILED;
+              return;
+            }
+            say(`${id} saved as version ${outcome.version}`);
+            for (const n of outcome.notes) say(n);
+            emit(outcome.doc);
+            return;
+          }
+          emit(getDocument(mainRoot, id).doc);
+          return;
+        } catch (err) {
+          if (err instanceof CliError) throw err;
+          throw new CliError((err as Error).message, ExitCode.NOT_FOUND);
+        }
+      }
+
+      const scope = scopeOf(opts);
+      if (opts.comments || opts.reply) {
+        // The pushed document for this change: same repository, head and base as `--push` sends.
+        const { change } = resolveScope(mainRoot, scope);
+        const target = { repo_key: repoKey(change.remote, change.topLevel), head_sha: change.headSha, base_sha: change.baseSha };
+        const dsn = cloudDsn(opts.dsn);
+        if (opts.reply) {
+          if (!opts.text?.trim()) throw new CliError('--reply needs --text with the answer', ExitCode.USAGE_ERROR);
+          const posted = await replyToComment(dsn, target, opts.reply, opts.text, 'vg review doc');
+          if (global.json) out(JSON.stringify(posted, null, 2));
+          else say(`replied to ${opts.reply} as ${posted.authorName}`);
+          return;
+        }
+        const { title, threads } = await fetchComments(dsn, target);
+        if (global.json) out(JSON.stringify({ title, threads }, null, 2));
+        else out([title, ...formatThreads(threads)].join('\n'));
+        return;
+      }
+      if (opts.check) {
+        const resolved = resolveScope(mainRoot, scope);
+        const parsed = readJsonFile(opts.check, mainRoot, DOC_SCHEMA);
+        // A multi-repo document's other repositories are checked against the checkouts given with --also.
+        const others = new Map<string, PinResolver>();
+        for (const spec of (opts.also ?? []).map(parseAlso)) {
+          const otherRoot = path.resolve(mainRoot, spec.dir);
+          const base = spec.base ?? (scope.kind === 'change' ? scope.base : null);
+          const other = resolveScope(otherRoot, { kind: 'change', base, in_place: Boolean(opts.inPlace) });
+          others.set(repoKey(other.change.remote, other.change.topLevel), scopeResolver(other));
+        }
+        reportIssues(checkAgainstChange(parsed as ReviewDoc, resolved, others), Boolean(global.json), opts.check);
+        return;
+      }
+      const build = { findings: opts.findings, diagrams: opts.diagrams, baseGraph: opts.baseGraph, graphPath: global.graph, generatedAt: global.generatedAt, log: say };
+      const show = async (doc: ReviewDoc): Promise<void> => {
+        emit(doc);
+        if (opts.push) await pushDocument(mainRoot, doc, opts.dsn, say);
+      };
+      if (opts.also?.length) {
+        if (opts.save || opts.saved || scope.kind === 'session') {
+          throw new CliError('--also builds a multi-repo document for a change; it does not combine with --save, --saved or --session', ExitCode.USAGE_ERROR);
+        }
+        await show(await buildMultiRepoDocument(mainRoot, scope, opts.also, { ...build, inPlace: opts.inPlace }));
+        return;
+      }
+      if (opts.save) {
+        // --save always writes a fresh version; earlier ones stay in the history.
+        const opened = await openDocument(mainRoot, scope, { ...build, fresh: true });
+        say(`${opened.doc_id} saved as version ${opened.version}`);
+        await show(opened.doc);
+        return;
+      }
+      if (opts.saved) {
+        // Reading never writes: the saved version when it still matches, else a fresh build.
+        const shown = await savedOrBuilt(mainRoot, scope, build);
+        if (shown.saved) say(`${shown.saved.doc_id} version ${shown.saved.version}, as saved`);
+        else if (shown.note) say(shown.note);
+        await show(shown.doc);
+        return;
+      }
+      await show((await buildDocument(mainRoot, scope, build)).doc);
+    });
+  applyGlobalOptions(docCmd);
+
   const propose = cmd
     .command('propose')
     .description(
@@ -678,6 +946,74 @@ async function doPush(
 }
 
 /**
+ * `vg review doc --also <dir>[=<ref>]`: each other checkout's document is built
+ * there (its own code map and diff), then folded into this one with every pin
+ * naming its repository, and the whole is checked pin by pin before it is
+ * shown or pushed.
+ */
+async function buildMultiRepoDocument(
+  mainRoot: string,
+  scope: DocScope,
+  also: string[],
+  build: BuildOptions & { inPlace?: boolean },
+): Promise<ReviewDoc> {
+  const primary = await buildDocument(mainRoot, scope, build);
+  const taken = new Set<string>();
+  const others: OtherDoc[] = [];
+  const resolvers = new Map<string, PinResolver>();
+  for (const spec of also.map(parseAlso)) {
+    const root = path.resolve(mainRoot, spec.dir);
+    if (!fs.existsSync(root)) throw new CliError(`--also ${spec.dir}: no such directory`, ExitCode.USAGE_ERROR);
+    const base = spec.base ?? (scope.kind === 'change' ? scope.base : null);
+    // Each checkout reads its own code map; --graph names only this one's.
+    const built = await buildDocument(root, { kind: 'change', base, in_place: Boolean(build.inPlace) }, { ...build, graphPath: undefined });
+    const remote = built.resolved.change.remote;
+    const name = remote && remote.split('/').length >= 3 ? remote.split('/').slice(-2).join('/') : null;
+    const id = repoId(name, root, taken);
+    taken.add(id);
+    others.push({ id, name, doc: built.doc });
+    resolvers.set(id, built.resolve);
+  }
+  const doc = mergeDocuments(primary.doc, others);
+  const issues = validateReviewDoc(doc, multiResolver(primary.resolve, resolvers));
+  if (issues.length > 0) {
+    throw new CliError(`internal: merged review document failed validation — ${issues[0].path}: ${issues[0].message}`, ExitCode.ERROR);
+  }
+  return doc;
+}
+
+/**
+ * `vg review doc --push`. The document is only useful on a pull request when
+ * it describes commits, so uncommitted work is refused before anything is
+ * sent; a refused or failed upload is an error, because the person asked for it.
+ */
+async function pushDocument(root: string, doc: ReviewDoc, dsnFlag: string | undefined, say: (line: string) => void): Promise<void> {
+  if (doc.target.dirty_tree_hash) {
+    throw new CliError(
+      '--push needs a document of committed changes — commit first, then run `vg review doc --base origin/main --push`',
+      ExitCode.USAGE_ERROR,
+    );
+  }
+  const dsn = resolveDsn(dsnFlag);
+  if (!dsn) throw new CliError('no DSN for --push — run `vg login`, set VIBGRATE_DSN, or pass --dsn', ExitCode.USAGE_ERROR);
+  const parsed = parseDsn(dsn);
+  if (!parsed) throw new CliError('invalid DSN format (expected vibgrate+https://<key>:<secret>@<host>/<workspace>)', ExitCode.USAGE_ERROR);
+  const remoteRaw = defaultRun(['config', '--get', 'remote.origin.url'], root);
+  const remote = remoteRaw.status === 0 ? normalizeRemote(remoteRaw.stdout) : null;
+  const res = await pushReviewDoc(parsed, reviewDocEnvelope(doc, remote, root));
+  if (!res.ok) {
+    if (res.code === 'review_doc_upload_disabled') {
+      throw new CliError(
+        'this workspace does not accept review documents — a workspace admin can turn on Review documents in Vibgrate Cloud settings; nothing was uploaded',
+        ExitCode.ERROR,
+      );
+    }
+    throw new CliError(`review document upload failed (${res.status}) — ${res.detail ?? ''}`, ExitCode.ERROR);
+  }
+  say(`review document uploaded to ${res.host}`);
+}
+
+/**
  * Write the committed agent memory. Kept separate from the receipt path because
  * this file is for humans and agents to read and commit, while the receipt is a
  * machine artifact — different audiences, different lifetimes.
@@ -767,4 +1103,69 @@ function formatFindingsFromDiff(result: RunReviewResult, base?: string): string 
     ),
   );
   return lines.join('\n');
+}
+
+/** The scope a `review doc` / `review groups` invocation names. */
+function scopeOf(opts: { base?: string; inPlace?: boolean; session?: string }): DocScope {
+  return opts.session
+    ? { kind: 'session', session: opts.session, base: opts.base ?? null }
+    : { kind: 'change', base: opts.base ?? null, in_place: Boolean(opts.inPlace) };
+}
+
+function readJsonFile(spec: string, root: string, schema: string): unknown {
+  const abs = path.resolve(root, spec);
+  if (!fs.existsSync(abs)) throw new CliError(`no file at ${spec} — expected a ${schema} document`, ExitCode.NOT_FOUND);
+  try {
+    return JSON.parse(fs.readFileSync(abs, 'utf8'));
+  } catch {
+    throw new CliError(`${spec} is not valid JSON — expected a ${schema} document`, ExitCode.USAGE_ERROR);
+  }
+}
+
+/** Print validation issues; exit 2 when there are any, so CI and agents can gate on it. */
+function reportIssues(issues: { path: string; code: string; message: string }[], json: boolean, file: string): void {
+  if (json) {
+    out(JSON.stringify({ file, valid: issues.length === 0, issues }, null, 2));
+  } else if (issues.length === 0) {
+    info(`  ${c.green('VALID')}  ${file}`);
+  } else {
+    info(`  ${c.red('INVALID')}  ${file} — ${issues.length} issue${issues.length === 1 ? '' : 's'}`);
+    for (const i of issues) info(`  ${c.dim(i.path)}  ${i.message} ${c.dim(`[${i.code}]`)}`);
+  }
+  process.exitCode = issues.length === 0 ? ExitCode.OK : ExitCode.GATE_FAILED;
+}
+
+/**
+ * `vg review trailer push`: share the VG Code sessions named by trailers on
+ * the commits being shared with the workspace, so a teammate's
+ * `vg why <file:line> --cloud` can read them. Sessions that ran elsewhere are
+ * listed, not sent; Cloud stores nothing unless Agent provenance is on.
+ */
+async function pushTrailerSessions(top: string, opts: { base?: string; dsn?: string; dryRun?: boolean }, asJson: boolean): Promise<void> {
+  const ids = trailerSessionIds(top, opts.base);
+  const prepared = preparePush(top, ids);
+  const summary = {
+    repo: prepared.repo.name,
+    sessions: prepared.sessions.map((s) => ({ id: s.id, title: s.title, turns: s.turns.length })),
+    missing: prepared.missing,
+    refused: prepared.refused,
+  };
+  if (opts.dryRun || prepared.sessions.length === 0) {
+    if (asJson) out(JSON.stringify({ ...summary, sent: 0 }));
+    else {
+      if (ids.length === 0) info(c.dim(`  no ${TRAILER} trailer on ${opts.base ? `${opts.base}..HEAD` : 'the commits no remote branch has yet'}`));
+      for (const s of summary.sessions) info(`  would send ${c.bold(s.id)}: ${s.title} ${c.dim(`(${s.turns} turns)`)}`);
+      for (const id of prepared.missing) info(c.dim(`  ${id} is not on this machine, so it was not sent`));
+      for (const r of prepared.refused) info(c.yellow(`  ${r.id} was not sent: ${r.reason}`));
+    }
+    return;
+  }
+  const stored = await pushProvenance(cloudDsn(opts.dsn), prepared);
+  if (asJson) {
+    out(JSON.stringify({ ...summary, sent: stored }));
+    return;
+  }
+  info(`  ${c.green('sent')} ${stored} VG Code session${stored === 1 ? '' : 's'} to Vibgrate Cloud for ${prepared.repo.name}; \`vg why <file:line> --cloud\` reads them back.`);
+  for (const id of prepared.missing) info(c.dim(`  ${id} is not on this machine, so it was not sent`));
+  for (const r of prepared.refused) info(c.yellow(`  ${r.id} was not sent: ${r.reason}`));
 }

@@ -79,7 +79,8 @@ export function registerServe(program: Command): void {
     // MCP transport, alive until it is stopped. Internal — not a user flag.
     .addOption(new Option('--compress-daemon').hideHelp())
     .option('--memory', 'expose cross-agent memory tools (memory_search / memory_save) scoped to this project. Env: VG_MEMORY=1')
-    .action(async function (this: Command, agentArgv: string[], opts: { http?: boolean; port?: string; host?: string; savings?: boolean; shareStats?: boolean; dedup?: boolean; refresh?: boolean; watch?: boolean; surface?: string; tools?: string; compress?: boolean; compressOnly?: boolean; compressPort?: string; compressMode?: string; profile?: string; background?: boolean; compressDaemon?: boolean; memory?: boolean }) {
+    .option('--review', 'expose review_doc, so an agent can write and patch the review document for a change (saved under .vibgrate/review-docs). Env: VG_REVIEW=1')
+    .action(async function (this: Command, agentArgv: string[], opts: { http?: boolean; port?: string; host?: string; savings?: boolean; shareStats?: boolean; dedup?: boolean; refresh?: boolean; watch?: boolean; surface?: string; tools?: string; compress?: boolean; compressOnly?: boolean; compressPort?: string; compressMode?: string; profile?: string; background?: boolean; compressDaemon?: boolean; memory?: boolean; review?: boolean }) {
       const global = readGlobal(this);
       const root = rootOf(global);
       // `--compress-only` is the "I just want compression" path: no map is
@@ -170,6 +171,7 @@ export function registerServe(program: Command): void {
         // callable either way — only the listing is gated.
         compressTools: compress,
         memory: opts.memory === true || /^(1|true|yes|on)$/i.test(process.env.VG_MEMORY ?? ''),
+        review: opts.review === true || /^(1|true|yes|on)$/i.test(process.env.VG_REVIEW ?? ''),
         graphless: compressOnly,
       };
       // No map means nothing to refresh or watch.

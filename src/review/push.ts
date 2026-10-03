@@ -17,6 +17,7 @@ import { CliError, ExitCode } from '../util/exit.js';
 import { VERSION } from '../version.js';
 import type { AnalysisCapsule, ReviewIngestEnvelope, ReviewReceipt } from './schemas.js';
 import { RECEIPT_SCHEMA } from './schemas.js';
+import { DOC_SCHEMA, type ReviewDoc } from './doc.js';
 
 /** Snippet cap — a handful of lines per finding, never a file. */
 const MAX_SNIPPET_LINES = 12;
@@ -127,6 +128,10 @@ export interface PushResult {
   status: number;
   host: string;
   detail?: string;
+  /** The server's machine-readable reason, when it gave one. */
+  code?: string;
+  /** The parsed JSON body of a successful response, when it had one. */
+  json?: unknown;
 }
 
 /**
@@ -138,7 +143,45 @@ export async function pushReceipt(
   body: ReviewPushBody,
   fetchImpl: typeof fetch = fetch,
 ): Promise<PushResult> {
-  const url = `${dsn.scheme}://${dsn.host}/v1/ingest/review`;
+  return postIngest(dsn, '/v1/ingest/review', body, fetchImpl);
+}
+
+/**
+ * `vg review doc --push`: the whole review document, which carries
+ * code-derived text (signatures, conditions, table and field names, agent
+ * notes). Sent only when asked, and stored only when the workspace has turned
+ * review documents on in Vibgrate Cloud; otherwise the server refuses it with
+ * `code: "review_doc_upload_disabled"` and keeps nothing.
+ */
+export interface ReviewDocPushBody {
+  kind: 'review_doc';
+  schema_version: typeof DOC_SCHEMA;
+  cli_version: string;
+  repo: { repo_key: string; name: string | null; remote: string | null };
+  doc: ReviewDoc;
+}
+
+export function reviewDocEnvelope(doc: ReviewDoc, remote: string | null, root: string): ReviewDocPushBody {
+  return {
+    kind: 'review_doc',
+    schema_version: DOC_SCHEMA,
+    cli_version: VERSION,
+    repo: {
+      repo_key: doc.target.repo_key ?? '',
+      // Same naming as the receipt, so the GitHub App finds both by `owner/repo`.
+      name: remote ? remote.split('/').slice(-2).join('/') : path.basename(root),
+      remote,
+    },
+    doc,
+  };
+}
+
+export async function pushReviewDoc(dsn: ParsedDsn, body: ReviewDocPushBody, fetchImpl: typeof fetch = fetch): Promise<PushResult> {
+  return postIngest(dsn, '/v1/ingest/review-doc', body, fetchImpl);
+}
+
+export async function postIngest(dsn: ParsedDsn, route: string, body: unknown, fetchImpl: typeof fetch): Promise<PushResult> {
+  const url = `${dsn.scheme}://${dsn.host}${route}`;
   const payload = JSON.stringify(body);
   let res: Response;
   try {
@@ -160,7 +203,23 @@ export async function pushReceipt(
   }
   if (!res.ok) {
     const detail = await res.text().catch(() => '');
-    return { ok: false, status: res.status, host: dsn.host, detail: detail.slice(0, 200) };
+    let code: string | undefined;
+    let error: string | undefined;
+    try {
+      const parsed = JSON.parse(detail) as { code?: unknown; error?: unknown };
+      if (typeof parsed.code === 'string') code = parsed.code;
+      if (typeof parsed.error === 'string') error = parsed.error;
+    } catch {
+      /* not JSON: keep the raw text */
+    }
+    return { ok: false, status: res.status, host: dsn.host, detail: (error ?? detail).slice(0, 200), ...(code ? { code } : {}) };
   }
-  return { ok: true, status: res.status, host: dsn.host };
+  const text = await res.text().catch(() => '');
+  let json: unknown;
+  try {
+    json = text ? JSON.parse(text) : undefined;
+  } catch {
+    json = undefined;
+  }
+  return { ok: true, status: res.status, host: dsn.host, ...(json !== undefined ? { json } : {}) };
 }

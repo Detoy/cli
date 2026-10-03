@@ -9,7 +9,7 @@ import { loadTopicTags } from '../engine/relevance-enrich.js';
 import { loadEmbedder, getNodeEmbeddings, isModelReady, withTimeout, type Embedder } from '../engine/embeddings.js';
 import { resolveOne } from '../engine/lookup.js';
 import { indexFor } from '../engine/relations.js';
-import { pathDisconnect, shortestPath } from '../engine/paths.js';
+import { callPath, describeHops, pathDisconnect, shortestPath } from '../engine/paths.js';
 import { impactOf } from '../engine/impact.js';
 import { coveringTests } from '../engine/test-query.js';
 import { loadOrDiscoverFederation } from '../runtime/federation.js';
@@ -448,13 +448,15 @@ export const TOOLS: VgTool[] = [
   },
   {
     name: 'find_path',
-    description: 'Shortest connection from a to b.',
+    description:
+      'Shortest connection from a to b, with the edge kind of each hop. calls_only: follow call edges only (what actually runs), with the call-site line per hop.',
     inputSchema: obj(
       {
         a: { type: 'string' },
         b: { type: 'string' },
         pick_a: { type: 'number' },
         pick_b: { type: 'number' },
+        calls_only: { type: 'boolean' },
       },
       ['a', 'b'],
     ),
@@ -463,10 +465,17 @@ export const TOOLS: VgTool[] = [
       const rb = resolveOne(graph, String(args.b ?? ''), numOrU(args.pick_b));
       if (!ra.node) return { endpoint: 'a', ...unresolved(ra.candidates) };
       if (!rb.node) return { endpoint: 'b', ...unresolved(rb.candidates) };
-      const result = shortestPath(graph, ra.node.id, rb.node.id);
+      const callsOnly = args.calls_only === true;
+      const result = callsOnly ? callPath(graph, ra.node.id, rb.node.id) : shortestPath(graph, ra.node.id, rb.node.id);
       if (!result) return pathDisconnect(graph, ra.node.id, rb.node.id);
       const byId = new Map(graph.nodes.map((n) => [n.id, n] as const));
-      return { connected: true, direction: result.direction, path: result.ids.map((id) => byId.get(id)?.qualifiedName ?? id) };
+      return {
+        connected: true,
+        direction: result.direction,
+        path: result.ids.map((id) => byId.get(id)?.qualifiedName ?? id),
+        hops: describeHops(graph, result.ids, result.direction),
+        ...(callsOnly ? { calls_only: true } : {}),
+      };
     },
   },
   {

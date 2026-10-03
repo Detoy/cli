@@ -11,6 +11,7 @@ import type { RefreshOutcome, refreshIfStale } from '../engine/refresh.js';
 import { RefreshScheduler, REFRESH_BUDGET_MS as SCHEDULER_BUDGET_MS } from '../engine/refresh-scheduler.js';
 import { TOOLS, budgetSuffix, listedToolNames, warmEmbedderInBackground, type ToolSurface, type VgTool } from './tools.js';
 import { COMPRESS_TOOLS, memoryVgTools } from './compress-tools.js';
+import { REVIEW_TOOLS } from './review-tools.js';
 import { isRelevantChange } from '../engine/watch-filter.js';
 import { DaemonSemanticSession } from '../runtime/vgd/semantic-client.js';
 import { envForNamedVgdSocket } from '../runtime/vgd/attach.js';
@@ -129,6 +130,8 @@ export interface ServeOptions {
   compressTools?: boolean;
   /** Cross-agent memory tools (`memory_search`, `memory_save`) — opt-in (`--memory` / `VG_MEMORY=1`). */
   memory?: boolean;
+  /** Review document authoring (`review_doc`) — opt-in (`--review` / `VG_REVIEW=1`). */
+  review?: boolean;
   /**
    * `vg serve --compress-only`: there is no code map, so list only the tools
    * that answer without one. The graph tools stay dispatchable and return the
@@ -142,12 +145,13 @@ export interface ServeOptions {
  * registration (FEATURE-DESIGN-PRINCIPLES P2 — every listed schema is a
  * per-step token tax on every user, so a default `vg serve` must not pay for a
  * capability it was not asked for): compression under `vg serve --compress`,
- * memory under `--memory`.
+ * memory under `--memory`, review document authoring under `--review`.
  */
 export function extraToolsFor(opts: ServeOptions, root: string): VgTool[] {
   return [
     ...(opts.compressTools === true ? COMPRESS_TOOLS : []),
     ...(opts.memory ? memoryVgTools(root) : []),
+    ...(opts.review ? REVIEW_TOOLS : []),
   ];
 }
 

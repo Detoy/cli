@@ -78,6 +78,25 @@ const MEMBER_PARENT_TYPES = new Set([
  * resolver needs this bit to know a same-file def with the same short name is
  * NOT evidence — the receiver points elsewhere (see resolve.ts).
  */
+/**
+ * Is the call this callee belongs to awaited? Climb from the callee to the
+ * nearest call node (a few levels: `obj.method` sits under a member node),
+ * then ask whether its parent is an await (`await_expression` in JS/TS, C#
+ * and Rust's `f().await`; `await` in Python).
+ */
+const CALL_NODE = /(^|_)(call|invocation)(_expression)?$|^call$|method_invocation|invocation_expression/;
+function isAwaitedCall(callee: Node): boolean {
+  let n: Node | null = callee;
+  for (let i = 0; i < 4 && n; i++) {
+    if (CALL_NODE.test(n.type)) {
+      const parent = n.parent;
+      return parent !== null && (parent.type === 'await_expression' || parent.type === 'await');
+    }
+    n = n.parent;
+  }
+  return false;
+}
+
 function isQualifiedCallee(node: Node): boolean {
   const parent = node.parent;
   if (!parent) return false;
@@ -329,11 +348,13 @@ export async function parseSource(
       if (cap.name !== 'callee') continue;
       if (defNameBytes.has(cap.node.startIndex)) continue;
       calleeCaptures.push(cap.node);
+      const awaited = isAwaitedCall(cap.node);
       calls.push({
         callee: cap.node.text,
         byte: cap.node.startIndex,
         line: cap.node.startPosition.row + 1,
         qualified: isQualifiedCallee(cap.node),
+        ...(awaited ? { awaited: true } : {}),
       });
     }
   }

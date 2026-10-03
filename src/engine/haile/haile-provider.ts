@@ -73,6 +73,20 @@ export interface HaileProvider {
       expand?: boolean;
     },
   ): unknown;
+  /**
+   * Review-document diagrams (`vg review doc`): the module chooses the call
+   * path, flows and signature changes from a trimmed code map and returns
+   * `vg.review.doc.v1` blocks. Absent on older modules — no diagrams, and the
+   * document says how to get them. `null` when the module abstained.
+   */
+  reviewDiagrams?(input: unknown): { blocks: unknown[]; contract: unknown[]; notes: string[]; fold?: { path: string; text: string }[] } | null;
+  /**
+   * Diff groups (`vg review groups`, the review document): the module places
+   * each changed file from host facts and git signals and returns `{ groups }`
+   * in reading order. Absent on older modules — the change is one "not
+   * grouped" group. `null` when the module abstained.
+   */
+  reviewGroups?(input: unknown): { groups: unknown[] } | null;
   /** Full map HTML. Absent → the host serves a tiny package list. */
   renderArchPage?(opts: {
     host: 'browser' | 'vscode';

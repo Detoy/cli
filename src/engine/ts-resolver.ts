@@ -1,6 +1,7 @@
 import * as path from 'node:path';
 import ts from 'typescript';
 import { edgeId } from './ids.js';
+import { addEdgeSite } from './edge-sites.js';
 import type { EdgeKind, GraphEdge, GraphNode, NodeKind, ResolverKind } from '../schema.js';
 
 /**
@@ -31,7 +32,7 @@ export interface TsFilePartial {
   /** The program produced a SourceFile for this file (tsc is authoritative). */
   covered: boolean;
   edges: GraphEdge[];
-  interfaceCalls: Array<{ srcId: string; interfaceId: string; method: string }>;
+  interfaceCalls: Array<{ srcId: string; interfaceId: string; method: string; line: number }>;
   stats: { calls: number; jsx: number; heritage: number; resolved: number };
 }
 
@@ -107,7 +108,7 @@ export function tsWalkFiles(
     // got a call edge to the concrete implementation. Record such calls here;
     // the cross-file bridge runs in assembleTsResult once ALL covered files'
     // `implements` edges are known.
-    const interfaceCalls: Array<{ srcId: string; interfaceId: string; method: string }> = [];
+    const interfaceCalls: Array<{ srcId: string; interfaceId: string; method: string; line: number }> = [];
     const fileNodes = nodesByFile.get(file.rel) ?? [];
     const fileNode = fileNodeByRel.get(file.rel);
 
@@ -123,13 +124,13 @@ export function tsWalkFiles(
           // centrality see the same call granularity.
           const src = enclosing(fileNodes, lineOf(node.getStart(sf))) ?? fileNode;
           if (src && src.id !== target.id) {
-            add(edges, callKind(target), src.id, target.id);
+            add(edges, callKind(target), src.id, target.id, lineOf(node.getStart(sf)), ts.isAwaitExpression(node.parent));
             stats.resolved++;
             // Interface-typed method call (`svc.method()` where svc: IFoo): the
             // target is the interface node, and the method name is the accessed
             // property. Record it for the single-implementation bridge below.
             if (target.kind === 'interface' && ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
-              interfaceCalls.push({ srcId: src.id, interfaceId: target.id, method: node.expression.name.text });
+              interfaceCalls.push({ srcId: src.id, interfaceId: target.id, method: node.expression.name.text, line: lineOf(node.getStart(sf)) });
             }
           }
         }
@@ -144,7 +145,7 @@ export function tsWalkFiles(
           if (target) {
             const src = enclosing(fileNodes, lineOf(node.getStart(sf))) ?? fileNode;
             if (src && src.id !== target.id) {
-              add(edges, callKind(target), src.id, target.id);
+              add(edges, callKind(target), src.id, target.id, lineOf(node.getStart(sf)));
               stats.resolved++;
             }
           }
@@ -206,7 +207,7 @@ export function assembleTsResult(
   const edges = new Map<string, GraphEdge>();
   const covered = new Set<string>();
   const stats = { files: 0, calls: 0, jsx: 0, heritage: 0, resolved: 0 };
-  const interfaceCalls: Array<{ srcId: string; interfaceId: string; method: string }> = [];
+  const interfaceCalls: Array<{ srcId: string; interfaceId: string; method: string; line: number }> = [];
   for (const rel of orderedRels) {
     const p = partials.get(rel);
     if (!p || !p.covered) continue;
@@ -230,7 +231,7 @@ export function assembleTsResult(
     if (list) list.push(e.src);
     else implsByInterface.set(e.dst, [e.src]);
   }
-  for (const { srcId, interfaceId, method } of interfaceCalls) {
+  for (const { srcId, interfaceId, method, line } of interfaceCalls) {
     const impls = implsByInterface.get(interfaceId);
     if (!impls || impls.length !== 1) continue;
     const impl = byId.get(impls[0]);
@@ -239,7 +240,7 @@ export function assembleTsResult(
       (n) => (n.kind === 'method' || n.kind === 'function') && n.qualifiedName === `${impl.qualifiedName}.${method}`,
     );
     if (target && target.id !== srcId) {
-      add(edges, 'call', srcId, target.id);
+      add(edges, 'call', srcId, target.id, line);
       stats.resolved++;
     }
   }
@@ -388,14 +389,19 @@ function compilerOptions(root: string): ts.CompilerOptions {
   return base;
 }
 
-function add(map: Map<string, GraphEdge>, kind: EdgeKind, src: string, dst: string): void {
+function add(map: Map<string, GraphEdge>, kind: EdgeKind, src: string, dst: string, line?: number, awaited?: boolean): void {
   const id = edgeId(kind, src, dst);
   const existing = map.get(id);
   if (existing) {
     existing.count = (existing.count ?? 1) + 1;
+    if (line !== undefined) addEdgeSite(existing, line);
+    if (awaited && kind === 'call') existing.awaited = true;
     return;
   }
-  map.set(id, { id, kind, src, dst, resolution: PRECISE_KIND, confidence: 1.0, count: 1 });
+  const edge: GraphEdge = { id, kind, src, dst, resolution: PRECISE_KIND, confidence: 1.0, count: 1 };
+  if (line !== undefined) addEdgeSite(edge, line);
+  if (awaited && kind === 'call') edge.awaited = true;
+  map.set(id, edge);
 }
 
 function enclosing(nodes: GraphNode[], line: number): GraphNode | undefined {
