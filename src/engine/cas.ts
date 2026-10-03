@@ -45,7 +45,8 @@ import type { FileParse } from './types.js';
  */
 
 /** Envelope schema for a stored parse; bump when the record layout changes. */
-export const CAS_PARSE_SCHEMA = 'vg-cas-parse/1';
+// /2: RawCall carries `awaited`; /1 parses lack it.
+export const CAS_PARSE_SCHEMA = 'vg-cas-parse/2';
 /** Manifest schema. */
 export const MANIFEST_SCHEMA = 'vg-manifest/1';
 /** Embed-text version the vector objects were computed over (see embeddings.ts). */

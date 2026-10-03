@@ -14,6 +14,7 @@
 
 import type { EdgeKind, GraphEdge, GraphNode, ResolverKind } from '../schema.js';
 import { edgeId } from './ids.js';
+import { addEdgeSite } from './edge-sites.js';
 
 // SCIP SymbolRole bitmask (scip.proto).
 const ROLE_DEFINITION = 0x1;
@@ -193,7 +194,7 @@ export function scipEdges(index: ScipIndex, nodes: GraphNode[], relForScip: (p: 
       const src = enclosing(fileNodes, line);
       if (!src || src.id === target.id) continue;
       const kind: EdgeKind = target.kind === 'function' || target.kind === 'method' ? 'call' : 'references';
-      add(edgeMap, kind, src.id, target.id);
+      add(edgeMap, kind, src.id, target.id, line);
       resolved++;
     }
   }
@@ -205,15 +206,18 @@ export function scipEdges(index: ScipIndex, nodes: GraphNode[], relForScip: (p: 
   };
 }
 
-function add(map: Map<string, GraphEdge>, kind: EdgeKind, src: string, dst: string): void {
+function add(map: Map<string, GraphEdge>, kind: EdgeKind, src: string, dst: string, line?: number): void {
   const id = edgeId(kind, src, dst);
   const existing = map.get(id);
   if (existing) {
     existing.count = (existing.count ?? 1) + 1;
+    if (line !== undefined) addEdgeSite(existing, line);
     return;
   }
   const resolution: ResolverKind = 'scip';
-  map.set(id, { id, kind, src, dst, resolution, confidence: 1.0, count: 1 });
+  const edge: GraphEdge = { id, kind, src, dst, resolution, confidence: 1.0, count: 1 };
+  if (line !== undefined) addEdgeSite(edge, line);
+  map.set(id, edge);
 }
 
 /** Smallest node whose span contains `line`. */

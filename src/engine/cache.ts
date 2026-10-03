@@ -26,7 +26,8 @@ import type { FileParse } from './types.js';
  */
 
 // Bumped to /4: optional mtime+size fingerprint for stat-skip fast path.
-const CACHE_VERSION = 'vg-parse-cache/5';
+// /6: RawCall carries `awaited`; /5 parses lack it.
+const CACHE_VERSION = 'vg-parse-cache/6';
 
 interface CacheEntry {
   hash: string;
@@ -82,9 +83,11 @@ export function loadCache(
   if (!opts.disabled && fs.existsSync(file)) {
     try {
       const loaded = JSON.parse(fs.readFileSync(file, 'utf8')) as CacheFile;
-      // Accept v3 → v4 (stat fields optional).
+      // Only the current version: an older parse lacks fields the graph now
+      // carries (`awaited`), and reusing it would make a warm build differ
+      // from a cold one.
       if (
-        (loaded.version === CACHE_VERSION || loaded.version === 'vg-parse-cache/3') &&
+        loaded.version === CACHE_VERSION &&
         loaded.toolVersion === opts.toolVersion &&
         loaded.grammars === opts.grammars &&
         loaded.entries

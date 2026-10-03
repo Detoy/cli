@@ -466,6 +466,8 @@ vg review --loop                     # review → deterministic patch → re-rev
 vg review --base origin/main         # merge-base of HEAD and the base branch
 vg review explain arch:<rule>:<path> # the evidence behind one finding
 vg review findings-from-diff         # deterministic graph/policy findings only
+vg review groups --base origin/main  # the change grouped for reading
+vg review doc --base origin/main     # the review document, every claim pinned to lines
 vg review propose blast:<node_id> --model forge --json
 ```
 
@@ -488,6 +490,306 @@ vg review propose blast:<node_id> --model forge --json
 
 `vg review` reads the code map, so run `vg` (or `vg build`) in the repository
 first. Without a map it exits `6` — never `0`.
+
+#### Reading the change: groups and the review document
+
+Before anyone judges a change, they have to read it. `vg review groups` puts
+the change in reading order, and `vg review doc` turns it into a review
+document. Neither needs a model, and neither builds a code map. Grouping and
+diagrams come from the **Architecture** module (`vg module install arch`);
+without it every changed file is listed in one "not grouped" group, and the
+output says how to get the rest.
+
+```bash
+vg review groups                         # working tree vs HEAD
+vg review groups --base origin/main      # a branch, against its merge-base
+vg review groups --format json           # vg.review.groups.v1
+vg review doc --base origin/main         # Markdown, ready for a pull request
+vg review doc --base origin/main --base-graph   # also map the base commit: before/after call paths
+vg review doc --format json -o review.json
+vg review doc --check review.json        # validate an edited document
+vg review doc --session latest           # what the last VG Code chat did
+```
+
+**Groups.** Every changed file lands in exactly one group. Files that are not
+implementation are peeled off first, each for a reason you can see in the
+output:
+
+| Group | What lands there |
+|---|---|
+| Moved or renamed, no edits | renames with no changed lines |
+| Generated files | code a tool wrote, from `.gitattributes`, the path, or the file's header |
+| Dependencies and lockfiles | lockfiles and dependency manifests |
+| Fixtures and snapshots | test fixtures and recorded snapshots |
+| Tests | test files |
+| Data and content | structured data that is not config, a manifest, an API contract or infrastructure code |
+| Docs, Assets | prose, licences, images, fonts, media |
+| Config and build | CI pipelines, container files, build and tooling config |
+| Formatting only | the diff is empty once whitespace and blank lines are ignored |
+| Imports only | every changed line is an import |
+
+What is left is implementation, grouped by monorepo area (`packages/api`) and
+architecture layer, in reading order, with large groups split so each fits in
+one sitting. Each file carries the reason it landed where it did. The output
+is deterministic: the same change always produces the same groups and the
+same `digest`.
+
+An agent or a person may merge or split groups and save the result. `vg review
+groups --check <file>` exits `2` unless every changed file is in exactly one
+group and nothing outside the change is listed. Anything left out is
+uncategorized, and uncategorized fails.
+
+**The review document** (`vg.review.doc.v1`) has up to four sections, always in
+this order: *what and why*, *requirements*, *design*, *implementation*. `vg
+review doc` writes what it can prove: a summary of the change, every
+implementation group with a link to each changed hunk, and, when a code map
+already exists, the deterministic findings with their evidence and diagrams
+derived from the map. It leaves the why and the requirements to the author,
+and says so in the document. `vg review doc` reads an existing code map but
+never builds one; run `vg` first.
+
+**Diagrams come from the code map, not from a model.** They are derived by the
+**Architecture** module (`vg module install arch`); without it the document
+has no diagrams and says how to get them. Whatever the module returns, `vg`
+checks every pin against the reviewed base and head before showing it. With a
+code map and the module, the design section gets:
+
+- **A call path** into the changed function where most of the change happened:
+  from an entry point (a function nothing calls, or a file's top level) down
+  through each caller. Each frame is pinned to the function's lines and to
+  the line it is called from, and says how it is reached: a plain call, an
+  awaited (*async*) call, a function passed as a value (*callback*), or a call
+  made where the caller publishes to a queue or calls out over HTTP. A path
+  longer than 8 frames keeps its entry point, the changed functions and the
+  last callers, and says how many calls it folded. Frames are marked *new*,
+  *edited* or *gone*.
+- **The before side** of that path, when you pass `--base-graph`. vg checks out
+  the base commit in a temporary worktree, maps it, and removes the worktree.
+  Unchanged files reuse their cached parses, but this still takes seconds to
+  tens of seconds on a large package, so it is opt-in. Without it the before
+  side reads *not computed*, never an empty path.
+- **Up to three flows**: the statements the map extracted from a changed
+  function, in order, with each condition as a decision and a `catch` on a
+  dashed error edge. Steps on changed lines are highlighted.
+- **The data the change reads and writes**, when the repository declares its
+  data model in Prisma (`*.prisma`), SQL DDL (`CREATE TABLE`) or EF Core
+  (`DbSet<T>` on a context, and the entity classes). The tables the changed
+  functions read and write, and the tables they reference, with every column,
+  key and foreign key linked to the line that declares it; each read and write
+  at the line that runs it, followed into the repository or handler the change
+  calls; and the entry points that reach them as use cases, including those
+  that dispatch through a mediator rather than a direct call. A save that
+  names no table (`SaveChangesAsync`) writes what the function loaded or added,
+  not every row it looked at. A read or write that names no declared table is
+  left out and counted in the notes. Connection strings are never read.
+- **Where the change sits**, when the code map has its architecture (`vg`
+  builds it with the Architecture module): a map that zooms from the system
+  to the code. The containers are the packages the change touches and their
+  most-connected neighbors, with the package-to-package call counts
+  `vg show arch` shows; inside them, the changed functions, the functions
+  that run their reads and writes, and the entry points that reach them,
+  grouped into components by their architecture role (controllers, use
+  cases, repositories, …); and the data stores they read and write. Calls,
+  dispatches through a mediator, and reads and writes are drawn as edges;
+  what the change touched is marked edited or new. Test packages are never
+  containers.
+- **Signature changes**, with `--base-graph`: a changed function whose
+  signature differs from the base commit is called out under implementation,
+  with the before and after and how many callers reach it.
+
+Every node, frame and edge is marked `origin: graph`. A diagram whose pins do
+not land (usually a code map older than the change) is left out, and the notes
+say why. Pass `--no-diagrams` or `--no-findings` to leave either out.
+
+Every claim about code is pinned: `[label](head:src/orders.ts#L10-L24)`, or
+`base:` for the code before the change. `vg review doc --check <file>` exits
+`2` when the document breaks a rule:
+
+- a pin names a file that does not exist on that side, or runs past its last line
+- sections are out of order, or repeated
+- the design section does not have exactly one primary diagram
+- a flow diagram has an edge to a missing node, a branch that does not leave a
+  decision, or a process node with no pinned code
+- a sequence step names an unknown actor, or has neither code nor a note
+- a call-stack frame names a parent that does not come before it, or the
+  before side is marked *not computed* or *absent* but still lists frames
+- a data-store operation or foreign key points at a store, collection or field
+  that is not defined
+- a system-map element's parent is missing, or a relationship has a missing end
+- the document was written for a different base or head
+
+The Markdown output renders flow, sequence and system-map blocks as Mermaid
+diagrams, so they draw directly in a GitHub comment.
+
+**What a VG Code chat did.** `vg review doc --session <id>` (or `--session
+latest`) writes the document for one VG Code chat, from what that chat
+already saved under `.vibgrate/code-sessions/`. Nothing new is recorded.
+
+- Only the files the chat touched are included. The notes count the changed
+  files it left out, and name the files it touched that are no longer in the
+  change (committed past the base, or reverted; pass `--base` to include
+  commits).
+- *What and why* says which chat made the change and quotes its first request.
+  The agent's last summary is quoted too, marked as the agent's own account
+  that vg has not checked against the code.
+- *Requirements* lists each request, turn by turn, with links to the changed
+  lines in the files that turn touched. A turn that stopped before finishing
+  (out of steps, cancelled, an error) is called out.
+- A chat that ran in its own worktree is read from that worktree, against the
+  commit it branched from, so you can read the document before applying the
+  worktree. Once the worktree is applied and removed, review the main tree.
+- The document is marked `generator.by: "mixed"`: the requests are a person's
+  words, the summary is the model's, and everything else vg derived.
+
+`vg review groups --session <id>` groups the same files.
+
+**Read the shape before the lines.** With a code map and the Architecture
+module, each implementation file in the document lists the functions the
+change touched, as a structural fold:
+
+```
+- `src/orders.ts` modified +28 −0 · L4–31
+  - `async function placeOrder(db: any, req…)` L5–31 new, 27 lines — query User via findUnique · query Product via findMany · log via console.log
+  - `function total(items)` L1–3 edited
+```
+
+- Every changed function shows its signature, whether it is new or edited,
+  and a link to its lines. A function inside another changed one is read with
+  it.
+- A long new function (25 lines or more) is folded to what it does, step by
+  step, from the statements the code map extracted. No model writes the
+  summary.
+- Tests and docs stay in their own groups, folded to a count, as before.
+- A file whose lines no longer match the code map is left unfolded, and the
+  notes say to rebuild the map.
+
+**An agent writes the document.** `vg review doc` writes the deterministic
+first pass. An agent (or a person) can then write the parts only it knows (the
+why, the requirements, a diagram of the design) into a saved copy, block by
+block, without ever being able to pass its words off as vg's.
+
+```bash
+vg serve --review                          # adds the review_doc MCP tool (or VG_REVIEW=1)
+vg review doc --save                       # save the document for this change; prints its id
+vg review doc --saved                      # show the saved one while it still matches the change
+vg review doc --doc rd_5da78d7992d5 --patch ops.json --expect-version 2
+vg review doc --doc rd_5da78d7992d5 --history
+vg review doc --doc rd_5da78d7992d5 --restore 1
+```
+
+- **One document per scope.** The change (or the change against a base ref),
+  or one VG Code chat, always opens the same saved document, `rd_…`. When the
+  commits move, opening it builds a new version from the change; the edited
+  versions stay in the history.
+- **Patches by block id.** `set_text`, `insert`, `replace`, `remove`, `move`,
+  `set_primary` and `set_title`, up to 50 in one patch. A replaced block keeps
+  its id.
+- **All or nothing.** After the operations apply, the whole document must pass
+  the same checks as `--check`: schema, section order, one primary diagram,
+  every pin landing on the change. Otherwise nothing is saved and the issues
+  come back.
+- **Versions, not overwrites.** A patch names the version it was written
+  against, and a patch against an older one is refused, so two agents cannot
+  overwrite each other. A restore adds a new version; nothing is ever lost.
+- **Provenance that cannot be forged.** Text an agent writes is marked
+  `origin: "agent"` and shows as *written by an agent*. A diagram element stays
+  `origin: "graph"` only while it is unchanged from what vg derived; an agent
+  that claims `graph` for something it drew or edited is recorded as `agent`,
+  and told so.
+- **Kept for 365 days** after its last update (the Repository retention
+  category), then deleted. `.vibgrate/review-docs/` is in vg's own
+  `.gitignore`, so a saved document is never committed with the change it
+  describes.
+
+Over MCP, `review_doc` takes an `op`: `open` (the change, a `base`, or a VG
+Code `session`), `get` (the outline and the document, or one `block`),
+`patch`, `check`, `history`, `restore`. It is listed only under `vg serve
+--review`: a default `vg serve` advertises the same tools as before.
+
+**A change across repositories.** When one change spans checkouts (an API
+and the client that calls it), fold the others in with `--also`:
+
+```bash
+vg review doc --base origin/main --also ../web-client
+vg review doc --base origin/main --also ../web-client=origin/develop --push
+vg review doc --base origin/main --check doc.json --also ../web-client
+```
+
+- Each checkout's part is built there, from its own diff and code map, the
+  same way `vg review doc` builds it, and joins the same four sections under a
+  heading naming the repository. The first repository keeps the primary
+  diagram.
+- Every pin from another repository names it (`"repo": "web-client"`, or
+  `head@web-client:src/api.ts#L4` in text), and the document lists them under
+  `repos` with their commits. Each pin is checked against its own repository.
+- `--check` checks pins in other repositories only against checkouts given
+  with `--also`, matched by repository; one it was not given is named, not
+  failed pin by pin.
+- `--also` builds a document for a change; it does not combine with `--save`,
+  `--saved` or `--session`. With `--push`, the GitHub App shows it on the
+  first repository's pull request, and its pins link to each repository on
+  GitHub.
+
+**Show the document on the pull request.** `vg review doc --push` uploads the
+whole document to Vibgrate Cloud. The GitHub App then shows it in its Review
+summary comment, folded under the summary, with every pin linked to its lines
+at the pull request's commits.
+
+```bash
+vg review doc --base origin/main --push    # in CI, after checkout, with VIBGRATE_DSN set
+vg review doc --base origin/main --save --push
+```
+
+- **Opt-in on both sides.** The CLI sends a document only on `--push`; a
+  receipt push (`vg review --push`) never includes one. The workspace must also
+  have turned on **Review documents** (Vibgrate Cloud → Settings → Source
+  control). It is off by default, only a workspace admin can change it, and
+  the change is audited. While it is off, the upload is refused and nothing is
+  stored.
+- **What is uploaded.** The whole document, which carries code-derived text:
+  function signatures, branch conditions, table and field names, the paths and
+  line numbers it pins, and anything an agent or a person wrote into it (for a
+  `--session` document, the requests made in that chat). Source files are not
+  uploaded.
+- **Committed changes only.** The App shows the document for the commit it
+  describes, so a document of uncommitted work is refused before anything is
+  sent. Commit first, then run it with `--base`.
+- **Sealed.** Cloud recomputes the document digest and refuses a document
+  edited after `vg` built it.
+- **Kept for 365 days** (the Repository retention category), then deleted.
+  Turning **Review documents** off deletes every stored document for the
+  workspace at once.
+- **Long documents.** The comment shows as much as fits GitHub's comment limit,
+  section by section, and says how many blocks were left out.
+- **In Vibgrate Cloud.** The Review run page the comment links to draws the
+  whole document: diagrams, call paths, data tables and findings, with every
+  pin linked to its lines on GitHub. It re-reads the document every 30 seconds,
+  so a new push for the same commit (an agent's edits saved with `--save
+  --push`, say) shows without a reload.
+- **Comments an agent can answer.** On that page anyone who can see the run
+  can comment on a block, reply, and resolve a thread. The agent reads and
+  answers them where it works:
+
+  ```bash
+  vg review doc --base origin/main --comments                       # open threads first
+  vg review doc --base origin/main --reply rdc_3f2a… --text "Because the base side was not built."
+  ```
+
+  Over MCP, `review_doc` op `comments` and op `reply` do the same for a saved
+  document (`vg serve --review`). A reply sent this way is always shown as an
+  agent's, and an agent can only answer a thread: it cannot start or resolve
+  one. Comments are plain text, at most 4000 characters, and are deleted with
+  their document (365 days, or when review documents are turned off). A thread
+  on a block a later push removed stays visible, marked as outdated.
+
+  The GitHub summary links each block to its comments: **Comment** opens the
+  block on the run page with the comment box open, and "2 open comments"
+  opens the first open thread. In Vibgrate for VS Code the threads show under
+  their blocks in the review document tab, and new comments from people add a
+  row to VG Code with **Answer them**, which puts the threads and the reply
+  command into the composer, unsent. Settings → Source control's "What landed
+  this week?" links each merged pull request to its review, and to its review
+  document when one was pushed.
 
 #### Decisions
 
@@ -882,6 +1184,39 @@ vg why <package>
 ```
 
 `vg why` reads your lockfile's history, so it works across npm / pnpm / yarn, pip / poetry, cargo, composer, bundler, go, pub, hex, NuGet, and Maven/Gradle projects. For Maven/Gradle the history comes from a resolved `gradle.lockfile`, or a `pom.xml`'s pinned direct-dependency versions (versions managed by a BOM/`dependencyManagement` aren't resolved). Open vulnerabilities and their introduction attribution come from your most recent `vg scan --vulns`.
+
+#### Which agent session wrote a line
+
+Pass `<file:line>` instead of a package to see the commit that last changed that line. If a VG Code session made the change, you also see what it was asked.
+
+```bash
+vg review trailer on     # opt in for this repository
+vg why src/orders.ts:42
+```
+
+`vg review trailer on` installs a git `prepare-commit-msg` hook. When a commit includes files that a VG Code session changed in the last 14 days, the hook adds a `Vibgrate-Session: <id>` trailer to the message.
+
+- **Only the session's random id is committed.** The session itself (what was asked and what the agent answered) stays in `.vibgrate/code-sessions/` on the machine where it ran.
+- **The hook never blocks a commit.** If anything fails, the commit goes ahead without a trailer. Merge and squash messages are left alone.
+- **An existing hook is never replaced.** If another tool already owns `prepare-commit-msg`, `vg review trailer on` changes nothing and prints the one line to add to that hook.
+
+`vg why <file:line>` blames the line, reads the commit's trailers and shows each session's title and model. It then lists the requests in that session that touched the file. The agent's own answer is shown as its account, unverified. A session that ran on another machine is named, but its contents are not shown. `vg review trailer off` removes the hook, and `vg review trailer status` shows whether it is on. Both take `--json`.
+
+**Sessions that ran on another machine.** A session stays where it ran, so a teammate's `vg why` shows only its id. To share the sessions behind your commits with your Vibgrate Cloud workspace:
+
+```bash
+vg review trailer push --dry-run     # list what would be sent
+vg review trailer push               # sessions named on commits no remote branch has yet
+vg review trailer push --base origin/main
+vg why src/orders.ts:42 --cloud      # a teammate reads them back
+```
+
+- **Opt-in on both sides.** Sessions are sent only when you run `push`. Vibgrate Cloud stores them only when a workspace admin has turned on Agent provenance under Source control. It is off by default.
+- **What is sent:** per turn, the request, the agent's summary, the repo-relative files it changed and a timestamp. File contents, diffs and attachments are never sent.
+- **Credentials:** they are masked before sending. A session that still carries one is not sent, and `push` says which.
+- **Retention:** 365 days from the first upload. Turning the setting off deletes every stored session at once.
+
+Both commands use your DSN (`vg login`, `VIBGRATE_DSN` or `--dsn`).
 
 ---
 
@@ -1642,18 +1977,27 @@ Set `VIBGRATE_NO_KERNEL=1` to disable optional modules entirely — installs are
 
 ### vg path
 
-Show how A connects to B — shortest path in the call graph.
+Show how A connects to B — the shortest path through the code map. By default
+any edge counts (calls, imports, containment, tests); `--calls` follows call
+edges only, which is the path that actually runs, and prints each hop's
+call-site line and whether the call is awaited.
 
 ```bash
 vg path <a> <b>
+vg path handler insert --calls
 ```
 
 | Flag | Description |
 |------|-------------|
 | `<a>` | Source node |
 | `<b>` | Target node |
+| `--calls` | Follow call edges only; show the call-site line of each hop |
 | `--pick-a <n>` | Pick the nth candidate for A |
 | `--pick-b <n>` | Pick the nth candidate for B |
+
+With `--json`, `steps` lists each hop's edge kind, resolver, call-site line and
+`awaited` flag. The `find_path` MCP tool returns the same as `hops`, and takes
+`calls_only: true` for the call-only path.
 
 ---
 
@@ -1749,8 +2093,23 @@ vg show <name>
 |------|-------------|
 | `<name>` | Qualified name, short name, `file:line`, glob, or id |
 | `--pick <n>` | Pick the nth candidate when ambiguous |
+| `--diagram` | Explain the node with pinned diagrams instead of text (needs the Architecture module) |
+| `--format <fmt>` | With `--diagram`: `md` (default) or `json` (a `vg.review.doc.v1` document with `kind: "explain"`) |
 
 Outputs the qualified name, kind, file location, signature, importance score, area, extends relationships, callees, and callers. For functions and methods it also prints the architecture classification the Architecture module wrote at build time — role, purposes, a one-line description, and any boundary violation — when that module is loaded (`vg module install arch`; installed by default).
+
+With `--diagram`, the same facts become a document for code as it is, not for a change:
+
+```bash
+vg show OrderService.save --diagram
+vg show src/orders/service.ts:42 --diagram --pick 1 --format json
+```
+
+- **What it is:** the kind, the file, the signature, the architecture role, the area, and how many callers and callees it has.
+- **How it works:** how the code is reached (the call path from its entry point), what it does (a flow of its statements, branches and error paths), the data it reads and writes when the repository declares its data models, and where it sits (system, packages, components, stores).
+- **Callers and callees:** each one linked to the lines that declare it.
+
+Every element is pinned to lines in the working tree and comes from the code map, so nothing is marked new or edited and the call path has no before side. When nothing in the code map calls the code, the flow leads instead. The document is the same `vg.review.doc.v1` that `vg review doc` writes, so the same renderers and checks apply. In VS Code, **Vibgrate: Explain This Code with Diagrams** opens it for the function under the cursor.
 
 #### vg show arch
 

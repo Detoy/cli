@@ -214,6 +214,18 @@ export interface GraphEdge {
   epistemic?: EpistemicTier; // coarse honesty tier derived from resolution+kind
   surprise?: number; // 0..1 improbability under the area model (`vg oddities`)
   count?: number; // call-site multiplicity
+  /**
+   * 1-based call-site lines in the caller's file, sorted, at most 8 (the
+   * smallest). `call` edges only; absent when the resolver had no position.
+   * Additive in vg-graph/1.1. See engine/edge-sites.ts.
+   */
+  sites?: number[];
+  /**
+   * True when at least one resolved call site awaits the call (`await f()`).
+   * `call` edges only; absent means no awaited site was seen, not "sync".
+   * Additive in vg-graph/1.1.
+   */
+  awaited?: boolean;
 }
 
 export interface Area {

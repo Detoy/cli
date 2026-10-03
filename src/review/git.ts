@@ -97,8 +97,12 @@ function parseNumstat(out: string): Map<string, { added: number; removed: number
     if (parts.length < 3) continue;
     const added = parts[0] === '-' ? 0 : Number(parts[0]);
     const removed = parts[1] === '-' ? 0 : Number(parts[1]);
-    // A rename is emitted as `added\tremoved\told\tnew`.
-    const path = parts.length >= 4 ? parts[3] : parts[2];
+    // A rename is emitted as `added\tremoved\told\tnew` under `-z`, but in
+    // the default output git folds it into one column: `dir/{old => new}/f`
+    // or `old => new`. Expand that to the new path, or the rename is listed
+    // twice — once here under the folded name, once by `--name-status`.
+    const folded = parts.length >= 4 ? null : renamedNewPath(parts[2]);
+    const path = parts.length >= 4 ? parts[3] : (folded ?? parts[2]);
     // The counts cannot tell a deletion from a modification that only removes
     // lines — both print `0\tN` — so the op derived here is never `removed`
     // (nor `added` for `N\t0`). It is only the fallback for a path the status
@@ -107,10 +111,25 @@ function parseNumstat(out: string): Map<string, { added: number; removed: number
     // counts would be unsafe: a file marked removed is never read, so a guard
     // that is still in it would be reported as removed — a false protected
     // finding.
-    const op: ChangedFile['op'] = parts.length >= 4 ? 'renamed' : 'modified';
+    const op: ChangedFile['op'] = parts.length >= 4 || folded !== null ? 'renamed' : 'modified';
     map.set(path, { added, removed, op });
   }
   return map;
+}
+
+/**
+ * The new-side path of a rename as plain `git diff --numstat` prints it:
+ * `src/{a => b}/x.ts` → `src/b/x.ts`, `{old => }/x` → `x`, `a.ts => b.ts` → `b.ts`.
+ * Null when the column is not a rename.
+ */
+export function renamedNewPath(column: string): string | null {
+  const brace = column.match(/^(.*)\{([^{}]*) => ([^{}]*)\}(.*)$/);
+  if (brace) {
+    const joined = `${brace[1]}${brace[3]}${brace[4]}`;
+    return joined.replace(/\/\/+/g, '/').replace(/^\//, '');
+  }
+  const plain = column.match(/^(.+) => (.+)$/);
+  return plain ? plain[2] : null;
 }
 
 function opFromStatusLetters(letters: string): ChangedFile['op'] {

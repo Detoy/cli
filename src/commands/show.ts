@@ -6,7 +6,11 @@ import { countTokens } from '../engine/tokens.js';
 import { applyGlobalOptions, readGlobal } from '../cli-options.js';
 import { requireGraph, rootOf } from './util.js';
 import { ambiguityError } from './ambiguity.js';
-import { c, info, json } from '../util/output.js';
+import { c, info, json, out } from '../util/output.js';
+import { CliError, ExitCode } from '../util/exit.js';
+import { loadHaileProvider } from '../engine/haile/haile-provider.js';
+import { buildExplainDoc } from '../review/explain-doc.js';
+import { renderReviewDocMarkdown } from '../review/doc.js';
 import { resolveGraphPath } from '../engine/artifacts.js';
 import { findHaileSymbol, formatHaileLines, haileJsonFields, readHaileSidecar } from '../engine/haile/index.js';
 import { registerShowArch } from './arch.js';
@@ -19,7 +23,8 @@ import { registerShowSurfaces } from './show-surfaces.js';
  * `vg show arch` opens the local interactive architecture map of the same graph;
  * `vg show savings` opens the local page for what compression saved;
  * `vg show surfaces` lists the external services, models and MCP servers the
- * last scan found.
+ * last scan found. `vg show <name> --diagram` explains the node with pinned
+ * diagrams instead (review/explain-doc.ts).
  */
 export function registerShow(program: Command): void {
   const cmd = program
@@ -33,7 +38,9 @@ export function registerShow(program: Command): void {
   cmd
     .argument('<name>', 'qualified name, short name, file:line, glob, or id')
     .option('--pick <n>', 'pick the nth candidate when ambiguous')
-    .action(function (this: Command, name: string, opts: { pick?: string }) {
+    .option('--diagram', 'explain it with pinned diagrams: how it is reached, its flow, the data it reads and writes, where it sits (needs the Architecture module)')
+    .option('--format <fmt>', 'with --diagram: output format (md | json)', 'md')
+    .action(async function (this: Command, name: string, opts: { pick?: string; diagram?: boolean; format: string }) {
       const global = readGlobal(this);
       const { root, graph } = requireGraph(global);
       const { node, candidates } = resolveOne(graph, name, opts.pick ? Number(opts.pick) : undefined);
@@ -43,6 +50,16 @@ export function registerShow(program: Command): void {
           throw ambiguityError(`no node matches "${name}"`, []);
         }
         throw ambiguityError(`"${name}" is ambiguous`, candidates);
+      }
+
+      if (opts.diagram) {
+        if (opts.format !== 'md' && opts.format !== 'json') {
+          throw new CliError('unknown --format (expected md | json)', ExitCode.USAGE_ERROR);
+        }
+        const { doc } = buildExplainDoc({ root, graph, node, graphPath: global.graph, provider: await loadHaileProvider() });
+        const asJson = Boolean(global.json) || opts.format === 'json';
+        out(asJson ? JSON.stringify(doc, null, 2) : renderReviewDocMarkdown(doc).replace(/\n$/, ''));
+        return;
       }
 
       const index = indexFor(graph);

@@ -24,7 +24,8 @@ import type { TsFilePartial } from './ts-resolver.js';
  */
 
 // /1: initial version.
-const TSC_CACHE_VERSION = 'vg-tsc-cache/1';
+// /3: call edges carry `sites` and `awaited`; older partials lack them.
+const TSC_CACHE_VERSION = 'vg-tsc-cache/3';
 
 const AMBIENT_RE = /\bdeclare\s+(global|module)\b/;
 
