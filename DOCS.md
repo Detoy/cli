@@ -446,6 +446,8 @@ vg report [--in <file>] [--format md|text|json]
 | `--in`     | `.vibgrate/scan_result.json` | Input artifact file                    |
 | `--format` | `text`                       | Output format: `md`, `text`, or `json` |
 
+Text output prints a `fix available:` hint on any finding whose artifact already includes a fixed version or remediation. Findings without that metadata omit the hint.
+
 ---
 
 
@@ -1134,6 +1136,8 @@ Expected results:
 ### Vulnerabilities and exposure attribution
 
 `vg scan --vulns` matches your installed dependencies against the public OSV database and records each known vulnerability — advisory id and CVE, severity, CVSS, and the fixing version — in the scan artifact, as findings, and in SARIF. Supply advisories in a `--package-manifest` bundle to run it offline.
+
+The default text report (`vg scan`, and `vg report --format text`) prints a `fix available:` hint under a finding when the artifact already carries a fixed version or a remediation string. Findings without that metadata omit the hint. The line is not a lookup: it only restates data the scan already recorded.
 
 In a git repository the scan also attributes each finding: the commit, author, and date that introduced the vulnerable version, and how long you have been exposed. These exposure windows aggregate into remediation metrics framed around the [EU Cyber Resilience Act (CRA)](https://vibgrate.com/compliance/cra): open counts by severity, mean and maximum time exposed, and per-severity SLA breaches (defaults: critical 7 days, high 30, moderate 90, low 180). The metrics are descriptive — they show whether remediation keeps pace; they are not a compliance certification.
 

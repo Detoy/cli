@@ -1,5 +1,6 @@
 import chalk from 'chalk';
 import type { ScanArtifact, ExtendedScanResults, InventoryItem, ServiceDependencyItem, ArchitectureResult } from '../types.js';
+import { presentFinding } from '../../core-open/formatters/fix-available.js';
 import { VERSION } from '../version.js';
 import { driftBar } from '../../core-open/ui/bar.js';
 import { titleBox } from '../../core-open/ui/box.js';
@@ -87,7 +88,9 @@ export function formatText(artifact: ScanArtifact): string {
     lines.push(chalk.bold.underline(`  Findings`) + chalk.dim(` (${summary})`));
     for (const f of artifact.findings) {
       const icon = f.level === 'error' ? chalk.red('✖') : f.level === 'warning' ? chalk.yellow('⚠') : chalk.blue('ℹ');
-      lines.push(`    ${icon} ${f.message}`);
+      const presented = presentFinding(f);
+      lines.push(`    ${icon} ${presented.message}`);
+      if (presented.fixHint) lines.push(chalk.dim(`      ${presented.fixHint}`));
       lines.push(chalk.dim(`      ${f.ruleId} in ${f.location}`));
     }
     lines.push('');

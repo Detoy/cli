@@ -1,0 +1,43 @@
+{
+  "withFix": {
+    "ruleId": "vibgrate/vulnerability",
+    "level": "error",
+    "message": "lodash@4.17.20: GHSA-35jh-r3h4-6jhm (CVE-2021-23337) (high 7.2) — fixed in 4.17.21 — introduced by Ada Lovelace in abc1234 (12d exposed)",
+    "location": "lodash",
+    "details": {
+      "ecosystem": "npm",
+      "package": "lodash",
+      "installedVersion": "4.17.20",
+      "advisoryId": "GHSA-35jh-r3h4-6jhm",
+      "severity": "high",
+      "fixedVersions": ["4.17.21"]
+    }
+  },
+  "withoutFix": {
+    "ruleId": "vibgrate/vulnerability",
+    "level": "warning",
+    "message": "minimist@1.2.5: GHSA-vh95-rmgr-6w4m (moderate 5.6) — no fix available — introduced by Grace Hopper in def5678 (3d exposed)",
+    "location": "minimist",
+    "details": {
+      "ecosystem": "npm",
+      "package": "minimist",
+      "installedVersion": "1.2.5",
+      "advisoryId": "GHSA-vh95-rmgr-6w4m",
+      "severity": "moderate",
+      "fixedVersions": []
+    }
+  },
+  "remediationOnly": {
+    "ruleId": "vibgrate/vulnerability",
+    "level": "note",
+    "message": "debug@2.6.9: GHSA-example (low) — no fix available",
+    "location": "debug",
+    "details": {
+      "package": "debug",
+      "installedVersion": "2.6.9",
+      "advisoryId": "GHSA-example",
+      "fixedVersions": [],
+      "remediation": "replace with the built-in node:util debug API"
+    }
+  }
+}
