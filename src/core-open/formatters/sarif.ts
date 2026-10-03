@@ -170,6 +170,11 @@ function buildRules(findings: Finding[]) {
         shortDescription: { text: 'Known vulnerability in an installed dependency' },
         helpUri: 'https://vibgrate.com/rules/vulnerability',
       },
+      'vibgrate/license-unparseable': {
+        id: 'vibgrate/license-unparseable',
+        shortDescription: { text: 'License text could not be parsed as SPDX' },
+        helpUri: 'https://vibgrate.com/rules/license-unparseable',
+      },
     };
     return descriptions[id] ?? {
       id,

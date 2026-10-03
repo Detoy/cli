@@ -8,6 +8,12 @@
  * The scanner records the raw declared string plus a best-effort canonical
  * SPDX id; full classification (category / obligations / risk) and the growing
  * library lookup happen during API enrichment.
+ *
+ * Registry metadata has no local evidence file, so an unidentified string is
+ * kept here (`spdxId: null`) and is not emitted as a scan finding — there is
+ * no path to attach. Local manifest, LICENSE, and NOTICE declarations are
+ * handled by `evidence.ts`, which reports `vibgrate/license-unparseable` with
+ * the repo-relative path instead of dropping them.
  */
 import type { DependencyLicense } from '../types.js';
 import { normalizeLicense } from './normalize.js';

@@ -2858,6 +2858,8 @@ The full scan artifact in JSON format. Contains all raw data, scores, findings, 
 
 [Static Analysis Results Interchange Format](https://sarifweb.azurewebsites.net/) — compatible with GitHub Code Scanning and Azure DevOps. Contains findings only (not all metrics). Ideal for integrating drift findings directly into your PR review workflow.
 
+License declarations that do not parse as SPDX are findings when the scan has a file to name. For each project directory, `vg scan` reads a `package.json` `license` / `licenses` field when that file is present, and the fixed names `LICENSE`, `LICENCE`, `COPYING`, and `NOTICE` (plus `.md` / `.txt`) in the same directory. A declaration that does not resolve to a known SPDX id is reported as `vibgrate/license-unparseable`. The JSON finding sets `location` and `details.path` to the repo-relative path (`LICENSE`, `packages/foo/package.json`); SARIF uses that same path as `physicalLocation.artifactLocation.uri` and `properties.path`. The license body is not copied into the artifact. Registry license strings have no local file, so they stay on the dependency row and do not get a path. Findings are sorted by path.
+
 ### Markdown
 
 A clean Markdown report suitable for PRs, wikis, or documentation.

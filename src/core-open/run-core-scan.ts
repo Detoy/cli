@@ -45,6 +45,7 @@ import { loadPackageVersionManifest } from './package-version-manifest.js';
 import { generateWorkspaceRelationshipMermaid, generateProjectRelationshipMermaid, generateSolutionRelationshipMermaid } from './utils/mermaid.js';
 import { classifyProject, summarizeBilling } from './scanners/project-classification.js';
 import { collectVulnTargets, scanVulnerabilities, generateVulnerabilityFindings } from './scanners/vulnerability-scanner.js';
+import { collectLicenseFindings } from './licenses/evidence.js';
 import { attributeVulnerabilities } from './scoring/vuln-attribution.js';
 import { gitHistoryAvailable, workingTreeDirty } from './utils/git-history.js';
 import { buildVersionTimelines } from './utils/version-timeline.js';
@@ -722,7 +723,10 @@ export async function runCoreScan(
 
   // ── Step: Findings ──
   progress.startStep('findings');
-  const findings = [...generateFindings(allProjects, config), ...vulnFindings];
+  // Local license declarations that failed SPDX parsing, with the manifest /
+  // LICENSE / NOTICE path. Registry licenses have no file and are not listed.
+  const licenseFindings = await collectLicenseFindings(rootDir, allProjects);
+  const findings = [...generateFindings(allProjects, config), ...licenseFindings, ...vulnFindings];
   const warnCount = findings.filter((f) => f.level === 'warning').length;
   const errCount = findings.filter((f) => f.level === 'error').length;
   const noteCount = findings.filter((f) => f.level === 'note').length;

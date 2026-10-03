@@ -81,6 +81,13 @@ export interface PackageJson {
   devDependencies?: Record<string, string>;
   peerDependencies?: Record<string, string>;
   optionalDependencies?: Record<string, string>;
+  /**
+   * Declared license (SPDX id, expression, or legacy `{ type }` object).
+   * Read for local license findings; see `licenses/evidence.ts`.
+   */
+  license?: string | { type?: string; url?: string };
+  /** Legacy npm form used when `license` is absent. */
+  licenses?: Array<string | { type?: string; url?: string }>;
 }
 
 // ── npm registry metadata ──
