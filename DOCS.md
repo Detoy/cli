@@ -22,6 +22,7 @@ For a quick overview, see the [README](./README.md). This document covers everyt
   - [vg sbom](#vg-sbom)
   - [vg scan](#vg-scan)
     - [Vulnerabilities and exposure attribution](#vulnerabilities-and-exposure-attribution)
+      - [Offline package manifest](#offline-package-manifest)
   - [vg update](#vg-update)
   - [vg why](#vg-why)
 - [Workspace auth & cloud upload](#workspace-auth--cloud-upload)
@@ -1084,7 +1085,7 @@ vg scan [path] [--vulns] [--full] [--format text|json|sarif|md] [--out <file>] [
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--vulns` | — | Also detect known vulnerabilities (OSV online; offline via `--package-manifest` advisories) |
+| `--vulns` | — | Also detect known vulnerabilities. Online, this queries OSV. With `--offline`, it matches only the advisories in [`--package-manifest`](#offline-package-manifest) |
 | `--full` | — | Comprehensive scan: enables `--vulns` and reports banned dependencies when a standards policy exists |
 | `--format` | `text` | Output format: `text`, `json`, `sarif`, or `md` |
 | `--out <file>` | — | Write output to a file |
@@ -1099,8 +1100,8 @@ vg scan [path] [--vulns] [--full] [--format text|json|sarif|md] [--out <file>] [
 | `--region <region>` | — | Override data residency (`us`, `eu`) during push |
 | `--strict` | — | Fail scan command if push fails |
 | `--ui-purpose` | — | Enable optional UI-purpose evidence extraction |
-| `--offline` | — | Disable network calls and disable upload/push behavior |
-| `--package-manifest <file>` | — | JSON or ZIP package-version manifest used for offline/latest lookups (latest bundle: `https://github.com/vibgrate/manifests/latest-packages.zip`) |
+| `--offline` | — | No registry calls, no OSV calls, and no upload. `--push` is ignored. Latest versions and advisories come from `--package-manifest` |
+| `--package-manifest <file>` | — | JSON or ZIP package-version manifest for offline latest-version and advisory lookups. See [Offline package manifest](#offline-package-manifest). A published version bundle: `https://github.com/vibgrate/manifests/latest-packages.zip` |
 | `--no-local-artifacts` | — | Do not write `.vibgrate/*.json` scan artifacts to disk |
 | `--max-privacy` | — | Hardened privacy mode with minimal scanners and no local artifacts |
 | `--no-graph` | — | Skip building the local code map that scan produces after scoring drift |
@@ -1111,7 +1112,7 @@ vg scan [path] [--vulns] [--full] [--format text|json|sarif|md] [--out <file>] [
 
 By default, the scan writes `.vibgrate/scan_result.json`. Use `--no-local-artifacts` or `--max-privacy` to suppress local JSON artifact files.
 
-For offline drift scoring, pass `--package-manifest <file>` with a downloaded manifest bundle such as `https://github.com/vibgrate/manifests/latest-packages.zip`.
+For offline drift scoring and offline vulnerability checks, pass `--package-manifest <file>` (a JSON file, or a ZIP such as `https://github.com/vibgrate/manifests/latest-packages.zip`). The file shape, the exit code when it is missing, and what `--offline` skips are under [Offline package manifest](#offline-package-manifest).
 
 Examples:
 
@@ -1141,7 +1142,7 @@ Expected results:
 
 ### Vulnerabilities and exposure attribution
 
-`vg scan --vulns` matches your installed dependencies against the public OSV database and records each known vulnerability — advisory id and CVE, severity, CVSS, and the fixing version — in the scan artifact, as findings, and in SARIF. Supply advisories in a `--package-manifest` bundle to run it offline.
+`vg scan --vulns` matches your installed dependencies against the public OSV database and records each known vulnerability — advisory id and CVE, severity, CVSS, and the fixing version — in the scan artifact, as findings, and in SARIF. With `--offline`, the same check uses advisories carried in a [`--package-manifest`](#offline-package-manifest) file and does not call OSV.
 
 In a git repository the scan also attributes each finding: the commit, author, and date that introduced the vulnerable version, and how long you have been exposed. These exposure windows aggregate into remediation metrics framed around the [EU Cyber Resilience Act (CRA)](https://vibgrate.com/compliance/cra): open counts by severity, mean and maximum time exposed, and per-severity SLA breaches (defaults: critical 7 days, high 30, moderate 90, low 180). The metrics are descriptive — they show whether remediation keeps pace; they are not a compliance certification.
 
@@ -1153,12 +1154,127 @@ Detection and attribution read each project's lockfile, so they cover npm / pnpm
 # Online detection against OSV
 vg scan --vulns
 
-# Air-gapped: advisories supplied in the manifest bundle
-vg scan --vulns --offline --package-manifest ./package-versions.zip
+# Air-gapped: versions and advisories from a local package-version manifest
+vg scan --vulns --offline --package-manifest ./package-versions.json --format json --out scan.json
 
 # Everything in one run: drift + vulnerabilities + a banned-dependency report
 vg scan --full
 ```
+
+#### Offline package manifest
+
+`vg scan --offline --package-manifest <file>` is the local path for drift scoring and, with `--vulns`, known-vulnerability checks. The file supplies latest versions and advisories. The scan makes no registry call, no OSV call, and no upload. `--push` is ignored for that run, including when `VIBGRATE_DSN` or `--dsn` is set.
+
+`vg scan` has no separate advisory-file flag. Advisories are the `vulns` arrays inside the package-version manifest. `vg evidence --advisory` is a different command: it loads one advisory to ask which frozen releases contain it.
+
+**Input shape.** The file is a JSON object, or a ZIP whose root contains `package-versions.json`, `manifest.json`, or `index.json`. A ZIP is extracted with the `unzip` command. Those three names are tried in that order, and the first one that parses as a package-version manifest is used. A file in a subdirectory of the ZIP is ignored. A `package.json` is not a package-version manifest.
+
+Top-level keys are ecosystem names:
+
+`npm`, `nuget`, `pypi`, `maven`, `rubygems`, `swift`, `go`, `cargo`, `composer`, `pub`, `hex`, `docker`, `helm`, `terraform`
+
+An optional `runtimes` object carries runtime-currency data. It is not an advisory source.
+
+Each ecosystem value maps a package name to an entry:
+
+| Field | Meaning |
+| --- | --- |
+| `latest` | Newest version, used for drift |
+| `versions` | Known versions of that package |
+| `license` | Optional SPDX id or expression |
+| `releaseDates` | Optional map of version → ISO-8601 publish date, for offline age scoring |
+| `vulns` | Optional advisories. This is what `--vulns` matches |
+
+NuGet names are matched case-insensitively. Every other ecosystem matches the package name as written.
+
+Each object in `vulns`:
+
+| Field | Meaning |
+| --- | --- |
+| `id` | Advisory id. This is the finding id |
+| `aliases` | Optional other ids, such as a CVE |
+| `summary` | Optional one-line description |
+| `severity` | `low`, `moderate`, `high`, `critical`, or `unknown`. `medium` is accepted and stored as `moderate` |
+| `cvss` | Optional numeric score |
+| `cvssVector` | Optional CVSS vector |
+| `ranges` | Affected ranges. Each entry is `{ "introduced": "<version>", "fixed": "<version>" }`. The installed version matches when it is greater than or equal to `introduced` and less than `fixed`. Omit `introduced`, or set it to `"0"`, for "from the beginning". Omit `fixed` for "still affected" |
+| `versions` | Optional explicit affected versions. A version that is not valid semver matches only this list |
+| `published` | Optional ISO-8601 date |
+| `withdrawn` | Optional. A withdrawn advisory is skipped |
+| `references` | Optional URLs |
+
+`--vulns` compares installed versions from each project's lockfile with `vulns` on npm, PyPI, Maven, NuGet, Go, Cargo, Composer, RubyGems, pub, and Hex. Swift, Docker, Helm, and Terraform entries still supply `latest` for drift. Their `vulns` arrays are not matched.
+
+A published version bundle such as <https://github.com/vibgrate/manifests/latest-packages.zip> uses this same shape. Offline `--vulns` reports the advisories that file carries under `vulns`. A manifest that only lists versions is valid, and the vulnerability step then reports none.
+
+Minimal `package-versions.json` (the advisory id below is an example, not a real advisory):
+
+```json
+{
+  "npm": {
+    "left-pad": {
+      "latest": "1.3.0",
+      "versions": ["1.2.0", "1.3.0"],
+      "vulns": [
+        {
+          "id": "GHSA-example-0000-0000",
+          "aliases": ["CVE-2024-00000"],
+          "severity": "high",
+          "summary": "Example advisory — replace with a real one.",
+          "ranges": [{ "introduced": "0", "fixed": "1.3.0" }]
+        }
+      ]
+    }
+  }
+}
+```
+
+Installed `left-pad@1.2.0` matches that range. `1.3.0` is the fix (`fixed` is exclusive), so it does not match.
+
+```bash
+vg scan --vulns --offline --package-manifest ./package-versions.json --format json --out scan.json
+```
+
+The same command accepts a ZIP:
+
+```bash
+vg scan --vulns --offline --package-manifest ./package-versions.zip --format json --out scan.json
+```
+
+**Missing or invalid manifest.** A `--package-manifest` path that is missing, unreadable, or not a package-version manifest stops the command before a scan starts. The process exits `1` (`ERROR`). Stderr is a single `error:` line, with no stack trace. `.vibgrate/scan_result.json` is not written. An empty success report is not produced.
+
+```bash
+vg scan --offline --package-manifest ./missing.zip
+```
+
+```text
+error: Package manifest not found: /absolute/path/to/missing.zip. Pass a readable JSON or ZIP package-version manifest to --package-manifest.
+```
+
+The path in the message is the absolute path of the argument.
+
+| What went wrong | Exit | Stderr (after `error: `) |
+| --- | --- | --- |
+| File does not exist | `1` | `Package manifest not found: <path>. Pass a readable JSON or ZIP package-version manifest to --package-manifest.` |
+| File is not readable | `1` | `Package manifest is not readable: <path>. Check permissions and pass a readable JSON or ZIP package-version manifest to --package-manifest.` |
+| ZIP, and `unzip` is not installed | `1` | `Package manifest is not readable: <path>. Reading a ZIP manifest needs the unzip command. Pass a JSON package-version manifest to --package-manifest, or install unzip.` |
+| Path is a directory | `1` | `Package manifest is not a file: <path>. Pass a JSON or ZIP package-version manifest to --package-manifest.` |
+| Not JSON, or JSON that is not a package-version manifest (a `package.json` fails this way) | `1` | `Package manifest is not usable: <path>. Expected a JSON object of package versions, or a ZIP containing package-versions.json, manifest.json, or index.json.` |
+| ZIP whose root has none of those three names | `1` | `Package manifest is not usable: <path>. The ZIP must contain package-versions.json, manifest.json, or index.json.` |
+
+Omitting `--package-manifest` leaves the command running. `vg scan --vulns --offline` with no manifest skips OSV and the vulnerability step reports `none found`. When the rest of the scan succeeds, the exit code is `0`. That line means no advisory source was provided. A path that was passed and cannot be read exits `1`.
+
+A manifest that loads and contains no advisory for the installed versions also finishes successfully. The vulnerability step reports none, because nothing in the file applied.
+
+**What `--offline` skips.** No request is sent to a package registry — npm, NuGet, PyPI, Maven Central, RubyGems, `proxy.golang.org`, crates.io, Packagist, pub.dev, hex.pm, Docker Hub, Artifact Hub, the Terraform Registry, or the GitHub API Swift uses for package tags — or to OSV (`https://api.osv.dev`). No scan result is uploaded.
+
+A package named in the manifest is resolved from that entry. A package the manifest does not name is not fetched. Drift scoring can still reuse a fresh entry in the local registry cache left by an earlier online scan on this machine; otherwise that package's currency stays unknown. Vulnerability matching ignores that cache and uses `vulns` only.
+
+Online, `--vulns` queries OSV. Passing `--package-manifest` as well adds manifest advisories whose ids OSV did not return. When OSV cannot be reached, the vulnerability step reports `OSV unreachable — not checked`. `--offline` stays on the manifest and never reports that OSV line.
+
+**Determinism.** The same tree and the same manifest produce the same vulnerability findings: the same advisory ids, in the same order. Packages are ordered by ecosystem, then package name, then installed version. Advisories on one package are ordered by severity (critical, then high, moderate, low, unknown), then by advisory id. The id is the advisory's `id`. JSON reports it as `findings[].details.advisoryId`. SARIF reports it as `properties.advisoryId` on the `vibgrate/vulnerability` result. Order and ids come from the tree and the manifest.
+
+In a git repository the finding also names who introduced the vulnerable version, and how many days the exposure has been open, measured to the time of that scan. The day count follows the calendar. The advisory id and the order stay the same.
 
 ---
 
@@ -3399,7 +3515,8 @@ forcing on-device inference is a choice you may want on a fully connected
 machine — for privacy, cost, or latency — and `--offline` would not say it.
 
 `vg scan --offline` and `vg evidence --offline` mean the same thing they always
-have.
+have. For a scan, registries, OSV, and upload are all skipped; latest versions
+and advisories come from [`--package-manifest`](#offline-package-manifest).
 
 ---
 
