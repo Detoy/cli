@@ -5,6 +5,7 @@ import chalk from 'chalk';
 import type { ScanArtifact, BillingSummary, ExtendedScanResults, InventoryItem, ServiceDependencyItem, ArchitectureResult, SecurityFinding, SecuritySection } from '../types.js';
 import { driftBar } from '../ui/bar.js';
 import { titleBox, panelBox } from '../ui/box.js';
+import { presentFinding } from './fix-hint.js';
 
 /**
  * Format a billable project-equivalent figure to at most 2 decimal places,
@@ -116,8 +117,10 @@ export function formatText(artifact: ScanArtifact, opts: FormatTextOptions = {})
     lines.push(chalk.bold.underline(`  Findings`) + chalk.dim(` (${summary})`));
     for (const f of artifact.findings) {
       const icon = f.level === 'error' ? chalk.red('✖') : f.level === 'warning' ? chalk.yellow('⚠') : chalk.blue('ℹ');
-      lines.push(`    ${icon} ${f.message}`);
+      const presented = presentFinding(f);
+      lines.push(`    ${icon} ${presented.message}`);
       lines.push(chalk.dim(`      ${f.ruleId} in ${f.location}`));
+      if (presented.hint) lines.push(chalk.green(`      ${presented.hint}`));
     }
     lines.push('');
   }

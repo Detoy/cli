@@ -421,6 +421,8 @@ One scan gives you:
 
 `vg scan --vulns` checks your installed dependencies against the public [OSV](https://vibgrate.com/glossary/osv) database and reports each known vulnerability with its severity, CVSS score, and the version that fixes it — as text, JSON, or SARIF. Add `--package-manifest` to run it fully offline from a local advisory bundle.
 
+When a finding already carries a fixed version (`fixedVersions` or `fixedVersion`) or a remediation string, the default text report follows it with `fix available: …`. That line is omitted when the metadata is missing or empty — the report does not claim there is no fix, and it does not look one up.
+
 ```bash
 vg scan --vulns                 # drift score + known vulnerabilities
 vg scan --full                  # drift + vulnerabilities + a banned-dependency report

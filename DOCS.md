@@ -446,6 +446,8 @@ vg report [--in <file>] [--format md|text|json]
 | `--in`     | `.vibgrate/scan_result.json` | Input artifact file                    |
 | `--format` | `text`                       | Output format: `md`, `text`, or `json` |
 
+Text output follows each finding that already carries a fixed version or remediation with a `fix available: …` line. When that metadata is absent, the line is omitted — the report does not claim there is no fix.
+
 ---
 
 
@@ -1141,7 +1143,7 @@ Expected results:
 
 ### Vulnerabilities and exposure attribution
 
-`vg scan --vulns` matches your installed dependencies against the public OSV database and records each known vulnerability — advisory id and CVE, severity, CVSS, and the fixing version — in the scan artifact, as findings, and in SARIF. Supply advisories in a `--package-manifest` bundle to run it offline.
+`vg scan --vulns` matches your installed dependencies against the public OSV database and records each known vulnerability — advisory id and CVE, severity, CVSS, and the fixing version — in the scan artifact, as findings, and in SARIF. Supply advisories in a `--package-manifest` bundle to run it offline. The default text output follows a finding with `fix available: …` when that fixing version (or a remediation string) is already on the finding, and omits the line when it is not.
 
 In a git repository the scan also attributes each finding: the commit, author, and date that introduced the vulnerable version, and how long you have been exposed. These exposure windows aggregate into remediation metrics framed around the [EU Cyber Resilience Act (CRA)](https://vibgrate.com/compliance/cra): open counts by severity, mean and maximum time exposed, and per-severity SLA breaches (defaults: critical 7 days, high 30, moderate 90, low 180). The metrics are descriptive — they show whether remediation keeps pace; they are not a compliance certification.
 
@@ -1191,7 +1193,7 @@ Explain a dependency from git history: who added it, every version since, and an
 vg why <package>
 ```
 
-`vg why` reads your lockfile's history, so it works across npm / pnpm / yarn, pip / poetry, cargo, composer, bundler, go, pub, hex, NuGet, and Maven/Gradle projects. For Maven/Gradle the history comes from a resolved `gradle.lockfile`, or a `pom.xml`'s pinned direct-dependency versions (versions managed by a BOM/`dependencyManagement` aren't resolved). Open vulnerabilities and their introduction attribution come from your most recent `vg scan --vulns`.
+`vg why` reads your lockfile's history, so it works across npm / pnpm / yarn, pip / poetry, cargo, composer, bundler, go, pub, hex, NuGet, and Maven/Gradle projects. For Maven/Gradle the history comes from a resolved `gradle.lockfile`, or a `pom.xml`'s pinned direct-dependency versions (versions managed by a BOM/`dependencyManagement` aren't resolved). Open vulnerabilities and their introduction attribution come from your most recent `vg scan --vulns`. An advisory that already names a fixed version is marked `fix available: …`; when it does not, that clause is left off.
 
 #### Which agent session wrote a line
 
@@ -2900,7 +2902,7 @@ The default output. A coloured, human-readable report showing:
 - Overall drift score and risk level
 - Score component breakdown with visual bars
 - Per-project details: runtime lag, framework versions, dependency distribution
-- Findings with severity icons
+- Findings with severity icons. A finding that already includes a fixed version or remediation is followed by `fix available: …`. The hint is omitted when that metadata is absent.
 
 ### JSON Artifact
 
