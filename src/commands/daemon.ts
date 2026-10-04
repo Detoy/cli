@@ -411,6 +411,9 @@ export function registerDaemon(program: Command): void {
         { socketPath },
       );
       let put = loaded;
+      if (!loaded.ok && loaded.code === 'bad_graph') {
+        throw new CliError(loaded.error, ExitCode.ERROR);
+      }
       if (!loaded.ok && loaded.code === 'no_map') {
         throw new CliError(loaded.error, ExitCode.NOT_FOUND);
       }

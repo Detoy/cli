@@ -4,7 +4,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { parseGraph } from '../engine/serialize.js';
+import { GraphLoadError, parseGraph } from '../engine/serialize.js';
 import { mapFileStat } from '../engine/snapshot.js';
 import { loadGraphPreferIndex } from '../engine/index-db.js';
 import type { RefreshOutcome, refreshIfStale } from '../engine/refresh.js';
@@ -570,7 +570,8 @@ export function createServer(source: GraphSource, opts: ServeOptions = {}): Serv
         let graph: VgGraph;
         try {
           graph = await source.get();
-        } catch {
+        } catch (err) {
+          if (err instanceof GraphLoadError) return errorResult(err.message);
           return errorResult(
             'no code map found. Run `vg` in the project to build .vibgrate/graph.json, then retry.',
           );

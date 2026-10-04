@@ -453,7 +453,10 @@ unguarded_entrypoint = false
     const calls: string[][] = [];
     const run: GitRunner = (args) => {
       calls.push(args);
-      if (args[0] === 'show' && args[1]?.startsWith('origin/main:')) {
+      // A missing project config is "not in this commit" (status !== 0).
+      // Returning TOML for `.vibgrate/config.yml` would be an invalid YAML
+      // file, which fails closed instead of falling through.
+      if (args[1] === 'origin/main:.vibgrate/review.toml') {
         return { stdout: '[review]\nenforcement = "enforced"\n', status: 0 };
       }
       return { stdout: '', status: 1 };

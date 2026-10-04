@@ -1,5 +1,6 @@
 import * as path from 'node:path';
 import { readTextFile, pathExists, findPackageJsonFiles, readJsonFile, FileCache } from '../../core-open/index.js';
+import { assertLockfileText, parseLockfileJson } from '../../core-open/utils/lockfile-parse.js';
 import type { PackageJson, DependencyGraphResult, DuplicatedPackage, PhantomDependency } from '../../core-open/index.js';
 
 interface LockEntry {
@@ -28,10 +29,13 @@ function parsePnpmLock(content: string): LockEntry[] {
 /**
  * Parse package-lock.json (v2/v3) by reading `packages` or `dependencies` keys.
  */
-function parseNpmLock(content: string): LockEntry[] {
+function parseNpmLock(content: string, filePath: string): LockEntry[] {
   const entries: LockEntry[] = [];
-  try {
-    const lock = JSON.parse(content);
+  const lock = parseLockfileJson(filePath, content) as {
+    packages?: Record<string, { version?: string }>;
+    dependencies?: Record<string, { version?: string; dependencies?: Record<string, unknown> }>;
+  } | null;
+  if (lock && typeof lock === 'object') {
 
     // v2/v3 format: `packages` keyed by path like "node_modules/lodash"
     if (lock.packages && typeof lock.packages === 'object') {
@@ -54,7 +58,7 @@ function parseNpmLock(content: string): LockEntry[] {
       }
       walkDeps(lock.dependencies);
     }
-  } catch { /* invalid JSON */ }
+  }
   return entries;
 }
 
@@ -96,14 +100,16 @@ export async function scanDependencyGraph(rootDir: string, cache?: FileCache): P
   if (await _pathExists(pnpmLock)) {
     result.lockfileType = 'pnpm';
     const content = await _readTextFile(pnpmLock);
+    assertLockfileText(pnpmLock, content, 'YAML');
     entries = parsePnpmLock(content);
   } else if (await _pathExists(npmLock)) {
     result.lockfileType = 'npm';
     const content = await _readTextFile(npmLock);
-    entries = parseNpmLock(content);
+    entries = parseNpmLock(content, npmLock);
   } else if (await _pathExists(yarnLock)) {
     result.lockfileType = 'yarn';
     const content = await _readTextFile(yarnLock);
+    assertLockfileText(yarnLock, content, 'yarn.lock');
     entries = parseYarnLock(content);
   }
 

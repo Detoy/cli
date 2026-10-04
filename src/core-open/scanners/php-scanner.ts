@@ -4,6 +4,7 @@
 import * as path from 'node:path';
 import * as semver from 'semver';
 import { FileCache, readJsonFile } from '../utils/fs.js';
+import { LockfileParseError, rethrowLockfileParseError } from '../utils/lockfile-parse.js';
 import { withTimeout } from '../utils/timeout.js';
 import { ComposerCache } from './composer-cache.js';
 import type { ProjectScan, DependencyRow, DetectedFramework } from '../types.js';
@@ -133,11 +134,18 @@ async function parseComposerJson(filePath: string, cache?: FileCache): Promise<{
 async function parseComposerLock(filePath: string, cache?: FileCache): Promise<Map<string, string>> {
   const resolved = new Map<string, string>();
   
+  let data: { packages?: Array<{ name?: string; version?: string }>; 'packages-dev'?: Array<{ name?: string; version?: string }> };
   try {
-    const data = cache 
+    data = cache
       ? await cache.readJsonFile(filePath)
-      : await readJsonFile(filePath) as any;
-    
+      : await readJsonFile(filePath);
+  } catch (err) {
+    rethrowLockfileParseError(err);
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return resolved;
+    throw new LockfileParseError(filePath, 'JSON');
+  }
+
+  try {
     // Parse packages
     for (const pkg of (data.packages ?? []) as Array<{ name?: string; version?: string }>) {
       if (pkg.name && pkg.version) {
@@ -151,8 +159,9 @@ async function parseComposerLock(filePath: string, cache?: FileCache): Promise<M
         resolved.set(pkg.name, pkg.version);
       }
     }
-  } catch {
-    // Invalid JSON or file doesn't exist
+  } catch (err) {
+    rethrowLockfileParseError(err);
+    throw new LockfileParseError(filePath, 'JSON');
   }
   
   return resolved;
@@ -209,6 +218,7 @@ export async function scanPhpProjects(
         }
       }
     } catch (e: unknown) {
+      rethrowLockfileParseError(e);
       const msg = e instanceof Error ? e.message : String(e);
       console.error(`Error scanning PHP project ${dir}: ${msg}`);
     }
@@ -239,8 +249,8 @@ async function scanOnePhpProject(
   let resolvedVersions = new Map<string, string>();
   try {
     resolvedVersions = await parseComposerLock(lockPath, cache);
-  } catch {
-    // No composer.lock or can't read it
+  } catch (err) {
+    rethrowLockfileParseError(err);
   }
   
   // Filter out dev dependencies for main analysis

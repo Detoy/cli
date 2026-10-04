@@ -16,15 +16,30 @@ import * as path from 'node:path';
  */
 
 /**
+ * Empty and whitespace-only patterns are not excludes. A newline or
+ * carriage-return-only rule must never be compiled: that form matches every
+ * path and hides the whole tree.
+ */
+function dropBlankPatterns(patterns: readonly string[]): string[] {
+  const out: string[] = [];
+  for (const pattern of patterns) {
+    if (typeof pattern !== 'string' || pattern.trim() === '') continue;
+    out.push(pattern);
+  }
+  return out;
+}
+
+/**
  * Compile an array of glob patterns into a single predicate function
  * that tests a **relative** path (forward-slash separated).
  *
  * Returns `null` if the pattern list is empty (nothing excluded).
  */
 export function compileGlobs(patterns: string[]): ((relPath: string) => boolean) | null {
-  if (patterns.length === 0) return null;
+  const usable = dropBlankPatterns(patterns);
+  if (usable.length === 0) return null;
 
-  const matchers = patterns.map((p) => compileOne(normalise(p)));
+  const matchers = usable.map((p) => compileOne(normalise(p)));
 
   return (relPath: string) => {
     const norm = normalise(relPath);

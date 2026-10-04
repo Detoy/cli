@@ -14,6 +14,7 @@
  */
 import * as path from 'node:path';
 import * as semver from 'semver';
+import { assertLockfileText, LockfileParseError, rethrowLockfileParseError } from '../utils/lockfile-parse.js';
 import { parseToml } from '../utils/toml.js';
 import type { LockfileIo } from './npm-lockfile.js';
 export type { LockfileIo } from './npm-lockfile.js';
@@ -67,10 +68,13 @@ export async function loadCargoLockIndex(dir: string, io: LockfileIo): Promise<C
   const lockPath = path.join(dir, 'Cargo.lock');
   if (!(await io.exists(lockPath).catch(() => false))) return null;
   try {
-    const map = parseCargoLock(await io.readText(lockPath));
+    const text = await io.readText(lockPath);
+    assertLockfileText(lockPath, text, 'TOML');
+    const map = parseCargoLock(text);
     if (!map.size) return null;
     return { size: map.size, resolve: (name, spec) => pickLockedVersion(map.get(name), spec) };
-  } catch {
-    return null;
+  } catch (err) {
+    rethrowLockfileParseError(err);
+    throw new LockfileParseError(lockPath, 'TOML');
   }
 }

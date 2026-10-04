@@ -4,6 +4,7 @@
 import * as path from 'node:path';
 import * as semver from 'semver';
 import { readTextFile, readJsonFile, pathExists, FileCache } from '../utils/fs.js';
+import { rethrowLockfileParseError } from '../utils/lockfile-parse.js';
 import { loadPythonLockIndex, type PythonLockIndex } from './python-lockfile.js';
 import type { LockfileIo } from './npm-lockfile.js';
 import { withTimeout } from '../utils/timeout.js';
@@ -378,6 +379,7 @@ export async function scanPythonProjects(
         }
       }
     } catch (e: unknown) {
+      rethrowLockfileParseError(e);
       const msg = e instanceof Error ? e.message : String(e);
       console.error(`Error scanning Python project ${dir}: ${msg}`);
     }
@@ -471,7 +473,10 @@ async function scanOnePythonProject(
     readText: (p) => (cache ? cache.readTextFile(p) : readTextFile(p)),
     readJson: <T>(p: string) => (cache ? cache.readJsonFile<T>(p) : readJsonFile<T>(p)),
   };
-  const lockIndex: PythonLockIndex | null = await loadPythonLockIndex(dir, lockIo).catch(() => null);
+  const lockIndex: PythonLockIndex | null = await loadPythonLockIndex(dir, lockIo).catch((err: unknown) => {
+    rethrowLockfileParseError(err);
+    return null;
+  });
 
   // Resolve dependencies against PyPI
   const dependencies: DependencyRow[] = [];

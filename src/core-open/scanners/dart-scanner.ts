@@ -4,6 +4,7 @@
 import * as path from 'node:path';
 import * as semver from 'semver';
 import { readTextFile, FileCache } from '../utils/fs.js';
+import { assertLockfileText, LockfileParseError, rethrowLockfileParseError } from '../utils/lockfile-parse.js';
 import { withTimeout } from '../utils/timeout.js';
 import { PubCache } from './pub-cache.js';
 import type { ProjectScan, DependencyRow, DetectedFramework } from '../types.js';
@@ -174,11 +175,19 @@ function parsePubspecYaml(content: string): {
 async function parsePubspecLock(filePath: string, cache?: FileCache): Promise<Map<string, string>> {
   const resolved = new Map<string, string>();
   
+  let content: string;
   try {
-    const content = cache 
+    content = cache
       ? await cache.readTextFile(filePath)
       : await readTextFile(filePath);
-    
+  } catch (err) {
+    rethrowLockfileParseError(err);
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return resolved;
+    throw new LockfileParseError(filePath, 'YAML');
+  }
+  assertLockfileText(filePath, content, 'YAML');
+
+  try {
     let currentPackage: string | null = null;
 
     for (const line of content.split(/\r?\n/)) {
@@ -203,8 +212,9 @@ async function parsePubspecLock(filePath: string, cache?: FileCache): Promise<Ma
         }
       }
     }
-  } catch {
-    // File doesn't exist or can't read it
+  } catch (err) {
+    rethrowLockfileParseError(err);
+    throw new LockfileParseError(filePath, 'YAML');
   }
   
   return resolved;
@@ -260,6 +270,7 @@ export async function scanDartProjects(
         }
       }
     } catch (e: unknown) {
+      rethrowLockfileParseError(e);
       const msg = e instanceof Error ? e.message : String(e);
       console.error(`Error scanning Dart project ${dir}: ${msg}`);
     }
@@ -291,8 +302,8 @@ async function scanOneDartProject(
   let resolvedVersions = new Map<string, string>();
   try {
     resolvedVersions = await parsePubspecLock(lockPath, cache);
-  } catch {
-    // No pubspec.lock or can't read it
+  } catch (err) {
+    rethrowLockfileParseError(err);
   }
   
   // Filter out dev dependencies for main analysis

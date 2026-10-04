@@ -16,6 +16,7 @@
  */
 import * as path from 'node:path';
 import { parse as parseYaml } from 'yaml';
+import { assertLockfileText, LockfileParseError, rethrowLockfileParseError } from '../utils/lockfile-parse.js';
 
 export type NpmLockSource = 'package-lock' | 'yarn' | 'pnpm';
 
@@ -167,35 +168,50 @@ export async function loadNpmLockIndex(dir: string, io: LockfileIo): Promise<Npm
   const lockPath = path.join(dir, 'package-lock.json');
 
   // pnpm first (its lockfile is the most explicit about installed versions).
+  // A file that exists but is truncated or invalid is an error — do not fall
+  // through to a different lockfile and silently report that graph instead.
   if (await io.exists(pnpmPath).catch(() => false)) {
+    const text = await io.readText(pnpmPath);
+    let doc: unknown;
     try {
-      const map = parsePnpmLock(parseYaml(await io.readText(pnpmPath)));
-      if (map.size) return { source: 'pnpm', size: map.size, resolve: (name) => map.get(name) ?? null };
-    } catch {
-      /* fall through */
+      assertLockfileText(pnpmPath, text, 'YAML');
+      doc = parseYaml(text);
+    } catch (err) {
+      rethrowLockfileParseError(err);
+      throw new LockfileParseError(pnpmPath, 'YAML');
     }
+    const map = parsePnpmLock(doc);
+    if (map.size) return { source: 'pnpm', size: map.size, resolve: (name) => map.get(name) ?? null };
   }
   // package-lock next: structured JSON and unambiguous.
   if (await io.exists(lockPath).catch(() => false)) {
+    let json: unknown;
     try {
-      const map = parsePackageLock(await io.readJson<unknown>(lockPath));
-      if (map.size) return { source: 'package-lock', size: map.size, resolve: (name) => map.get(name) ?? null };
-    } catch {
-      /* fall through to yarn */
+      json = await io.readJson<unknown>(lockPath);
+    } catch (err) {
+      rethrowLockfileParseError(err);
+      throw new LockfileParseError(lockPath, 'JSON');
     }
+    const map = parsePackageLock(json);
+    if (map.size) return { source: 'package-lock', size: map.size, resolve: (name) => map.get(name) ?? null };
   }
   if (await io.exists(yarnPath).catch(() => false)) {
+    const text = await io.readText(yarnPath);
+    let parsed: ReturnType<typeof parseYarnLock>;
     try {
-      const { bySpec, byName } = parseYarnLock(await io.readText(yarnPath));
-      if (byName.size) {
-        return {
-          source: 'yarn',
-          size: byName.size,
-          resolve: (name, spec) => (spec ? bySpec.get(`${name}@${spec}`) : undefined) ?? byName.get(name) ?? null,
-        };
-      }
-    } catch {
-      /* none usable */
+      assertLockfileText(yarnPath, text, 'yarn.lock');
+      parsed = parseYarnLock(text);
+    } catch (err) {
+      rethrowLockfileParseError(err);
+      throw new LockfileParseError(yarnPath, 'yarn.lock');
+    }
+    const { bySpec, byName } = parsed;
+    if (byName.size) {
+      return {
+        source: 'yarn',
+        size: byName.size,
+        resolve: (name, spec) => (spec ? bySpec.get(`${name}@${spec}`) : undefined) ?? byName.get(name) ?? null,
+      };
     }
   }
   return null;

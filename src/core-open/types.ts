@@ -285,18 +285,20 @@ export interface MermaidDiagram {
 
 export interface DriftScore {
   /**
-   * DriftScore (`driftscore-2.0`): 0–100 where **0 = no drift (best)** and
-   * **100 = maximum drift (worst)**. Higher is worse — consistent with
-   * RiskScore and the "drift budget" model. Components below are also drift
-   * (0 = fully current).
+   * DriftScore: 0–100 where **0 = no drift (best)** and **100 = maximum drift
+   * (worst)**. Higher is worse — consistent with RiskScore and the "drift
+   * budget" model. `null` means nothing was measured. A missing score is never
+   * stored as 0, which would read as no drift.
    */
-  score: number;
-  riskLevel: RiskLevel;
+  score: number | null;
+  /** `null` when `score` was not measured. */
+  riskLevel: RiskLevel | null;
+  /** Per-component drift (0 = fully current). `null` means that component had no input. */
   components: {
-    runtimeScore: number;
-    frameworkScore: number;
-    dependencyScore: number;
-    eolScore: number;
+    runtimeScore: number | null;
+    frameworkScore: number | null;
+    dependencyScore: number | null;
+    eolScore: number | null;
     /**
      * Libyear-based dependency-freshness sub-score as drift (0–100, 0 = fresh).
      * Optional/additive: only present when release-date data was available, so
@@ -461,6 +463,21 @@ export type VulnEcosystem =
 /** Qualitative severity band. `unknown` distinguishes "no severity data" from a real low. */
 export type VulnSeverity = 'low' | 'moderate' | 'high' | 'critical' | 'unknown';
 
+/**
+ * A CVSS vector was present and could not be parsed. Absent on an advisory that
+ * has a parsed score, and absent when no vector was supplied. Never used to
+ * mean "score is zero".
+ */
+export interface CvssDiagnostic {
+  /** Stable code, identical for every unparseable vector. */
+  code: 'cvss-vector-parse-failed';
+  /**
+   * What failed and what to do next. Deterministic for a given vector.
+   * Credential-shaped text from the vector is redacted.
+   */
+  message: string;
+}
+
 /** Commit attribution: who introduced something, and when (from git history). */
 export interface CommitAttribution {
   sha: string;
@@ -488,10 +505,24 @@ export interface VulnerabilityAdvisory {
   summary: string | null;
   /** Qualitative severity. */
   severity: VulnSeverity;
-  /** CVSS v3 base score (0–10), or null when not derivable from the advisory. */
+  /**
+   * CVSS v3 base score (0–10) when a vector parsed or a numeric score was
+   * supplied. Null when no score is available. Zero is a real score (no
+   * impact), not a missing one. A null score with {@link cvssDiagnostic} set
+   * means a vector was present and failed to parse; a null score without it
+   * means no score was supplied.
+   */
   cvss: number | null;
-  /** Raw CVSS vector string, when the advisory carried one. */
+  /**
+   * Raw CVSS vector string, when the advisory carried one. An unparseable
+   * vector is stored with credential-shaped text redacted.
+   */
   cvssVector: string | null;
+  /**
+   * Set only when a CVSS vector was present and failed to parse. Omitted when
+   * the score was parsed and when no vector was supplied.
+   */
+  cvssDiagnostic?: CvssDiagnostic;
   /** First fixed version per affected range (empty when no fix is published). */
   fixedVersions: string[];
   /** ISO-8601 publish date, when known. */

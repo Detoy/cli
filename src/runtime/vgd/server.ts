@@ -7,6 +7,7 @@ import { WorkspaceRegistry } from './registry.js';
 import { vgdPidPath, vgdSocketPath } from './paths.js';
 import { queryGraph, queryGraphSemantic } from '../../engine/query.js';
 import { loadGraph } from '../../engine/load.js';
+import { GraphLoadError } from '../../engine/serialize.js';
 import { resolveGraphPath } from '../../engine/artifacts.js';
 import { globalGraphPathForRef } from '../paths.js';
 import { clearDetectGitRefCache, detectGitRef } from '../git-ref.js';
@@ -86,10 +87,16 @@ export async function startVgdServer(options: VgdServerOptions = {}): Promise<Vg
     new FreshnessSupervisor({
       log,
       reload: (repositoryId, root, gitRef) => {
-        const graph = loadGraph(root);
-        if (!graph) return Promise.resolve(null);
-        registry.putGraph(repositoryId, gitRef, graph);
-        return Promise.resolve(graph.nodes?.length ?? 0);
+        try {
+          const graph = loadGraph(root);
+          if (!graph) return Promise.resolve(null);
+          registry.putGraph(repositoryId, gitRef, graph);
+          return Promise.resolve(graph.nodes?.length ?? 0);
+        } catch (err) {
+          const detail = err instanceof GraphLoadError ? err.message : 'the code map could not be reloaded';
+          log(`freshness: ${detail}`);
+          return Promise.resolve(null);
+        }
       },
       select: (repositoryId, gitRef) => registry.selectGitRef(repositoryId, gitRef),
     });
@@ -776,7 +783,13 @@ async function loadGraphIntoSlot(
   }
 
   ctx.log(`load-graph: ${record.id}@${gitRef} from ${root}`);
-  let graph = loadGraph(root, graphPath);
+  let graph: VgGraph | null;
+  try {
+    graph = loadGraph(root, graphPath);
+  } catch (err) {
+    if (err instanceof GraphLoadError) return { ok: false, error: err.message, code: 'bad_graph' };
+    throw err;
+  }
   let rebuilt = false;
   if (!graph && options.rebuildIfMissing) {
     ctx.log(`ensure-graph: no map for ${root} — rebuilding in a child`);
@@ -788,7 +801,12 @@ async function loadGraphIntoSlot(
         code: 'rebuild_failed',
       };
     }
-    graph = loadGraph(root, graphPath);
+    try {
+      graph = loadGraph(root, graphPath);
+    } catch (err) {
+      if (err instanceof GraphLoadError) return { ok: false, error: err.message, code: 'bad_graph' };
+      throw err;
+    }
     rebuilt = true;
   }
   if (!graph) {
@@ -842,7 +860,16 @@ function loadRefFromDisk(
 ): void {
   const record = ctx.registry.getById(repositoryId);
   if (!record) return;
-  const fromRefPath = loadGraph(record.root, globalGraphPathForRef(record.root, gitRef));
+  let fromRefPath: VgGraph | null;
+  try {
+    fromRefPath = loadGraph(record.root, globalGraphPathForRef(record.root, gitRef));
+  } catch (err) {
+    if (err instanceof GraphLoadError) {
+      ctx.log(`select-git-ref: ${err.message}`);
+      return;
+    }
+    throw err;
+  }
   if (fromRefPath) {
     ctx.registry.putGraph(repositoryId, gitRef, fromRefPath);
     startWatching(ctx, repositoryId, gitRef);
@@ -852,7 +879,16 @@ function loadRefFromDisk(
   // In-repo / current-HEAD snapshot only if this process is actually on that ref.
   clearDetectGitRefCache(record.root);
   if (detectGitRef(record.root).ref !== gitRef) return;
-  const current = loadGraph(record.root);
+  let current: VgGraph | null;
+  try {
+    current = loadGraph(record.root);
+  } catch (err) {
+    if (err instanceof GraphLoadError) {
+      ctx.log(`select-git-ref: ${err.message}`);
+      return;
+    }
+    throw err;
+  }
   if (!current) return;
   ctx.registry.putGraph(repositoryId, gitRef, current);
   startWatching(ctx, repositoryId, gitRef);

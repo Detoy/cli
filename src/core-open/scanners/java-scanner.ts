@@ -7,6 +7,7 @@ import { XMLParser } from 'fast-xml-parser';
 import { readTextFile, readJsonFile, pathExists, FileCache } from '../utils/fs.js';
 import { withTimeout } from '../utils/timeout.js';
 import { MavenCache } from './maven-cache.js';
+import { rethrowLockfileParseError } from '../utils/lockfile-parse.js';
 import { loadGradleLockIndex, type GradleLockIndex } from './gradle-lockfile.js';
 import type { LockfileIo } from './npm-lockfile.js';
 import { latestLts, runtimeEolStatus, extractCycle, eolDate } from '../runtimes/catalog.js';
@@ -387,6 +388,7 @@ export async function scanJavaProjects(
         }
       }
     } catch (e: unknown) {
+      rethrowLockfileParseError(e);
       const msg = e instanceof Error ? e.message : String(e);
       console.error(`Error scanning Java project ${dir}: ${msg}`);
     }
@@ -486,7 +488,10 @@ async function scanOneJavaProject(
     readText: (p) => (cache ? cache.readTextFile(p) : readTextFile(p)),
     readJson: <T>(p: string) => (cache ? cache.readJsonFile<T>(p) : readJsonFile<T>(p)),
   };
-  const lockIndex: GradleLockIndex | null = await loadGradleLockIndex(dir, lockIo).catch(() => null);
+  const lockIndex: GradleLockIndex | null = await loadGradleLockIndex(dir, lockIo).catch((err: unknown) => {
+    rethrowLockfileParseError(err);
+    return null;
+  });
 
   // Resolve dependencies against Maven Central
   const dependencies: DependencyRow[] = [];

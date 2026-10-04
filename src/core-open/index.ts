@@ -20,6 +20,9 @@ export {
   isDataConfigFile,
   parseDataConfig,
   readDataConfigSync,
+  requireDataConfig,
+  ConfigFileError,
+  isConfigFileError,
   type ConfigFile,
   type DataConfigRead,
 } from './config.js';
@@ -144,7 +147,15 @@ export {
   VULN_RULE_ID,
   type VulnTarget,
 } from './scanners/vulnerability-scanner.js';
-export { cvssV3BaseScore, severityFromCvss, severityRank, normalizeSeverityLabel } from './scoring/cvss.js';
+export {
+  cvssV3BaseScore,
+  parseCvssVector,
+  severityFromCvss,
+  severityRank,
+  normalizeSeverityLabel,
+  CVSS_VECTOR_PARSE_FAILED,
+  type CvssParseResult,
+} from './scoring/cvss.js';
 export { computeUpgradeImpact, analyzeUsage, computeVersionJump } from './scanners/upgrade-impact.js';
 export {
   getChangelogSignals,

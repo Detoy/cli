@@ -3,6 +3,7 @@
 // and re-run the vendor script. Apache-2.0.
 import * as crypto from 'node:crypto';
 import type { ProjectScan, DriftScore, Finding, RiskLevel, VibgrateConfig } from '../types.js';
+import { licenseParseDiagnostic } from '../licenses/diagnostic.js';
 import { aggregateDependencyDrift } from './dependency-drift-v3.js';
 
 /**
@@ -201,18 +202,19 @@ export function computeDriftScore(projects: ProjectScan[]): DriftScore {
 
   // DriftScore v2 convention: 0 = no drift (best), 100 = maximum drift (worst).
   // Components are computed internally on a "health" scale (higher = healthier)
-  // and inverted here so every emitted number reads as drift.
+  // and inverted here so every emitted number reads as drift. A null health
+  // value stays null: `?? 100` would invert to drift 0 and look like "no drift".
+  // A measured health of 0 (runtime lag of 4 or more) still inverts to drift 100.
   const toDrift = (health: number) => 100 - health;
+  const healthToDrift = (health: number | null): number | null =>
+    health === null ? null : toDrift(Math.round(health));
 
-  const buildComponents = (): DriftScore['components'] => {
-    const c: DriftScore['components'] = {
-      runtimeScore: toDrift(Math.round(rs ?? 100)),
-      frameworkScore: toDrift(Math.round(fs ?? 100)),
-      dependencyScore: toDrift(Math.round(ds ?? 100)),
-      eolScore: toDrift(Math.round(es ?? 100)),
-    };
-    return c;
-  };
+  const buildComponents = (): DriftScore['components'] => ({
+    runtimeScore: healthToDrift(rs),
+    frameworkScore: healthToDrift(fs),
+    dependencyScore: healthToDrift(ds),
+    eolScore: healthToDrift(es),
+  });
 
   // Score envelope (§6.3): the dependency pillar's provenance (`mode`) and its
   // v3 detail (`p95`/`unsupportedShare`/`coverage`/ranked `top`), for
@@ -238,11 +240,12 @@ export function computeDriftScore(projects: ProjectScan[]): DriftScore {
 
   const active = components.filter((c) => c.score !== null);
   if (active.length === 0) {
-    // No data at all — neutral score (no measurable drift)
+    // Nothing was measured. Absent is not a perfect score.
     return {
-      score: 0,
-      riskLevel: 'low',
+      score: null,
+      riskLevel: null,
       components: buildComponents(),
+      measured: [],
       methodologyVersion: DRIFT_SCORE_METHODOLOGY_VERSION,
       ...(confidence !== undefined ? { confidence } : {}),
       ...envelope,
@@ -381,6 +384,30 @@ export function generateFindings(
         });
       }
     }
+
+    // A non-empty license that does not resolve, or an expression with an
+    // unresolved constituent, is a data-quality finding. An explicit
+    // NOASSERTION / empty declaration is not. Sort so the same manifest
+    // always emits the same order.
+    const licenseFindings: Finding[] = [];
+    const licenseDeps = [...project.dependencies].sort(
+      (a, b) =>
+        a.package.localeCompare(b.package) ||
+        (a.license?.raw ?? '').localeCompare(b.license?.raw ?? '') ||
+        a.section.localeCompare(b.section),
+    );
+    for (const dep of licenseDeps) {
+      const diag = licenseParseDiagnostic(dep.license?.raw, project.path, dep.package);
+      if (!diag) continue;
+      licenseFindings.push({
+        ruleId: diag.code,
+        level: 'warning',
+        message: diag.message,
+        location: diag.location,
+        details: { raw: diag.raw },
+      });
+    }
+    findings.push(...licenseFindings);
   }
 
   return findings;
