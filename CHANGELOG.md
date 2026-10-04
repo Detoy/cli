@@ -14,6 +14,8 @@ backward compatible.
 
 ### Added
 
+- **`vg scan --vulns` JSON includes EPSS and KEV when the advisory already has them.** Each advisory in `extended.vulnerabilities` carries `epss` (0–1), `epssPercentile` (0–1), and `kev` when those signals are present on the advisory body or in a `--package-manifest` bundle. A missing signal is `null`, and a real score of `0` is kept. The scan does not fetch EPSS, including in offline / `--package-manifest` mode. Text and SARIF findings are unchanged.
+
 - **`vg sbom export` now reports the full resolved dependency tree, not just
   direct manifest deps.** SBOM export previously flattened only the packages
   a project's manifest scan sees — the names typed into `package.json` (or

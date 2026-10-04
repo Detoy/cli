@@ -53,7 +53,17 @@ describe('offline scan network boundary', () => {
               {
                 id: 'GHSA-offline-fixture',
                 summary: 'Fixture advisory for the offline path',
-                severity: 'moderate',
+                severity: 'high',
+                epss: 0.42,
+                epssPercentile: 0.91,
+                kev: true,
+                ranges: [{ introduced: '0', fixed: '1.3.1' }],
+              },
+              {
+                id: 'GHSA-offline-absent',
+                summary: 'Fixture advisory with a real EPSS of 0 and no percentile or KEV',
+                severity: 'low',
+                epss: 0,
                 ranges: [{ introduced: '0', fixed: '1.3.1' }],
               },
             ],
@@ -90,11 +100,28 @@ describe('offline scan network boundary', () => {
     expect(fetchTripwire).not.toHaveBeenCalled();
     expect(fs.existsSync(reportPath)).toBe(true);
     const report = JSON.parse(fs.readFileSync(reportPath, 'utf8')) as {
-      findings: Array<{ ruleId?: string; message?: string }>;
-      extended?: { vulnerabilities?: { source?: string; totalAdvisories?: number } };
+      findings: Array<{ ruleId?: string; message?: string; details?: Record<string, unknown> }>;
+      extended?: {
+        vulnerabilities?: {
+          source?: string;
+          totalAdvisories?: number;
+          packages?: Array<{
+            advisories: Array<{ id: string; epss: number | null; epssPercentile: number | null; kev: boolean | null }>;
+          }>;
+        };
+      };
     };
-    expect(report.extended?.vulnerabilities).toMatchObject({ source: 'manifest', totalAdvisories: 1 });
-    expect(report.findings.some((finding) => finding.message?.includes('GHSA-offline-fixture'))).toBe(true);
+    expect(report.extended?.vulnerabilities).toMatchObject({ source: 'manifest', totalAdvisories: 2 });
+    const advisories = report.extended?.vulnerabilities?.packages?.[0]?.advisories ?? [];
+    // Severity, then id. EPSS does not reorder findings.
+    expect(advisories.map((advisory) => advisory.id)).toEqual(['GHSA-offline-fixture', 'GHSA-offline-absent']);
+    expect(advisories[0]).toMatchObject({ epss: 0.42, epssPercentile: 0.91, kev: true });
+    expect(advisories[1]).toMatchObject({ epss: 0, epssPercentile: null, kev: null });
+    const finding = report.findings.find((item) => item.message?.includes('GHSA-offline-fixture'));
+    expect(finding?.message).not.toMatch(/EPSS|epss/);
+    expect(finding?.details).not.toHaveProperty('epss');
+    expect(finding?.details).not.toHaveProperty('epssPercentile');
+    expect(finding?.details).not.toHaveProperty('kev');
     expect(fs.existsSync(path.join(root, '.vibgrate', 'scan_result.json'))).toBe(true);
   });
 });

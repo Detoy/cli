@@ -148,6 +148,12 @@ export {
   type VulnTarget,
 } from './scanners/vulnerability-scanner.js';
 export {
+  exploitabilityFields,
+  normalizeExploitability,
+  unitIntervalOrNull,
+  type ExploitabilityFields,
+} from './scanners/exploitability.js';
+export {
   cvssV3BaseScore,
   parseCvssVector,
   severityFromCvss,

@@ -169,7 +169,7 @@ written to disk, and never phones home. `vg serve config` lists every knob and
 - **guide_node** — cited standards and practices for a node (OWASP/CWE).
 - **check_drift** — offline dependency inventory with optional git who-added attribution.
 - **vuln_attribution** — who introduced each open vulnerability, exposure windows, CRA remediation metrics.
-- **list_vulnerabilities** — known vulnerabilities from the last `vg scan --vulns`: CVE, severity, CVSS, fixed version.
+- **list_vulnerabilities** — known vulnerabilities from the last `vg scan --vulns`: CVE, severity, CVSS, EPSS and KEV when the scan recorded them, fixed version.
 - **upgrade_impact** — what breaks if you upgrade a package: major distance, import blast radius, vulns fixed.
 - **list_models** — local models on disk (Ollama / LM Studio / gguf).
 - **resolve_library** — resolve a library to its canonical id and the version your project uses.
@@ -419,7 +419,7 @@ One scan gives you:
 
 ## Find known vulnerabilities and who introduced them
 
-`vg scan --vulns` checks your installed dependencies against the public [OSV](https://vibgrate.com/glossary/osv) database and reports each known vulnerability with its severity, CVSS score, and the version that fixes it — as text, JSON, or SARIF. Add `--package-manifest` to run it fully offline from a local advisory bundle.
+`vg scan --vulns` checks your installed dependencies against the public [OSV](https://vibgrate.com/glossary/osv) database and reports each known vulnerability with its severity, CVSS score, and the version that fixes it — as text, JSON, or SARIF. When the advisory or an offline `--package-manifest` bundle already includes an [EPSS](https://vibgrate.com/glossary/epss) score, percentile, or [CISA KEV](https://vibgrate.com/glossary/kev) flag, the JSON artifact records `epss`, `epssPercentile`, and `kev` (`null` when absent; a real score of `0` is kept). The scan does not fetch EPSS. Add `--package-manifest` to run it fully offline from a local advisory bundle.
 
 ```bash
 vg scan --vulns                 # drift score + known vulnerabilities

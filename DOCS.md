@@ -1143,6 +1143,16 @@ Expected results:
 
 `vg scan --vulns` matches your installed dependencies against the public OSV database and records each known vulnerability — advisory id and CVE, severity, CVSS, and the fixing version — in the scan artifact, as findings, and in SARIF. Supply advisories in a `--package-manifest` bundle to run it offline.
 
+When that advisory data already carries exploitability signals, each advisory object in `extended.vulnerabilities` (the `.vibgrate/scan_result.json` artifact and `--format json`) includes them:
+
+| Field | JSON |
+| --- | --- |
+| `epss` | FIRST [EPSS](https://vibgrate.com/glossary/epss) probability of exploitation within 30 days, from 0 to 1. `null` when the source did not carry a score. A real score of `0` is kept. |
+| `epssPercentile` | EPSS percentile, from 0 to 1, or `null`. A real percentile of `0` is kept. |
+| `kev` | `true` or `false` when the source recorded a [CISA KEV](https://vibgrate.com/glossary/kev) listing. `null` when it did not say. |
+
+The scan copies these from data it already has. On an OSV advisory the fields are read from the advisory body (`epss`, `epssPercentile` or `epss_percentile`, `kev`, `cisaKev`, or `cisa_kev`, including a nested `exploitability` object) and from `database_specific` / `ecosystem_specific` on the matching affected package. On a package-version manifest the same fields are read from each `vulns` entry. Offline and `--package-manifest` scans do not call out for EPSS. Text output and SARIF keep the existing severity, CVSS, and fix-version finding. Advisory order is unchanged: worst severity first, then id.
+
 In a git repository the scan also attributes each finding: the commit, author, and date that introduced the vulnerable version, and how long you have been exposed. These exposure windows aggregate into remediation metrics framed around the [EU Cyber Resilience Act (CRA)](https://vibgrate.com/compliance/cra): open counts by severity, mean and maximum time exposed, and per-severity SLA breaches (defaults: critical 7 days, high 30, moderate 90, low 180). The metrics are descriptive — they show whether remediation keeps pace; they are not a compliance certification.
 
 The scan also reconstructs **closed** exposure windows from history — a vulnerable version that was later bumped out of the affected range or removed from the lockfile entirely — and reports real remediation time (MTTR) from them: measured, not estimated. Offline, a package-version manifest extends this to advisories that are fully fixed today, so a dependency that is clean now but was once vulnerable still counts toward your remediation record.
@@ -2077,7 +2087,7 @@ The server exposes read-only tools your assistant can call over the code map and
 
 - `query_graph`, `get_node`, `find_path`, `impact_of`, `tests_for` — navigate and reason about the code map.
 - `check_drift` — offline dependency inventory; pass `attribute: true` to add git "who added this / who set the version" attribution.
-- `list_vulnerabilities`, `vuln_attribution` — known vulnerabilities and their exposure attribution from the last `vg scan --vulns`.
+- `list_vulnerabilities`, `vuln_attribution` — known vulnerabilities and their exposure attribution from the last `vg scan --vulns`, including `epss`, `epssPercentile`, and `kev` when that scan recorded them (`null` when absent).
 - `upgrade_impact` — what an upgrade will cost: version distance, how many files import the package, the vulnerabilities it fixes, and — with `changelog: true` — online breaking-change notes between your version and the latest.
 - `resolve_library`, `library_docs` — version-correct, drift-annotated library docs.
 
