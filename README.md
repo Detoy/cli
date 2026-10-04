@@ -820,6 +820,7 @@ Recommended rollout: `vg build` + `vg install` now, add `vg scan` to CI this wee
 - **`--auto` is a denylist, not a sandbox.** It blocks known-catastrophic commands; it does not confine the agent. Run untrusted instructions in a container, or under `--worktree` with `--security-tier L1`.
 - **`--verify` re-runs your tests; it does not prove correctness.** Failures are fed back for a repair attempt. Passing tests mean passing tests.
 - **Vulnerability data is only as current as its source.** `--vulns` reports what OSV knows at scan time; offline runs report what is in the bundle you supplied.
+- **SARIF keeps every alias of one advisory on a single result.** `properties.advisoryId` is that record's own id; the other ids (CVE, GHSA, OSV) are `properties.aliases`. A second advisory record stays a second result, including when the two ids alias each other, so a code-scanning upload can show a near-duplicate. See [Advisory aliases](./DOCS.md#advisory-aliases).
 - **Vibgrate Evidence produces evidence, not a compliance determination.** It supports your obligations under a regime; it does not decide that you meet them, does not certify anything, and is not legal advice. The filing is yours.
 - **Evidence cannot look backwards.** Exposure is answered from manifests frozen at ship time. A release you never froze stays `undetermined` — there is no way to reconstruct it after the fact.
 - **`vg evidence watch` surfaces a KEV listing, not a determination.** Whether a vulnerability is "actively exploited" for the purposes of a filing is your call, not the tool's.

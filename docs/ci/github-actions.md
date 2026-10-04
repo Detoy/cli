@@ -38,6 +38,14 @@ after the scan (with `always()`, so findings still surface when the gate fails).
 Prefer raw CLI steps? `npx @vibgrate/cli scan --vulns --format sarif --out
 vibgrate-vulns.sarif --fail-on error`, then upload the file yourself.
 
+Vulnerability results use one SARIF result per advisory record. Aliases of that
+record stay on `properties.aliases`; the record's own id is
+`properties.advisoryId`. A second record is a second result even when the two
+ids alias each other, which can surface as a near-duplicate alert. The rule id
+is `vibgrate/vulnerability` and the location is the package name, so tell
+alerts apart with `properties.advisoryId`. Full contract:
+[Advisory aliases](../../DOCS.md#advisory-aliases).
+
 ## Infrastructure misconfiguration gate (`--iac`)
 
 The same scan can evaluate Terraform, Kubernetes, Helm and Dockerfile facts

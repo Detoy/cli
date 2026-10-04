@@ -85,6 +85,7 @@ For a quick overview, see the [README](./README.md). This document covers everyt
   - [Text](#text)
   - [JSON Artifact](#json-artifact)
   - [SARIF](#sarif)
+    - [Advisory aliases](#advisory-aliases)
   - [Markdown](#markdown)
 - [Configuration](#configuration)
   - [vibgrate.config.ts](#vibgrateconfigts)
@@ -1141,7 +1142,7 @@ Expected results:
 
 ### Vulnerabilities and exposure attribution
 
-`vg scan --vulns` matches your installed dependencies against the public OSV database and records each known vulnerability — advisory id and CVE, severity, CVSS, and the fixing version — in the scan artifact, as findings, and in SARIF. Supply advisories in a `--package-manifest` bundle to run it offline.
+`vg scan --vulns` matches your installed dependencies against the public OSV database and records each known vulnerability — advisory id and CVE, severity, CVSS, and the fixing version — in the scan artifact, as findings, and in SARIF. Supply advisories in a `--package-manifest` bundle to run it offline. How those findings show up in SARIF when one issue is known under several ids is described under [Advisory aliases](#advisory-aliases): one result per advisory record, primary id on `properties.advisoryId`, the other ids on `properties.aliases`.
 
 In a git repository the scan also attributes each finding: the commit, author, and date that introduced the vulnerable version, and how long you have been exposed. These exposure windows aggregate into remediation metrics framed around the [EU Cyber Resilience Act (CRA)](https://vibgrate.com/compliance/cra): open counts by severity, mean and maximum time exposed, and per-severity SLA breaches (defaults: critical 7 days, high 30, moderate 90, low 180). The metrics are descriptive — they show whether remediation keeps pace; they are not a compliance certification.
 
@@ -2908,7 +2909,41 @@ The full scan artifact in JSON format. Contains all raw data, scores, findings, 
 
 ### SARIF
 
-[Static Analysis Results Interchange Format](https://sarifweb.azurewebsites.net/) — compatible with GitHub Code Scanning and Azure DevOps. Contains findings only (not all metrics). Ideal for integrating drift findings directly into your PR review workflow.
+[Static Analysis Results Interchange Format](https://sarifweb.azurewebsites.net/) 2.1.0 — compatible with GitHub code scanning and Azure DevOps. The document contains findings, not the drift score or the other metrics.
+
+```bash
+vg scan --format sarif
+vg scan --vulns --format sarif
+```
+
+`runs[0]` holds the drift findings and, when you passed `--vulns`, the vulnerability findings. A second run is added only for infrastructure findings (`vg scan --iac`). Advisory results stay on the first run.
+
+#### Advisory aliases
+
+A vulnerability is often published under more than one id: a GHSA id, a CVE id, and sometimes an OSV id. When those ids belong to **one advisory record**, `vg scan --format sarif` keeps them on **one result**.
+
+Each installed package produces one result per advisory record that affects the installed version. The record's own id is the primary id, on `properties.advisoryId`. The other ids are `properties.aliases`, in the order OSV or your offline package-version manifest supplied. That array is not sorted. An advisory with no aliases has `"aliases": []`. The formatter copies the finding's `details` object onto `properties`, so the same object also carries `ecosystem`, `package`, `installedVersion`, `severity`, `cvss` (`null` when the advisory has no score), and `fixedVersions`.
+
+The result `ruleId` is `vibgrate/vulnerability`. The location `uri` is the package name. `critical` and `high` map to SARIF level `error`, `moderate` to `warning`, and `low` or `unknown` to `note`. The message text looks like:
+
+```text
+widget@1.2.0: GHSA-widg-et00-0001 (CVE-2099-9999) (high 7.5) — fixed in 1.2.1
+```
+
+The id in front is `properties.advisoryId`. The parenthetical CVE is the first alias that starts with `CVE-`, and only when that CVE is not already the primary id. Any other alias — including a GHSA id when the primary id is the CVE — stays in `properties.aliases` and is left out of the message. The message ends with `— fixed in <versions>` when a fix is listed, and `— no fix available` when it is not. The CVSS score is left out of the severity parentheses when the advisory has no score (`(low)` rather than `(low 2.1)`).
+
+**Two records stay two results.** `aliases` is not a grouping key. If OSV or your manifest returns a GHSA record and a separate CVE record for the same issue, and each names the other in `aliases`, the SARIF output contains both results. A code-scanning upload can show those as near-duplicate alerts. `vg scan` does not collapse them.
+
+**Order.** The formatter writes `results` in findings order and does not sort them again. `tool.driver.rules` lists each distinct `ruleId` once, in the order that id first appears among the findings. Drift findings come first, in the order the drift scan emitted them. Vulnerability findings follow, sorted by ecosystem, then package name, then version, and within a package by severity (`critical`, `high`, `moderate`, `low`, `unknown`) and then by advisory id. The order of ids in the OSV response or the manifest does not change that. `invocations[0].startTimeUtc` is the time of the scan, so two scans of the same tree are not byte-for-byte identical; the vulnerability results are.
+
+Vulnerability results do not set `partialFingerprints`. Every advisory on a package shares the rule id `vibgrate/vulnerability` and the same location (the package name). Tell those results apart with `properties.advisoryId` and `properties.aliases`.
+
+```bash
+vg scan --vulns --format sarif
+vg scan --vulns --offline --package-manifest ./package-versions.json --format sarif
+```
+
+Read `runs[0].results`. One advisory record with several aliases is one object in that array.
 
 ### Markdown
 
