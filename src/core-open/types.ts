@@ -727,6 +727,35 @@ export interface BillingSummary {
   billableProjects: number;
 }
 
+/**
+ * One current finding that was already present in the compared baseline.
+ * The full finding (message, level, details) stays in `findings`; this is
+ * the auditable identifier, not a replacement for that row.
+ */
+export interface BaselineSuppressedFinding {
+  ruleId: string;
+  /** Same `location` string as the finding in `findings`. */
+  location: string;
+  /**
+   * 32 lowercase hex characters. Derived from the finding's rule, level,
+   * location, and message, so the same finding always yields the same id
+   * and a changed message yields a different one.
+   */
+  id: string;
+}
+
+/**
+ * Additive record written when `vg scan --baseline` reads a baseline file.
+ * Omitted entirely when no baseline was compared. `suppressed` is sorted by
+ * `ruleId`, then `location`, then `id`.
+ */
+export interface BaselineComparison {
+  compared: true;
+  /** Number of entries in `suppressed`. */
+  suppressedCount: number;
+  suppressed: BaselineSuppressedFinding[];
+}
+
 // ── Full scan artifact (stable schema) ──
 
 export interface ScanArtifact {
@@ -740,7 +769,19 @@ export interface ScanArtifact {
   solutions?: SolutionScan[];
   drift: DriftScore;
   findings: Finding[];
+  /**
+   * Repo-relative path of the baseline file this scan was compared against,
+   * or the file's basename when it lives outside the repo. Absent when
+   * `--baseline` was not used or the file could not be read.
+   */
   baseline?: string;
+  /**
+   * Which current findings were already in the baseline. Those findings stay
+   * in `findings`; this block is the trace that they matched. Absent when no
+   * baseline was compared. A file that was read and matched nothing is still
+   * present, with `suppressedCount: 0`.
+   */
+  baselineComparison?: BaselineComparison;
   delta?: number;
   extended?: ExtendedScanResults;
   /** Scan wall-clock duration in milliseconds */

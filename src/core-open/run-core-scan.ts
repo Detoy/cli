@@ -31,6 +31,7 @@ import { ComposerCache } from './scanners/composer-cache.js';
 import { PubCache } from './scanners/pub-cache.js';
 import { Semaphore } from './utils/semaphore.js';
 import { computeDriftScore, generateFindings, computeProjectId, computeSolutionId } from './scoring/drift-score.js';
+import { compareBaselineFindings } from './baseline-comparison.js';
 import { formatText } from './formatters/text.js';
 import { formatSarif } from './formatters/sarif.js';
 import { formatMarkdown } from './formatters/markdown.js';
@@ -833,6 +834,13 @@ export async function runCoreScan(
         if (typeof headScore === 'number' && typeof baseScore === 'number') {
           artifact.delta = headScore - baseScore;
         }
+        // Matched findings stay in `findings`. This block is the auditable
+        // record that they were already in the baseline. It is set only after
+        // the baseline file was read; a missing or unreadable file leaves it off.
+        artifact.baselineComparison = compareBaselineFindings(
+          artifact.findings,
+          Array.isArray(baseline.findings) ? baseline.findings : [],
+        );
       } catch {
         console.error(chalk.yellow(`Warning: Could not read baseline file: ${baselinePath}`));
       }

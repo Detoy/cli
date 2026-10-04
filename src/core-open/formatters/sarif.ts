@@ -2,6 +2,7 @@
 // scripts/vendor-core-open.mjs. Do not edit here — change the source package
 // and re-run the vendor script. Apache-2.0.
 import type { ScanArtifact, Finding, SecurityFinding, SecuritySection, SecuritySeverity } from '../types.js';
+import { driftFindingId } from '../baseline-comparison.js';
 
 /**
  * Generate a SARIF 2.1.0 document from scan artifact.
@@ -14,8 +15,9 @@ import type { ScanArtifact, Finding, SecurityFinding, SecuritySection, SecurityS
  * bytes as before.
  */
 export function formatSarif(artifact: ScanArtifact): object {
+  const suppressedIds = new Set(artifact.baselineComparison?.suppressed.map((entry) => entry.id) ?? []);
   const rules = buildRules(artifact.findings);
-  const results = artifact.findings.map((f) => toSarifResult(f));
+  const results = artifact.findings.map((f) => toSarifResult(f, suppressedIds));
 
   const runs: object[] = [
     {
@@ -184,7 +186,8 @@ function buildRules(findings: Finding[]) {
   });
 }
 
-function toSarifResult(finding: Finding) {
+function toSarifResult(finding: Finding, suppressedIds: ReadonlySet<string>) {
+  const id = driftFindingId(finding);
   return {
     ruleId: finding.ruleId,
     level: finding.level === 'error' ? 'error' : finding.level === 'warning' ? 'warning' : 'note',
@@ -201,5 +204,19 @@ function toSarifResult(finding: Finding) {
     // Surface structured finding detail (e.g. advisory id, CVSS, fixed version)
     // to consumers like GitHub code scanning without bloating the message text.
     ...(finding.details && Object.keys(finding.details).length > 0 ? { properties: finding.details } : {}),
+    // The finding stays in `results`. The suppression carries the same id as
+    // `baselineComparison.suppressed` so a baseline match is not a silent drop.
+    ...(suppressedIds.has(id)
+      ? {
+          suppressions: [
+            {
+              kind: 'external',
+              status: 'accepted',
+              justification: 'Matched the compared drift baseline',
+              properties: { id },
+            },
+          ],
+        }
+      : {}),
   };
 }
