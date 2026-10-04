@@ -626,7 +626,7 @@ when you want that change set explicitly. It writes nothing unless you pass
 - No data leaves your machine unless you run `--push` / `vg push` / `vg share`.
 - Drift scoring reads manifests and configs only. The code graph (`vg build`/`vg map`) and a few extended scanners (code quality, database schema, UI text) read your source **locally** to compute structural facts and metrics — never a raw source line, and never uploaded as-is; see [DOCS.md](./DOCS.md#extended-scanners) for exactly what each one reads.
 - Works without login and without any SaaS dependency.
-- `--offline` disables registry/network lookups; `--package-manifest <file>` feeds drift scoring a local version bundle.
+- `--offline` disables registry/network lookups; `--package-manifest <file>` feeds drift scoring a local version bundle. The messages for a down network, a refused registry, or a failed upload — and what to do next — are in [DOCS.md](./DOCS.md#registry-auth-and-network-failures). Do not paste DSNs, `Authorization` headers, or `.npmrc` tokens into logs or issues.
 - `--max-privacy` suppresses local artifact writes and high-context scanners; `--no-local-artifacts` skips writing `.vibgrate/*.json` to disk.
 - `vg code --local` keeps model inference on-device: a local model, the local graph, no hosted call and no model-catalog fetch. The agent's own web tools stay available and, like every network step, are approved by you before they run.
 - `vg code` never reads a secrets file into a prompt, and redacts credential shapes from files it does read.
