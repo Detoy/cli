@@ -557,6 +557,11 @@ vg scan --baseline .vibgrate/baseline.json --drift-budget 40 --drift-worsening 5
 
 - `--drift-budget <score>` fails the build if drift exceeds your budget.
 - `--drift-worsening <percent>` fails the build if drift worsens by more than X% vs baseline.
+- `--junit <file>` writes a deterministic JUnit XML summary of findings and those gates, next to `--format` (JSON or SARIF). The exit code is unchanged; see [DOCS.md](./DOCS.md#junit).
+
+```bash
+vg scan --format sarif --out vibgrate.sarif --junit vibgrate.junit.xml --fail-on error --drift-budget 40
+```
 
 Copy-paste CI templates live in `examples/github-actions/`. Azure DevOps and GitLab CI snippets are in [DOCS.md](./DOCS.md#ci-integration).
 

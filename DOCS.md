@@ -86,6 +86,7 @@ For a quick overview, see the [README](./README.md). This document covers everyt
   - [JSON Artifact](#json-artifact)
   - [SARIF](#sarif)
   - [Markdown](#markdown)
+  - [JUnit](#junit)
 - [Configuration](#configuration)
   - [vibgrate.config.ts](#vibgrateconfigts)
   - [Thresholds](#thresholds)
@@ -1079,7 +1080,7 @@ the truth is "not tracked".
 The primary command. Scans your project for upgrade drift.
 
 ```bash
-vg scan [path] [--vulns] [--full] [--format text|json|sarif|md] [--out <file>] [--fail-on warn|error|architecture-finding|architecture-warning] [--offline] [--package-manifest <file>] [--no-local-artifacts] [--max-privacy] [--baseline <file>] [--drift-budget <score>] [--drift-worsening <percent>] [--changed-only] [--concurrency <n>]
+vg scan [path] [--vulns] [--full] [--format text|json|sarif|md] [--out <file>] [--junit <file>] [--fail-on warn|error|architecture-finding|architecture-warning] [--offline] [--package-manifest <file>] [--no-local-artifacts] [--max-privacy] [--baseline <file>] [--drift-budget <score>] [--drift-worsening <percent>] [--changed-only] [--concurrency <n>]
 ```
 
 | Flag | Default | Description |
@@ -1088,6 +1089,7 @@ vg scan [path] [--vulns] [--full] [--format text|json|sarif|md] [--out <file>] [
 | `--full` | — | Comprehensive scan: enables `--vulns` and reports banned dependencies when a standards policy exists |
 | `--format` | `text` | Output format: `text`, `json`, `sarif`, or `md` |
 | `--out <file>` | — | Write output to a file |
+| `--junit <file>` | — | Also write a deterministic JUnit XML report of findings and gates. See [JUnit](#junit). Does not replace `--format` |
 | `--fail-on <level>` | — | Exit with code 2 if findings at this level exist. `warn` / `error` gate on drift findings. `architecture-finding` (hard boundary violations) and `architecture-warning` (violations and warnings) gate on the architecture module's boundary findings, judged under the policy pack in force — `hexagonal-v1` unless `.vibgrate/architecture.toml`, `VIBGRATE_ARCHITECTURE_POLICY` or `vg build --policy` says `layered-v1`. The output names the pack whether the gate passes or fails; each failing row is `file:line  symbol  violation: … (rule)`. Pick the pack before turning this on: see [Architecture policy packs](./docs/architecture-policies.md) |
 | `--baseline <file>` | — | Compare against a previous baseline |
 | `--changed-only` | — | Only scan changed files |
@@ -1121,6 +1123,9 @@ vg scan
 
 # JSON output for automation
 vg scan --format json --out scan.json
+
+# JUnit XML for a CI test reporter, beside the SARIF upload
+vg scan --format sarif --out vibgrate.sarif --junit vibgrate.junit.xml --fail-on error --drift-budget 40
 
 # CI gate with baseline regression protection
 vg scan --baseline .vibgrate/baseline.json --drift-budget 40 --drift-worsening 5 --fail-on error
@@ -2910,9 +2915,50 @@ The full scan artifact in JSON format. Contains all raw data, scores, findings, 
 
 [Static Analysis Results Interchange Format](https://sarifweb.azurewebsites.net/) — compatible with GitHub Code Scanning and Azure DevOps. Contains findings only (not all metrics). Ideal for integrating drift findings directly into your PR review workflow.
 
+Test reporters that ingest JUnit can take a companion file from the same scan. See [JUnit](#junit). The process exit code is unchanged either way; see [Exit Codes](#exit-codes).
+
 ### Markdown
 
 A clean Markdown report suitable for PRs, wikis, or documentation.
+
+### JUnit
+
+`--junit <file>` writes a JUnit XML report next to whatever `--format` you selected (`text`, `json`, `sarif`, or `md`). GitLab (`artifacts:reports:junit`), Azure DevOps, and Jenkins can publish it without a second scan. The file is local: rule ids, locations, messages, and gate results only — no DSN, repository URL, or scan clock.
+
+The same findings and gates always produce the same bytes. Case order is fixed, `time` is `0`, and the optional JUnit `timestamp` attribute is omitted.
+
+| Suite | When | Test cases |
+| ----- | ---- | ---------- |
+| `findings` | Always | One case per drift finding. `classname` is `vg.findings`. `name` is `{ruleId} {location}` (` #2`, ` #3`, … on ties). No findings → one passing case, `no findings`. |
+| `architecture` | `--fail-on architecture-finding` or `architecture-warning` | One failure per boundary row (`classname` `vg.architecture`), a passing `architecture` case when the gate is clean, or one failure when the gate could not run. |
+| `security` | `--fail-on iac-finding` or `security-finding` | One case per security finding when the packs ran (`classname` `vg.security`). Findings below the severity are `<skipped>`. A passing `security` case when there are none. One failure when the gate could not run. |
+| `gates` | A drift budget was judged | `drift-budget` / `drift-worsening` for the flags, or `drift-budget maxScore` and `drift-budget maxWorseningPercent` for [`driftBudget`](#drift-budget) in project config. |
+
+A finding is a `<failure>` only when its level fails the drift gate you set. Anything else is `<skipped>` (present, not gating):
+
+| Finding | `--fail-on error` | `--fail-on warn` | no `warn` / `error` gate |
+| ------- | ----------------- | ---------------- | ------------------------ |
+| `error` | failure | failure | skipped (`drift gate not set`) |
+| `warning` | skipped | failure | skipped |
+| `note` | skipped | skipped | skipped |
+
+Budget cases follow the same exit rules as the CLI. `--drift-budget` / an enforced `driftBudget` breach is a `<failure>`. A score that was not measured, a worsening limit with no `--baseline`, and a warn-mode or shadow breach are `<skipped>` — they do not fail the scan. Every requested gate is included, including gates after the one that stopped the process. The confirmation line goes to stderr, so `--format json` on stdout stays intact. See [Exit Codes](#exit-codes): the XML is written, then the process exits `2` when a gate fails. SARIF stays the code-scanning artifact; see [SARIF](#sarif).
+
+```bash
+vg scan --format sarif --out vibgrate.sarif --junit vibgrate.junit.xml --fail-on error --drift-budget 40
+```
+
+```yaml
+# GitLab CI — SARIF for SAST, JUnit for the test report
+vibgrate:
+  script:
+    - npx @vibgrate/cli scan --format sarif --out vibgrate.sarif --junit vibgrate.junit.xml --fail-on error
+  artifacts:
+    when: always
+    reports:
+      junit: vibgrate.junit.xml
+      sast: vibgrate.sarif
+```
 
 ---
 
@@ -3416,6 +3462,8 @@ CI and agents branch on these, so they are a stable contract.
 | `4`  | `NON_DETERMINISTIC`   | A verification found output that is not reproducible                                       |
 | `5`  | `USAGE_ERROR`         | Bad invocation: unknown command, invalid flag value, missing argument                      |
 | `6`  | `ENGINE_UNAVAILABLE`  | A required optional module is not installed and could not be fetched (see [`vg module`](#vg-module)) |
+
+`vg scan --junit` writes that file before it exits, including when the code is `2`. See [JUnit](#junit).
 
 `6` is deliberately distinct from `2`: a CI gate must never read "engine missing" as a gate verdict.
 The same rule is why [`vg review`](#vg-review) exits `6` when there is no code map, and why `--explain`
