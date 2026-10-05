@@ -91,6 +91,16 @@ The SARIF template produces and uploads SARIF using GitHub's CodeQL upload actio
 npx @vibgrate/cli scan --format sarif --out vibgrate-results.sarif --fail-on error
 ```
 
+## JUnit XML
+
+`--junit <file>` writes a second, deterministic JUnit report beside the SARIF or JSON artifact. GitHub's code scanning still wants SARIF (above). Systems that ingest JUnit — GitLab test reports, Azure DevOps, Jenkins — publish this file. It does not change the exit code: a gate failure is still exit `2` ([Exit Codes](../../DOCS.md#exit-codes)), and the XML is on disk when the step fails.
+
+```bash
+npx @vibgrate/cli scan --format sarif --out vibgrate-results.sarif --junit vibgrate.junit.xml --fail-on error --drift-budget 40
+```
+
+What each testcase means (finding vs budget gate, pass / failure / skipped) is in [JUnit](../../DOCS.md#junit).
+
 ## Related
 
 - Full CI reference (Azure DevOps, GitLab CI, generic pipelines): [DOCS.md](../../DOCS.md#ci-integration)
