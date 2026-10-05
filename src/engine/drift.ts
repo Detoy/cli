@@ -344,8 +344,47 @@ function goDeps(files: string[]): DepRecord[] {
       if (m[1] === 'go' || m[1] === 'require' || m[1].startsWith('module')) continue;
       out.push({ name: m[1], ecosystem: 'go', declared: `v${m[2]}` });
     }
+    appendVersionlessGoRequires(text, out);
   }
   return out;
+}
+
+/**
+ * Direct requires that do not carry a `v` version. The pinned regex above
+ * skips them. Record `*` when the line has no spec (the same unpinned marker
+ * other ecosystems already use) and the written range when one is present.
+ * Do not invent a version number.
+ */
+function appendVersionlessGoRequires(text: string, out: DepRecord[]): void {
+  let inRequire = false;
+  for (const raw of text.split(/\r?\n/)) {
+    const trimmed = raw.trim();
+    if (!trimmed || trimmed.startsWith('//')) continue;
+    if (!inRequire) {
+      if (/^require\s*\(/.test(trimmed) && !/^require\s*\(.*\)\s*$/.test(trimmed)) {
+        inRequire = true;
+        continue;
+      }
+      if (!trimmed.startsWith('require ') && !/^require\s*\(/.test(trimmed)) continue;
+    } else if (trimmed === ')') {
+      inRequire = false;
+      continue;
+    }
+    let body = trimmed;
+    const wrapped = /^require\s*\((.*)\)\s*$/.exec(body);
+    if (wrapped) body = wrapped[1].trim();
+    else if (body.startsWith('require ')) body = body.slice('require '.length).trim();
+    const code = body.replace(/\/\/.*$/, '').trim();
+    if (!code || code.includes('=>')) continue;
+    const parts = code.split(/\s+/);
+    const name = parts[0];
+    if (!name || name === 'go' || name === 'require' || name.startsWith('module')) continue;
+    const rest = parts.slice(1);
+    const concrete = rest.length === 1 && /^v\S+$/.test(rest[0]!) && !/[\^~*<>|]/.test(rest[0]!);
+    if (concrete) continue;
+    if (!name.includes('.') && !name.includes('/')) continue;
+    out.push({ name, ecosystem: 'go', declared: rest.length ? rest.join(' ') : '*' });
+  }
 }
 
 /**

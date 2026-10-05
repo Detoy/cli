@@ -48,7 +48,8 @@ import { resolveDsn } from '../credentials.js';
 import { installId } from '../../engine/stats-share.js';
 import { buildClaimUrl } from './push.js';
 import { emitIngestIdLine, emitDriftScoreLine } from '../utils/ingest-id-output.js';
-import { uploadScanArtifact } from '../utils/upload.js';
+import { formatUploadHttpFailure, uploadScanArtifact } from '../utils/upload.js';
+import { redactForDisplay } from '../../core-open/utils/redact.js';
 import { buildGraph } from '../../engine/build.js';
 import { writeArtifacts, resolveGraphPath } from '../../engine/artifacts.js';
 import { readHaileSidecar } from '../../engine/haile/sidecar.js';
@@ -155,7 +156,7 @@ async function attachReachability(
     // Unknown ≠ safe: the server scores these findings at full weight. Surface
     // the reason only in strict-less informational form.
     if (!opts.quiet) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = redactForDisplay(e instanceof Error ? e.message : String(e));
       console.log(chalk.dim(`Reachability check skipped: ${msg}`));
     }
   }
@@ -227,7 +228,7 @@ async function autoPush(
 
     if (!response.ok) {
       const text = await response.text();
-      throw new Error(`HTTP ${response.status}: ${text}`);
+      throw new Error(formatUploadHttpFailure(response.status, text));
     }
 
     const result = await response.json() as {
@@ -272,7 +273,7 @@ async function autoPush(
       console.log('');
     }
   } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : String(e);
+    const msg = redactForDisplay(e instanceof Error ? e.message : String(e));
     console.error(chalk.red(`Upload failed: ${msg}`));
     if (opts.strict) process.exit(1);
   }
@@ -394,7 +395,7 @@ export const scanCommand = new Command('scan')
     '--fail-on <gates>',
     'Fail on warn or error. architecture-finding (hard boundary violations) or architecture-warning (violations and warnings) gate on the architecture module\'s boundary findings, judged under the policy pack in force: .vibgrate/architecture.toml (policy = "hexagonal-v1" | "layered-v1" | "vertical-v1", plus any [[overlay]] rules), VIBGRATE_ARCHITECTURE_POLICY, or vg build --policy; default hexagonal-v1. The pack is named in the output. See docs/architecture-policies.md. iac-finding[=<severity>] fails on infrastructure findings from the iac-cis-v1 pack at or above <severity> (critical|high|medium|low|info; default high) and needs --iac (or --full) plus the code map — it exits 2 when the Architecture module is missing rather than passing an unevaluated tree; security-finding[=<severity>] is the umbrella across every security pack that ran. Comma-separated: at most one of warn/error/architecture-* plus any security gates, e.g. --fail-on error,iac-finding=medium',
   )
-  .option('--baseline <file>', 'Compare against a baseline and record matched findings')
+  .option('--baseline <file>', 'Compare against a baseline and record matching findings')
   .option('--changed-only', 'Only scan changed files')
   .option(
     '-e, --exclude <glob>',
@@ -617,7 +618,7 @@ export const scanCommand = new Command('scan')
             }
           }
         } catch (e: unknown) {
-          const msg = e instanceof Error ? e.message : String(e);
+          const msg = redactForDisplay(e instanceof Error ? e.message : String(e));
           console.error(chalk.yellow(`Preflight check failed: ${msg}`));
           if (opts.strict) process.exit(1);
         }

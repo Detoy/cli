@@ -31,8 +31,7 @@ import { ComposerCache } from './scanners/composer-cache.js';
 import { PubCache } from './scanners/pub-cache.js';
 import { Semaphore } from './utils/semaphore.js';
 import { computeDriftScore, generateFindings, computeProjectId, computeSolutionId } from './scoring/drift-score.js';
-import { compareBaselineFindings } from './baseline-comparison.js';
-import { attachLicenseEvidence } from './licenses/evidence.js';
+import { compareBaselineFindings } from './baseline-suppressions.js';
 import { formatText } from './formatters/text.js';
 import { formatSarif } from './formatters/sarif.js';
 import { formatMarkdown } from './formatters/markdown.js';
@@ -729,11 +728,7 @@ export async function runCoreScan(
 
   // ── Step: Findings ──
   progress.startStep('findings');
-  // Local license declarations (manifest field or LICENSE / NOTICE / COPYING).
-  // Unparseable SPDX text is a finding at that file. Registry licenses have no
-  // local file; generateFindings keeps those on the project path.
-  const licenseFileFindings = await attachLicenseEvidence(rootDir, allProjects);
-  const findings = [...generateFindings(allProjects, config), ...licenseFileFindings, ...vulnFindings];
+  const findings = [...generateFindings(allProjects, config), ...vulnFindings];
   const warnCount = findings.filter((f) => f.level === 'warning').length;
   const errCount = findings.filter((f) => f.level === 'error').length;
   const noteCount = findings.filter((f) => f.level === 'note').length;
@@ -839,13 +834,11 @@ export async function runCoreScan(
         if (typeof headScore === 'number' && typeof baseScore === 'number') {
           artifact.delta = headScore - baseScore;
         }
-        // Matched findings stay in `findings`. This block is the auditable
-        // record that they were already in the baseline. It is set only after
-        // the baseline file was read; a missing or unreadable file leaves it off.
-        artifact.baselineComparison = compareBaselineFindings(
-          artifact.findings,
-          Array.isArray(baseline.findings) ? baseline.findings : [],
-        );
+        // Matching findings stay in `findings`. This block is the audit record
+        // in the same document — do not filter them out here. A baseline-only
+        // row is not a current finding and is not listed.
+        const baselineFindings = Array.isArray(baseline.findings) ? baseline.findings : [];
+        artifact.baselineComparison = compareBaselineFindings(artifact.findings, baselineFindings);
       } catch {
         console.error(chalk.yellow(`Warning: Could not read baseline file: ${baselinePath}`));
       }

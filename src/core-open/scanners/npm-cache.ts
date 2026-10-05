@@ -7,6 +7,7 @@ import { Semaphore } from '../utils/semaphore.js';
 import type { NpmMeta } from '../types.js';
 import { getManifestEntry, type PackageVersionManifest } from '../package-version-manifest.js';
 import { RegistryDiskCache, type RegistryCacheOptions } from '../utils/registry-disk-cache.js';
+import { redactForDisplay } from '../utils/redact.js';
 
 export { NPM_META_TTL_MS, npmMetaCacheDir, vibgrateUserCacheDir, REGISTRY_META_TTL_MS, registryMetaCacheDir } from '../utils/user-cache.js';
 export type { RegistryCacheOptions as NpmCacheOptions } from '../utils/registry-disk-cache.js';
@@ -119,6 +120,16 @@ export function parseNpmMetaPayload(data: unknown): NpmMeta {
   return { latest, stableVersions: stable, latestStableOverall, license, ...(releaseDates ? { releaseDates } : {}) };
 }
 
+/**
+ * `npm view` failure text. Stderr is kept so the code is visible, after
+ * tokens, authorization headers, and credential-bearing URLs are removed.
+ */
+export function formatNpmViewFailure(args: readonly string[], code: number | null, stderr: string): string {
+  const detail = redactForDisplay(stderr).trim();
+  const suffix = detail ? `: ${detail}` : '';
+  return `npm view ${args.join(' ')} failed (code=${code})${suffix}`;
+}
+
 async function npmViewJson(args: string[], cwd: string): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const child = spawn(NPM_COMMAND, ['view', ...args, '--json'], {
@@ -137,7 +148,7 @@ async function npmViewJson(args: string[], cwd: string): Promise<unknown> {
     child.on('error', reject);
     child.on('close', (code) => {
       if (code !== 0) {
-        reject(new Error(`npm view ${args.join(' ')} failed (code=${code}): ${err.trim()}`));
+        reject(new Error(formatNpmViewFailure(args, code, err)));
         return;
       }
       const trimmed = out.trim();

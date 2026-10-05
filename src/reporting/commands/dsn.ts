@@ -5,6 +5,7 @@ import chalk from 'chalk';
 import { writeTextFile } from '../utils/fs.js';
 import { findGitRoot, ensureGitignored } from '../utils/gitignore.js';
 import { availableRegionIds, resolveIngestHost } from '../regions.js';
+import { redactForDisplay } from '../../core-open/utils/redact.js';
 
 // Re-exported for backwards compatibility with existing importers/tests.
 export { resolveIngestHost };
@@ -62,12 +63,12 @@ async function provisionDsn(
 
     if (!response.ok) {
       const result = await response.json() as { error?: string };
-      return { success: false, error: result.error || `HTTP ${response.status}` };
+      return { success: false, error: redactForDisplay(result.error || `HTTP ${response.status}`) };
     }
 
     return { success: true };
   } catch (e: unknown) {
-    return { success: false, error: e instanceof Error ? e.message : String(e) };
+    return { success: false, error: redactForDisplay(e instanceof Error ? e.message : String(e)) };
   }
 }
 

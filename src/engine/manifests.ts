@@ -206,18 +206,26 @@ function ingestGoMod(
   });
 
   // require blocks and single-line requires (ignore replace/exclude).
+  // A require with no `v` version — or a range instead of one — is still a
+  // direct dependency. The graph has no version field; dropping the line
+  // would hide the module. The version is not invented here.
   const reqNames = new Set<string>();
-  const block = /require\s*\(([\s\S]*?)\)/g;
-  let bm: RegExpExecArray | null;
-  while ((bm = block.exec(text)) !== null) {
-    for (const line of bm[1].split('\n')) {
-      const m = /^\s*(\S+)\s+v\S+/.exec(line);
-      if (m && !line.trim().startsWith('//')) reqNames.add(m[1]);
+  let inRequire = false;
+  for (const raw of text.split(/\r?\n/)) {
+    const trimmed = raw.trim();
+    if (!inRequire) {
+      if (/^require\s*\(/.test(trimmed) && !/^require\s*\(.*\)\s*$/.test(trimmed)) {
+        inRequire = true;
+        continue;
+      }
+      if (!trimmed.startsWith('require ') && !/^require\s*\(/.test(trimmed)) continue;
+    } else if (trimmed === ')') {
+      inRequire = false;
+      continue;
     }
+    const name = goRequireModule(trimmed);
+    if (name) reqNames.add(name);
   }
-  const single = /^\s*require\s+(\S+)\s+v\S+/gm;
-  let sm: RegExpExecArray | null;
-  while ((sm = single.exec(text)) !== null) reqNames.add(sm[1]);
 
   let n = 0;
   for (const name of [...reqNames].sort()) {
@@ -226,6 +234,46 @@ function ingestGoMod(
     n++;
   }
   return n;
+}
+
+/**
+ * Module path from a `require` line. Accepts `path v1.2.3`, a bare `path`
+ * (version inherited or not yet chosen), and `path >=1.2.0` (a range is not
+ * a Go module version). Returns null for comments, `replace`/`exclude`, and
+ * the `go`/`module` lines.
+ */
+function goRequireModule(line: string): string | null {
+  const trimmed = line.trim();
+  if (!trimmed || trimmed.startsWith('//')) return null;
+  let body = trimmed;
+  const wrapped = /^require\s*\((.*)\)\s*$/.exec(body);
+  if (wrapped) body = wrapped[1].trim();
+  else if (body.startsWith('require ')) body = body.slice('require '.length).trim();
+  const code = body.replace(/\/\/.*$/, '').trim();
+  if (!code || code === '(' || code === ')' || code.includes('=>')) return null;
+  const parts = code.split(/\s+/);
+  const name = parts[0];
+  if (!name) return null;
+  const rest = parts.slice(1);
+  const concrete = rest.length === 1 && /^v\S+$/.test(rest[0]) && !/[\^~*<>|]/.test(rest[0]);
+  if (concrete) return name;
+  if (!looksLikeGoModule(name)) return null;
+  return name;
+}
+
+function looksLikeGoModule(token: string): boolean {
+  if (
+    token === 'require' ||
+    token === 'module' ||
+    token === 'go' ||
+    token === 'replace' ||
+    token === 'exclude' ||
+    token === 'retract' ||
+    token === 'toolchain'
+  ) {
+    return false;
+  }
+  return token.includes('.') || token.includes('/');
 }
 
 /** `${groupId}:${artifactId}`, Maven's own coordinate format — matches how a reader would look it up. */

@@ -1,0 +1,41 @@
+{
+  "projects": [
+    {
+      "name": "web",
+      "path": "apps/web",
+      "dependencies": [
+        {
+          "package": "alpha-bad",
+          "raw": "NotARealLicense-9",
+          "sourcePath": "apps/web/package.json"
+        },
+        {
+          "package": "beta-ok",
+          "raw": "MIT",
+          "sourcePath": "apps/web/package.json"
+        }
+      ]
+    },
+    {
+      "name": "api",
+      "path": "apps/api",
+      "dependencies": [
+        {
+          "package": "gamma-bad",
+          "raw": "Also-Not-SPDX"
+        }
+      ]
+    },
+    {
+      "name": "root",
+      "path": ".",
+      "dependencies": [
+        {
+          "package": "delta-bad",
+          "raw": "Totally-Made-Up-License",
+          "sourcePath": ".\\package.json"
+        }
+      ]
+    }
+  ]
+}

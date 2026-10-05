@@ -124,12 +124,23 @@ describe('pushReceipt', () => {
   });
 
   it('returns a bounded failure detail for a non-2xx response instead of throwing', async () => {
-    const fetchImpl = (async () => new Response('x'.repeat(500), { status: 403 })) as unknown as typeof fetch;
+    const fetchImpl = (async () => new Response('not-authorized '.repeat(40), { status: 403 })) as unknown as typeof fetch;
     const result = await pushReceipt(dsn, body(), fetchImpl);
     expect(result.ok).toBe(false);
     expect(result.status).toBe(403);
     expect(result.host).toBe('ingest.example.test');
     expect(result.detail).toHaveLength(200);
+  });
+
+  it('strips a token and a credential URL from an upload error body', async () => {
+    const token = 'npm' + '_' + 'e'.repeat(20);
+    const fetchImpl = (async () =>
+      new Response(`Authorization: Bearer ${token} https://ci:${token}@ingest.example/v1`, { status: 401 })) as unknown as typeof fetch;
+    const result = await pushReceipt(dsn, body(), fetchImpl);
+    expect(result.ok).toBe(false);
+    expect(result.detail ?? '').not.toContain(token);
+    expect(result.detail).toContain('[REDACTED]');
+    expect(result.detail).toContain('https://ingest.example/v1');
   });
 
   it('surfaces a network failure as a CliError naming the host, never the secret', async () => {

@@ -117,12 +117,11 @@ export interface DependencyLicense {
   /** 0–1 confidence in the captured signal. */
   confidence: number;
   /**
-   * Repo-relative path (forward slashes) of the evidence file — the manifest
-   * that declared `license`, or a LICENSE / LICENCE / COPYING / NOTICE file —
-   * when the scan has one. Omitted for registry-only signals, which have no
-   * local file to open.
+   * Repo-relative path of the file the declaration was read from, when the
+   * scanner recorded one. Forward slashes, no absolute path. Omitted when
+   * unknown — absent is not an empty string.
    */
-  path?: string;
+  sourcePath?: string;
 }
 
 // ── Per-dependency analysis row ──
@@ -218,12 +217,6 @@ export interface ProjectScan {
   packageManager?: string;
   frameworks: DetectedFramework[];
   dependencies: DependencyRow[];
-  /**
-   * License declared by this project, when a manifest `license` field or a
-   * LICENSE / LICENCE / COPYING / NOTICE file is present. `path` is that
-   * evidence file. Absent when nothing was declared.
-   */
-  license?: DependencyLicense;
   dependencyAgeBuckets: {
     current: number;
     oneBehind: number;
@@ -687,6 +680,29 @@ export interface Finding {
   details?: Record<string, unknown>;
 }
 
+/**
+ * One drift finding that already appears in the baseline snapshot.
+ * `id` is a content hash of rule and location (32 lowercase hex characters),
+ * so the same finding keeps the same id across scans.
+ */
+export interface BaselineSuppression {
+  ruleId: string;
+  location: string;
+  id: string;
+}
+
+/**
+ * Audit of a `--baseline` comparison. Present only when the baseline file was
+ * read. `suppressed` is sorted by ruleId, then location, then id.
+ * Matching findings stay in {@link ScanArtifact.findings}; this block is the
+ * record, so a match is never dropped from the document without a trace.
+ */
+export interface BaselineComparison {
+  compared: true;
+  suppressedCount: number;
+  suppressed: BaselineSuppression[];
+}
+
 // ── Version control info ──
 
 export type VcsType = 'git' | 'unknown';
@@ -757,35 +773,6 @@ export interface BillingSummary {
   billableProjects: number;
 }
 
-/**
- * One current finding that was already present in the compared baseline.
- * The full finding (message, level, details) stays in `findings`; this is
- * the auditable identifier, not a replacement for that row.
- */
-export interface BaselineSuppressedFinding {
-  ruleId: string;
-  /** Same `location` string as the finding in `findings`. */
-  location: string;
-  /**
-   * 32 lowercase hex characters. Derived from the finding's rule, level,
-   * location, and message, so the same finding always yields the same id
-   * and a changed message yields a different one.
-   */
-  id: string;
-}
-
-/**
- * Additive record written when `vg scan --baseline` reads a baseline file.
- * Omitted entirely when no baseline was compared. `suppressed` is sorted by
- * `ruleId`, then `location`, then `id`.
- */
-export interface BaselineComparison {
-  compared: true;
-  /** Number of entries in `suppressed`. */
-  suppressedCount: number;
-  suppressed: BaselineSuppressedFinding[];
-}
-
 // ── Full scan artifact (stable schema) ──
 
 export interface ScanArtifact {
@@ -800,16 +787,14 @@ export interface ScanArtifact {
   drift: DriftScore;
   findings: Finding[];
   /**
-   * Repo-relative path of the baseline file this scan was compared against,
-   * or the file's basename when it lives outside the repo. Absent when
-   * `--baseline` was not used or the file could not be read.
+   * Repo-relative path (or basename, when the file is outside the repo) of the
+   * `--baseline` snapshot this scan compared against.
    */
   baseline?: string;
   /**
-   * Which current findings were already in the baseline. Those findings stay
-   * in `findings`; this block is the trace that they matched. Absent when no
-   * baseline was compared. A file that was read and matched nothing is still
-   * present, with `suppressedCount: 0`.
+   * Audit of drift findings that already appear in that snapshot (same rule
+   * and location). Omitted when no baseline was compared — absent is not a
+   * count of zero. See {@link BaselineComparison}.
    */
   baselineComparison?: BaselineComparison;
   delta?: number;

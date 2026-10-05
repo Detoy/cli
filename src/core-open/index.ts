@@ -69,13 +69,6 @@ export {
 export { formatText } from './formatters/text.js';
 export { formatSarif } from './formatters/sarif.js';
 export { formatMarkdown } from './formatters/markdown.js';
-export {
-  compareBaselineFindings,
-  driftFindingId,
-  baselineSuppressionSummary,
-  baselinedIdSet,
-} from './baseline-comparison.js';
-export type { DriftFindingIdentity } from './baseline-comparison.js';
 
 // ── Scanners (fact collection) ───────────────────────────────────────────────
 export { scanNodeProjects } from './scanners/node-scanner.js';
@@ -271,6 +264,13 @@ export type { RepoFingerprint } from './utils/repo-fingerprint.js';
 
 // ── Package-version manifest (offline/privacy mode) ───────────────────────
 export { loadPackageVersionManifest } from './package-version-manifest.js';
+
+// ── Baseline suppression audit ───────────────────────────────────────────────
+export {
+  baselineSuppressionId,
+  baselineSuppressionLabel,
+  compareBaselineFindings,
+} from './baseline-suppressions.js';
 
 // ── Open base scan runner ────────────────────────────────────────────────────
 export { runCoreScan } from './run-core-scan.js';
