@@ -599,6 +599,8 @@ vg sbom delta  --from .vibgrate/baseline.json --to .vibgrate/scan_result.json --
 vg vex                          # generate an OpenVEX document for attestation
 ```
 
+Each exported component is labeled `direct` or `transitive` (CycloneDX property `vibgrate:scope`, SPDX annotation `scope=`). Production, development, and optional manifest sections are not copied into those fields. The mapping, a fixture, and the ecosystems where that scope is omitted: [Production, development, and optional scope](./DOCS.md#production-development-and-optional-scope).
+
 ## Review a change
 
 **Vibgrate Review** reads the current change against the declared architecture and security-control policy. It reports change integrity, not a proof of security.

@@ -20,6 +20,7 @@ For a quick overview, see the [README](./README.md). This document covers everyt
   - [vg report](#vg-report)
   - [vg review](#vg-review)
   - [vg sbom](#vg-sbom)
+    - [Production, development, and optional scope](#production-development-and-optional-scope)
   - [vg scan](#vg-scan)
     - [Offline scan with a package-version manifest](#offline-scan-with-a-package-version-manifest)
     - [Vulnerabilities and exposure attribution](#vulnerabilities-and-exposure-attribution)
@@ -1051,7 +1052,10 @@ in the manifest: it reads `package-lock.json` / `pnpm-lock.yaml` / `yarn.lock` (
 pnpm, and yarn) from `--root` (defaults to the current directory) and folds every
 transitive package in alongside the directly-scanned ones. Each component carries a
 `vibgrate:scope` property (`direct` or `transitive`) so consumers can still tell the
-two apart. Pass `--no-transitive` to report only the manifest-declared dependencies,
+two apart. That property records where the row came from. Production, development,
+and optional are a separate question:
+[Production, development, and optional scope](#production-development-and-optional-scope).
+Pass `--no-transitive` to report only the manifest-declared dependencies,
 matching pre-existing output.
 
 Every component also carries a [purl](https://github.com/package-url/purl-spec)
@@ -1109,6 +1113,180 @@ vg sbom export --no-transitive --format cyclonedx --out sbom-direct.cdx.json
 absent, and so is the dependency graph. A consumer that filters to
 `vibgrate:scope=direct` sees the same gap: other installed versions of that
 package are still in the full document, marked `transitive`.
+
+#### Production, development, and optional scope
+
+`vibgrate:scope` is `direct` or `transitive`. It is the only scope field either
+exporter writes. A production dependency, a development dependency, and an
+optional dependency that the scan kept all leave as `direct`, with the same
+property names. The CycloneDX component field `scope` (`required`, `optional`,
+`excluded`) is omitted. SPDX `relationships[].relationshipType` is `DEPENDS_ON`
+when a lockfile edge graph exists, and the `relationships` array is omitted
+when it does not. `DEV_DEPENDENCY_OF`, `OPTIONAL_DEPENDENCY_OF`,
+`TEST_DEPENDENCY_OF`, and `BUILD_DEPENDENCY_OF` are omitted.
+
+The scan artifact still has the manifest section, on
+`projects[].dependencies[].section`: `dependencies`, `devDependencies`,
+`peerDependencies`, or `optionalDependencies`, for the ecosystems whose scanner
+records one. Export drops `section`. It is not a CycloneDX property and it is
+not part of the SPDX annotation.
+
+A full export walkthrough is tracked in
+[issue #151](https://github.com/vibgrate/cli/issues/151). This section is the
+scope contract only. The rows below are what the manifest and lockfile on
+disk produce. The example needs no registry token.
+
+| Manifest signal | CycloneDX | SPDX |
+| --- | --- | --- |
+| npm `package.json` `dependencies` | Component, `properties` entry `vibgrate:scope` = `direct`. Component `scope` omitted. Root `dependencies` entry (`ref` `vibgrate-root`) lists the purl in `dependsOn`. | Package annotation `comment` contains `scope=direct`. A `relationships` entry has `spdxElementId` `SPDXRef-DOCUMENT`, `relationshipType` `DEPENDS_ON`, and `relatedSpdxElementId` pointing at that package. |
+| npm `devDependencies` | Same `direct` component. Component `scope` omitted. The root `dependsOn` list omits it. The component's own `dependsOn` still lists lockfile children of that package. | `scope=direct`. No `SPDXRef-DOCUMENT` `DEPENDS_ON` row for it. A child is `DEPENDS_ON` from the dev package's `SPDXID`. |
+| npm `optionalDependencies` | `direct`. Component `scope` omitted. Included in the root `dependsOn` list, same as a production dependency. | `scope=direct`. `DEPENDS_ON` from `SPDXRef-DOCUMENT`. `OPTIONAL_DEPENDENCY_OF` omitted. |
+| npm `peerDependencies` | `direct`. Included in the root `dependsOn` list. | `scope=direct`. `DEPENDS_ON` from `SPDXRef-DOCUMENT`. |
+| npm `package-lock.json` package flags `dev`, `optional`, `peer` (v1 nested entries and v2/v3 `packages` entries) | Unread. No property records them. A `dev: true` package stays in the document. | Unread. |
+| npm lock package whose `name@version` is not a scan row | `vibgrate:scope` = `transitive`. | Annotation `scope=transitive`. `project=` is the scan root directory name. |
+| pnpm `package.json` `dependencies`, `devDependencies`, `optionalDependencies`, `peerDependencies` (lockfile is `pnpm-lock.yaml`) | The scan records that `package.json` section. Export marks every scanned row `direct`. Importer blocks in the lockfile are not read for scope. The `dependencies` array is omitted. | `scope=direct`. The `relationships` array is omitted. |
+| pnpm `packages:` entry not in the scan | `transitive`. `dependencies` omitted. | `scope=transitive`. `relationships` omitted. |
+| `yarn.lock` entry | Same as pnpm: scanned `package.json` rows are `direct`, other lockfile packages are `transitive`, and nested `dependencies:` keys are not edges. `dependencies` omitted. | `scope=direct` or `scope=transitive`. `relationships` omitted. |
+| Cargo.toml `[dependencies]` | `direct`. `dependencies` omitted (`Cargo.lock` dependency lists are not edges). | `scope=direct`. `relationships` omitted. |
+| Cargo.toml `optional = true` | Still `direct`. The scan row's `section` is `dependencies`. Component `scope` omitted. | `scope=direct`. |
+| Cargo.toml `[dev-dependencies]` | Left out of the scan. The `Cargo.lock` copy is a component with `vibgrate:scope` = `transitive`. | `scope=transitive`. |
+| Cargo.toml `[build-dependencies]` | Not parsed. The `Cargo.lock` copy is `transitive`. | `scope=transitive`. |
+| `--no-transitive` | Lockfile-only components omitted, and the `dependencies` array omitted. Scan rows stay, including npm dev, optional, and peer, all `direct`. | Same rows. `relationships` omitted. |
+
+The root `dependsOn` / `DEPENDS_ON` rows in the npm lines above are
+`package-lock.json` v2/v3. A v1 lockfile still lists the same components and
+still ignores `dev` / `optional`, and it omits `dependencies` and
+`relationships` (v1 has no resolved edges). When `package-lock.json` and
+`pnpm-lock.yaml` (or `yarn.lock`) are both present, the npm lockfile supplies
+the components. pnpm and yarn are used only when no npm lockfile graph is
+present.
+
+**Example.** A directory `scope-fixture` with these two files is enough. The
+package names are local placeholders, so `vg scan --offline` does not contact a
+registry and needs no token.
+
+```json
+{
+  "name": "scope-fixture",
+  "version": "1.0.0",
+  "dependencies": { "prod-lib": "1.0.0" },
+  "devDependencies": { "dev-lib": "1.0.0" },
+  "optionalDependencies": { "opt-lib": "1.0.0" },
+  "peerDependencies": { "peer-lib": "1.0.0" }
+}
+```
+
+`package-lock.json` (lockfileVersion 3) lists `node_modules/prod-lib` (depends
+on `trans-lib@2.0.0`), `node_modules/dev-lib` (`"dev": true`, depends on
+`dev-trans@3.0.0`), `node_modules/dev-trans` (`"dev": true`),
+`node_modules/opt-lib` (`"optional": true`), `node_modules/peer-lib`
+(`"peer": true`), and `node_modules/trans-lib`. The root package entry repeats
+the four `package.json` sections.
+
+```bash
+vg scan ./scope-fixture --offline --no-graph
+vg sbom export --in ./scope-fixture/.vibgrate/scan_result.json \
+  --root ./scope-fixture --format cyclonedx --out sbom.cdx.json
+vg sbom export --in ./scope-fixture/.vibgrate/scan_result.json \
+  --root ./scope-fixture --format spdx --out sbom.spdx.json
+```
+
+An offline scan leaves every direct row at drift `unknown`, so those rows sort
+by package name. Lockfile-only rows follow, sorted by name then version. SPDX
+`SPDXID` values are those positions (`SPDXRef-Package-1` onward). A later scan
+that fills in drift can reorder the direct rows and renumber SPDX ids. The
+`vibgrate:scope` values and the root `dependsOn` set stay the same.
+
+CycloneDX component for the dev dependency (the other three direct components
+use the same fields, with their own name and purl):
+
+```json
+{
+  "type": "library",
+  "bom-ref": "pkg:npm/dev-lib@1.0.0",
+  "name": "dev-lib",
+  "version": "1.0.0",
+  "purl": "pkg:npm/dev-lib@1.0.0",
+  "properties": [
+    { "name": "vibgrate:project", "value": "scope-fixture" },
+    { "name": "vibgrate:currentSpec", "value": "1.0.0" },
+    { "name": "vibgrate:drift", "value": "unknown" },
+    { "name": "vibgrate:majorsBehind", "value": "unknown" },
+    { "name": "vibgrate:scope", "value": "direct" }
+  ]
+}
+```
+
+There is no `scope` key on the component. `dev-trans` and `trans-lib` are the
+same shape with `vibgrate:scope` `transitive` and `vibgrate:project` set to the
+scan root directory name. The root edge list is:
+
+```json
+{ "ref": "vibgrate-root", "dependsOn": ["pkg:npm/opt-lib@1.0.0", "pkg:npm/peer-lib@1.0.0", "pkg:npm/prod-lib@1.0.0"] }
+```
+
+`pkg:npm/dev-lib@1.0.0` is absent there. Its own entry is
+`dependsOn: ["pkg:npm/dev-trans@3.0.0"]`, and `prod-lib` depends on
+`pkg:npm/trans-lib@2.0.0`.
+
+The SPDX annotation `comment` for `dev-lib` is
+`project=scope-fixture; drift=unknown; majorsBehind=unknown; scope=direct`.
+Relationship types are only `DEPENDS_ON`: `SPDXRef-DOCUMENT` depends on
+`opt-lib`, `peer-lib`, and `prod-lib`; `dev-lib`'s package id depends on
+`dev-trans`; `prod-lib`'s package id depends on `trans-lib`.
+
+`--no-transitive` keeps `dev-lib`, `opt-lib`, `peer-lib`, and `prod-lib`, all
+`direct`, and omits `dependencies` / `relationships` plus `dev-trans` and
+`trans-lib`.
+
+The same commands on a Cargo tree (`[dependencies]` `prod_lib = "1.0.0"` and
+`opt_lib = { version = "1.0.0", optional = true }`, `[dev-dependencies]`
+`dev_lib`, `[build-dependencies]` `build_lib`, and a `Cargo.lock` that also
+lists `trans_lib` and the package itself) export `opt_lib` and `prod_lib` as
+`direct`. `build_lib`, `dev_lib`, `trans_lib`, and the package's own lockfile
+entry are `transitive`. Both formats omit `dependencies` / `relationships`.
+`--no-transitive` keeps only `opt_lib` and `prod_lib`.
+
+**Gaps.** The current exporter leaves these signals out of the SBOM. The
+manifest or lockfile may still contain them.
+
+- No ecosystem writes CycloneDX component `scope`, or an SPDX relationship type
+  other than `DEPENDS_ON`.
+- npm lockfile booleans `dev`, `optional`, and `peer` are not read. Root edges
+  come from the root entry's `dependencies`, `optionalDependencies`, and
+  `peerDependencies` keys merged into one list. `devDependencies` is not one of
+  those keys.
+- pnpm importer sections and yarn.lock dependency keys are not turned into
+  edges. Dev versus production is only the scan row's `section`, and export
+  drops that.
+- `--no-transitive` keeps scan rows and drops the dependency graph.
+  npm dev, optional, and peer rows stay, all `direct`. Rust dev and build
+  crates are absent, because they entered only through `Cargo.lock`.
+- Python: a Pipfile `[dev-packages]` entry is stored as `section`
+  `dependencies` and exported `direct`. Poetry dependency groups and
+  `[tool.poetry.group.*.dependencies]` are not scanned; a package that appears
+  only there is `transitive` when `poetry.lock` or `uv.lock` lists it. Every
+  `[[package]]` is a component. Neither format gets edges.
+- PHP: `composer.json` `require-dev` is parsed and then left out of the scan.
+  `composer.lock`, including `packages-dev`, is not an SBOM component source,
+  so those packages are absent from the document.
+- Ruby: Gemfile `:development` and `:test` groups are `section`
+  `devDependencies` on the scan row, then exported `direct` with that section
+  dropped. `Gemfile.lock` is not an SBOM component source.
+- Java: Maven `<scope>test</scope>` and `<optional>true</optional>`, and
+  Gradle configurations such as `testImplementation`, are scanned as
+  `section` `dependencies` and exported `direct` with component `scope`
+  omitted. Maven and Gradle lockfiles are not an SBOM component source.
+- Go: modules marked `// indirect` are left out of the scan. `go.sum` adds
+  every module it lists that is not already a scan row, as `transitive`
+  (indirect modules, and modules that appear only in `go.sum`). There is no
+  development or optional field. `go.sum` contributes components and no edges.
+- Dart `dev_dependencies` and Elixir `only: :dev` / `only: :test` are left out
+  of the scan. `pubspec.lock` and `mix.lock` are not SBOM component sources, so
+  those packages are absent, same as PHP `require-dev`.
+- The SBOM lockfile reader is npm `package-lock.json`, then `pnpm-lock.yaml`,
+  then `yarn.lock`, then `Cargo.lock`, `go.sum`, `poetry.lock`, and `uv.lock`.
+  Any other lockfile does not add components.
 
 **Order.** Direct rows follow `projects` on the scan artifact, and within a
 project they follow that project's `dependencies` array. The npm scanner sorts
