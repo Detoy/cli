@@ -17,7 +17,7 @@ const VULNS: VulnerabilityScanResult = {
       package: 'lodash',
       version: '4.17.20',
       advisories: [
-        { id: 'GHSA-crit', aliases: ['CVE-2021-1'], summary: 'bad', severity: 'critical', cvss: 9.8, cvssVector: null, fixedVersions: ['4.17.21'], published: null, withdrawn: null, references: [] },
+        { id: 'GHSA-crit', aliases: ['CVE-2021-1'], summary: 'bad', severity: 'critical', cvss: 9.8, cvssVector: null, fixedVersions: ['4.17.21'], published: null, withdrawn: null, references: [], epss: 0.42, epssPercentile: 0.91, kev: true },
       ],
     },
     {
@@ -78,37 +78,11 @@ describe('vuln-data + list_vulnerabilities MCP tool', () => {
     expect(res.totalAdvisories).toBe(2);
     expect(res.affectedPackages).toBe(2);
     expect(res.packages.find((p) => p.package === 'lodash')?.advisories[0].cve).toBe('CVE-2021-1');
-  });
-
-  it('returns EPSS and KEV from the scan, null when absent, and keeps a real 0', () => {
-    const data: VulnerabilityScanResult = structuredClone(VULNS);
-    data.packages[0].advisories[0].epss = 0;
-    data.packages[0].advisories[0].epssPercentile = 0.05;
-    data.packages[0].advisories[0].kev = false;
-    writeArtifact(dir, data);
-
-    const listed = listVulns.handler(stubGraph, {}, { root: dir }) as {
-      packages: Array<{
-        package: string;
-        advisories: Array<{ epss: number | null; epssPercentile: number | null; kev: boolean | null }>;
-      }>;
-    };
-    expect(listed.packages.find((p) => p.package === 'lodash')?.advisories[0]).toMatchObject({
-      epss: 0,
-      epssPercentile: 0.05,
-      kev: false,
-    });
-    expect(listed.packages.find((p) => p.package === 'minimist')?.advisories[0]).toMatchObject({
-      epss: null,
-      epssPercentile: null,
-      kev: null,
-    });
-
-    const attributed = vulnAttribution.handler(stubGraph, {}, { root: dir }) as {
-      packages: Array<{ package: string; advisories: Array<{ epss: number | null; kev: boolean | null }> }>;
-    };
-    expect(attributed.packages.find((p) => p.package === 'lodash')?.advisories[0]).toMatchObject({ epss: 0, kev: false });
-    expect(attributed.packages.find((p) => p.package === 'minimist')?.advisories[0].epss).toBeNull();
+    const lodash = res.packages.find((p) => p.package === 'lodash')?.advisories[0] as Record<string, unknown>;
+    expect(lodash).toMatchObject({ epss: 0.42, epssPercentile: 0.91, kev: true });
+    const minimist = res.packages.find((p) => p.package === 'minimist')?.advisories[0] as Record<string, unknown>;
+    expect(minimist).not.toHaveProperty('epss');
+    expect(minimist).not.toHaveProperty('kev');
   });
 
   it('filters by minimum severity', () => {

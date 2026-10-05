@@ -523,23 +523,6 @@ export interface VulnerabilityAdvisory {
    * the score was parsed and when no vector was supplied.
    */
   cvssDiagnostic?: CvssDiagnostic;
-  /**
-   * FIRST EPSS probability of exploitation within 30 days, from 0 to 1.
-   * `null` when the advisory source did not carry a score. A value of 0 is a
-   * real score. Copied from data the scan already has (the advisory body or a
-   * `--package-manifest` bundle). The scan does not fetch EPSS.
-   */
-  epss?: number | null;
-  /**
-   * EPSS percentile, from 0 to 1, when the source carried one. `null` when it
-   * did not. A value of 0 is a real percentile.
-   */
-  epssPercentile?: number | null;
-  /**
-   * CISA Known Exploited Vulnerabilities flag when the source recorded one.
-   * `true` or `false` are explicit. `null` means the source did not say.
-   */
-  kev?: boolean | null;
   /** First fixed version per affected range (empty when no fix is published). */
   fixedVersions: string[];
   /** ISO-8601 publish date, when known. */
@@ -548,6 +531,23 @@ export interface VulnerabilityAdvisory {
   withdrawn: string | null;
   /** Advisory reference URLs. */
   references: string[];
+  /**
+   * FIRST EPSS probability of exploitation within 30 days (0–1). Present only
+   * when the advisory data used for the scan already carried it. Omitted when
+   * absent — never `0` as a stand-in for missing.
+   */
+  epss?: number;
+  /**
+   * EPSS percentile (0–1) for {@link epss}. Present only when the advisory data
+   * already carried it. Omitted when absent.
+   */
+  epssPercentile?: number;
+  /**
+   * Whether the advisory data marks this CVE in the CISA Known Exploited
+   * Vulnerabilities catalog. Omitted when the source did not say. `false` is
+   * emitted only when the data explicitly says it is not listed.
+   */
+  kev?: boolean;
   /** Affected version ranges for this package (used to attribute exposure over git history). */
   affectedRanges?: AffectedRange[];
   /** Explicit affected versions for this package, complementing ranges. */

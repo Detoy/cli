@@ -14,7 +14,13 @@ backward compatible.
 
 ### Added
 
-- **`vg scan --vulns` JSON includes EPSS and KEV when the advisory already has them.** Each advisory in `extended.vulnerabilities` carries `epss` (0–1), `epssPercentile` (0–1), and `kev` when those signals are present on the advisory body or in a `--package-manifest` bundle. A missing signal is `null`, and a real score of `0` is kept. The scan does not fetch EPSS, including in offline / `--package-manifest` mode. Text and SARIF findings are unchanged.
+- **`vg scan --vulns` JSON includes EPSS and KEV when the advisory data already has them.** An advisory in `extended.vulnerabilities` carries `epss`, `epssPercentile`, and `kev` when the OSV document or the `--package-manifest` bundle already carried them. A missing score is omitted, never written as `0` or `false`; a real `0` is kept. Offline and manifest scans do not contact an EPSS service. Text and SARIF findings are unchanged.
+
+- **`vg scan --junit <file>` writes a deterministic JUnit XML report.**
+  CI test reporters (GitLab, Azure DevOps, Jenkins) can publish it beside
+  JSON or SARIF. One testcase per drift finding, plus architecture, security,
+  and drift-budget gates when those gates ran. Names and order are stable,
+  and the file has no wall-clock timestamp. The process exit code is unchanged.
 
 - **`vg sbom export` now reports the full resolved dependency tree, not just
   direct manifest deps.** SBOM export previously flattened only the packages

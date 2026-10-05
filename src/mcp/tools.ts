@@ -18,7 +18,7 @@ import { repositoryIdFromRoot } from '../runtime/paths.js';
 import { GraphLoadError, parseGraph } from '../engine/serialize.js';
 import { loadVulnerabilities, filterBySeverity, resolvePackageTarget, openFixableAdvisories } from './vuln-data.js';
 import { attributedInventory } from './attribution.js';
-import { computeUpgradeImpact, exploitabilityFields, getChangelogSignals, type VulnSeverity } from '../core-open/index.js';
+import { computeUpgradeImpact, getChangelogSignals, type VulnSeverity } from '../core-open/index.js';
 import { discoverModels } from '../engine/models.js';
 import { assessProposedChange } from '../review/mcp-assess.js';
 import { FREE_PACK } from '../grounding/pack.js';
@@ -776,8 +776,7 @@ export const TOOLS: VgTool[] = [
   },
   {
     name: 'vuln_attribution',
-    description:
-      'Who introduced each open vulnerability, exposure windows, and CRA remediation metrics (MTTR, SLA breaches). Includes EPSS and KEV when the last `vg scan --vulns` recorded them (null when absent).',
+    description: 'Who introduced each open vulnerability, exposure windows, and CRA remediation metrics (MTTR, SLA breaches). Reads the last `vg scan --vulns`.',
     inputSchema: obj({ package: { type: 'string', description: 'restrict to one package' } }, []),
     handler: (_graph, args, ctx) => {
       const data = loadVulnerabilities(ctx.root);
@@ -798,7 +797,6 @@ export const TOOLS: VgTool[] = [
           severity: a.severity,
           cvss: a.cvss,
           ...(a.cvssDiagnostic ? { cvssDiagnostic: a.cvssDiagnostic } : {}),
-          ...exploitabilityFields(a),
           exposureDays: a.exposureDays ?? null,
           introduced: a.introduced ?? null,
           fixedVersions: a.fixedVersions,
@@ -809,8 +807,7 @@ export const TOOLS: VgTool[] = [
   },
   {
     name: 'list_vulnerabilities',
-    description:
-      'Known vulnerabilities from the last `vg scan --vulns`: id/CVE, severity, CVSS, EPSS and KEV when the scan recorded them (null when absent), fixed version.',
+    description: 'Known vulnerabilities from the last `vg scan --vulns`: id/CVE, severity, CVSS, fixed version, and EPSS or known-exploited fields when that scan already recorded them.',
     inputSchema: obj(
       { severity: { type: 'string', enum: ['low', 'moderate', 'high', 'critical'], description: 'minimum severity' } },
       [],
@@ -840,9 +837,11 @@ export const TOOLS: VgTool[] = [
             severity: a.severity,
             cvss: a.cvss,
             ...(a.cvssDiagnostic ? { cvssDiagnostic: a.cvssDiagnostic } : {}),
-            ...exploitabilityFields(a),
             fixedVersions: a.fixedVersions,
             summary: a.summary,
+            ...(a.epss != null ? { epss: a.epss } : {}),
+            ...(a.epssPercentile != null ? { epssPercentile: a.epssPercentile } : {}),
+            ...(a.kev != null ? { kev: a.kev } : {}),
           })),
         })),
       };
