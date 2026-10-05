@@ -3193,6 +3193,8 @@ vg scan --vulns --offline --package-manifest ./package-versions.json --format sa
 
 Read `runs[0].results`. One advisory record with several aliases is one object in that array.
 
+A declared license names its evidence file in JSON and SARIF when `vg scan` has one. A `package.json` `license` or `licenses` field is that file; otherwise the first existing `LICENSE`, `LICENCE`, `COPYING`, or `NOTICE` file in the project directory (also `.md` and `.txt`, in that order) is. The path is `projects[].license.path`. Text that does not resolve as SPDX is a `vibgrate/license-parse-failed` finding: JSON sets `location` and `details.path` to the repo-relative path, and SARIF uses the same path as `physicalLocation.artifactLocation.uri` and `properties.path`. The license body is not copied into the artifact. An explicit `NOASSERTION` is not a failure. A registry license string has no local file, so the finding stays on the dependency and `location` remains the project path, without `details.path`. Those file findings are sorted by path.
+
 Test reporters that ingest JUnit can take a companion file from the same scan. See [JUnit](#junit). The process exit code is unchanged either way; see [Exit Codes](#exit-codes).
 
 ### Markdown

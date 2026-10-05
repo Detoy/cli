@@ -412,6 +412,7 @@ One scan gives you:
 - **Score breakdown** — runtime, frameworks, dependencies, EOL
 - **Per-project detail** across Node.js/TypeScript, .NET, Python, and Java
 - **Actionable findings** ranked by likely impact
+- **License evidence paths** in JSON and SARIF (`projects[].license.path`, finding `location`). A manifest `license` field, or a LICENSE / NOTICE / COPYING file, is named when one exists. Text that does not parse as SPDX is a `vibgrate/license-parse-failed` finding at that path; the file body is not copied into the result
 - **[SBOM](https://vibgrate.com/glossary/sbom) export** (CycloneDX / SPDX)
 - **Known vulnerabilities** (opt in with `--vulns`) — severity, CVSS, the fixing version, EPSS when the advisory data already has it, and, in a git repo, who introduced them
 
