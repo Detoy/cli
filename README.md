@@ -620,6 +620,8 @@ vg review propose arch:<rule>:<path> --model forge --json --findings findings.js
 `vg review findings-from-diff` prints the deterministic `vg.review.findings.v1`
 document (blast-radius and architecture-policy `correctness` rows plus security
 scanners) and writes `.vibgrate/review-propose-handoff.json`.
+Field list, `kind` values, ordering, a real JSON example, and the failure text:
+[Findings JSON contract](./DOCS.md#findings-json-contract).
 `vg review propose <id>` attaches a PatchIR dry-run — `--model` is
 `relay:<slug>` (hosted Review) or `spark` | `flow` | `forge` (local Code Mode).
 Lookup is the current change set, then `--findings` JSON, then that last-run
