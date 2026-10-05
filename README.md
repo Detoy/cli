@@ -591,6 +591,8 @@ vg sbom delta  --from .vibgrate/baseline.json --to .vibgrate/scan_result.json --
 vg vex                          # generate an OpenVEX document for attestation
 ```
 
+Several versions of one package are separate components (`pkg:npm/left-pad@1.3.0` and `pkg:npm/left-pad@1.2.0`). The same name and version is one component. Ordering, `vibgrate:scope`, and the limits of the dependency graph are in [Multiple versions of the same package](./DOCS.md#multiple-versions-of-the-same-package).
+
 ## Review a change
 
 **Vibgrate Review** reads the current change against the declared architecture and security-control policy. It reports change integrity, not a proof of security.

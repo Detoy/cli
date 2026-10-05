@@ -20,6 +20,7 @@ For a quick overview, see the [README](./README.md). This document covers everyt
   - [vg report](#vg-report)
   - [vg review](#vg-review)
   - [vg sbom](#vg-sbom)
+    - [Multiple versions of the same package](#multiple-versions-of-the-same-package)
   - [vg scan](#vg-scan)
     - [Vulnerabilities and exposure attribution](#vulnerabilities-and-exposure-attribution)
   - [vg update](#vg-update)
@@ -1068,6 +1069,107 @@ SBOM also carries the resolved dependency graph: CycloneDX's top-level `dependen
 array, or SPDX `DEPENDS_ON` relationships. Where edges aren't resolvable, that section
 is left out entirely rather than shipping a graph that claims "no dependencies" when
 the truth is "not tracked".
+
+#### Multiple versions of the same package
+
+A component's identity is the package **name** plus the exact **version string**.
+Two versions of one package are two components. The same name and version string is
+one component: several scanned projects, a manifest plus a lockfile, or several
+install paths all collapse onto that single row. Project name and install path are
+metadata on the row. Package URL shape, including when a purl is omitted, is
+described [above](#vg-sbom); which versions are present is a separate question
+([#167](https://github.com/vibgrate/cli/issues/167)).
+
+The version string is the concrete version on the scan row (`resolvedVersion`, or
+the declared spec when that spec is already one version). A range, dist-tag, or
+protocol spec (`^1.2.3`, `latest`, `workspace:*`) is recorded as `unknown`, and
+every unresolved row for that name collapses to that one component. Go rows use
+the declared spec so the version matches `go.sum`.
+
+CycloneDX `bom-ref` is the purl when one can be built, and
+`vibgrate:<ecosystem>:<name>@<version>` otherwise. Each emitted component has its
+own `bom-ref`, because rows that share a name and version have already been
+collapsed. SPDX `SPDXID` is `SPDXRef-Package-N` for the Nth row, starting at 1.
+The purl is also the SPDX `externalRefs` PACKAGE-MANAGER locator. Match on the
+purl: it carries the version, so `pkg:npm/left-pad@1.3.0` and
+`pkg:npm/left-pad@1.2.0` stay distinct.
+
+`vibgrate:scope` is `direct` when a scanned manifest declares that name and
+version, and `transitive` when the row comes only from a lockfile. SPDX stores
+the same value as `scope=` on the package annotation. Direct rows are written
+first, so a lockfile copy of the same name and version stays `direct` and does
+not add a second component. A different version that appears only in the lockfile
+is its own row with `scope` `transitive`. On a lockfile-only row,
+`vibgrate:project` is the scan root recorded on the artifact; on a direct row it
+is the manifest project that supplied the row.
+
+`pnpm-lock.yaml`, `yarn.lock`, `Cargo.lock`, and `go.sum` use this same
+name-and-version component key, so two versions are two components there as
+well. The dependency-graph section is still only filled for npm
+`package-lock.json` v2/v3, as described above.
+
+Row order, for a given scan artifact and the lockfiles on disk:
+
+1. Direct rows, in scan-artifact order. `vg scan` sorts each project's
+   dependencies by drift severity (`major-behind`, `minor-behind`, `current`,
+   `unknown`), then by package name. The projects themselves follow discovery
+   order.
+2. Lockfile-only rows that are not already present, sorted by package name and
+   then by version string. That version sort is lexicographic, so `10.0.0`
+   comes before `2.0.0`.
+
+That order assigns SPDX IDs. CycloneDX `dependencies` lists the root
+(`bom-ref` `vibgrate-root`) and then each component in the same order. Each
+`dependsOn` list is sorted. A second `vg sbom export` of the same artifact and
+the same lockfiles repeats this order, these purls, and these SPDX IDs.
+
+`--no-transitive` skips lockfiles. The document is manifest rows only, still
+collapsed by name and version across projects, and it has no dependency graph.
+A version that exists only in a lockfile is left out.
+
+Example: an npm package whose `package.json` depends on `left-pad@^1.3.0` and
+`nested-holder@1.0.0`, with a v3 `package-lock.json` that resolves
+`node_modules/left-pad` to `1.3.0` and
+`node_modules/nested-holder/node_modules/left-pad` to `1.2.0`:
+
+```bash
+vg scan --offline --no-graph
+vg sbom export --format cyclonedx
+vg sbom export --format spdx
+```
+
+The export contains `pkg:npm/left-pad@1.3.0` (`vibgrate:scope` `direct`) and
+`pkg:npm/left-pad@1.2.0` (`transitive`). `--no-transitive` leaves only the
+`1.3.0` row. When `packages/a` and `packages/b` both declare `ms@2.1.3`, the
+export contains one `pkg:npm/ms@2.1.3` component. `vibgrate:project`, the drift
+fields, and `vibgrate:currentSpec` come from whichever of those projects appears
+first in the scan artifact. When they declare different versions (`2.1.3` and
+`2.1.2`), both versions are emitted and both are `direct`.
+
+Three limits of the current exporter are worth knowing before you match a
+graph against an install tree:
+
+- **Same version, several install paths.** npm can list one `name@version` at
+  more than one `packages` path — for example `node_modules/once` and
+  `node_modules/nested-holder/node_modules/once`, both `once@1.4.0`, depending
+  on different `wrappy` versions. The component is emitted once. The dependency
+  edges kept are those of the last `packages` entry for that key, in lockfile
+  order. A later entry replaces an earlier one. The other parent's dependency
+  stays in the component list with no `dependsOn` entry pointing at it.
+- **One dependency graph.** CycloneDX `dependencies` and SPDX `DEPENDS_ON`
+  describe a single lockfile: the root project's when that path has a lockfile,
+  otherwise the first project path in sorted order that has one. Components are
+  the union of every scanned project's lockfile, so a version that only a
+  sub-project resolves is still listed. Edges from a sub-project lockfile
+  appear when that lockfile is the one chosen for the graph.
+- **Project order across a scan.** Sub-project order in the scan artifact
+  follows directory discovery and can differ between two scans of the same
+  tree. That changes which project's metadata is kept for a shared name and
+  version, and it can swap the order of direct rows (and therefore SPDX IDs)
+  when projects declare different packages or different versions. The purl and
+  the CycloneDX `bom-ref` for a given name and version stay the same.
+  Lockfile-only ordering follows the lockfile. The chosen dependency graph
+  follows the sorted project paths.
 
 `vg sbom vex` is input-agnostic: it assembles a complete OpenVEX document from the statements you supply (`--from <file>` and/or repeatable `--statement`), so it works regardless of which scanner flagged the components. A zero-statement document is valid and honest — it asserts no known affected components.
 
