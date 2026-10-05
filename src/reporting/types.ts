@@ -1,5 +1,9 @@
 // ── Core types for Vibgrate CLI ──
 
+import type { BaselineComparison } from '../core-open/types.js';
+
+export type { BaselineComparison };
+
 export type DepSection = 'dependencies' | 'devDependencies' | 'peerDependencies' | 'optionalDependencies';
 
 export type RiskLevel = 'low' | 'moderate' | 'high' | 'none';
@@ -247,7 +251,13 @@ export interface ScanArtifact {
   solutions?: SolutionScan[];
   drift: DriftScore;
   findings: Finding[];
+  /** Repo-relative baseline path. See core-open `ScanArtifact.baseline`. */
   baseline?: string;
+  /**
+   * Auditable record of findings already present in the baseline. Findings
+   * stay in `findings`. Absent when no baseline was compared.
+   */
+  baselineComparison?: BaselineComparison;
   delta?: number;
   extended?: ExtendedScanResults;
   /** Scan wall-clock duration in milliseconds */

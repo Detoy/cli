@@ -1,0 +1,48 @@
+{
+  "baselineFindings": [
+    {
+      "ruleId": "vibgrate/runtime-lag",
+      "level": "warning",
+      "message": "Node.js runtime \"20\" is 2 major versions behind (latest: 24).",
+      "location": "services/api"
+    },
+    {
+      "ruleId": "vibgrate/dependency-rot",
+      "level": "error",
+      "message": "40% of dependencies are 2+ major versions behind in demo.",
+      "location": "package.json"
+    },
+    {
+      "ruleId": "vibgrate/dependency-major-lag",
+      "level": "error",
+      "message": "left-pad is 3 major versions behind (spec: 1.0.0, latest: 9.0.0).",
+      "location": "package.json"
+    }
+  ],
+  "currentFindings": [
+    {
+      "ruleId": "vibgrate/dependency-major-lag",
+      "level": "error",
+      "message": "left-pad is 3 major versions behind (spec: 1.0.0, latest: 9.0.0).",
+      "location": "package.json"
+    },
+    {
+      "ruleId": "vibgrate/dependency-rot",
+      "level": "warning",
+      "message": "10% of dependencies are 2+ major versions behind in demo.",
+      "location": "package.json"
+    },
+    {
+      "ruleId": "vibgrate/dependency-rot",
+      "level": "error",
+      "message": "40% of dependencies are 2+ major versions behind in demo.",
+      "location": "package.json"
+    },
+    {
+      "ruleId": "vibgrate/framework-major-lag",
+      "level": "warning",
+      "message": "react is 1 major version behind (current: 18.0.0, latest: 19.0.0).",
+      "location": "package.json"
+    }
+  ]
+}

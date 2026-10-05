@@ -77,9 +77,9 @@ export function registerWhy(program: Command): void {
           const cve = adv.aliases.find((a) => a.startsWith('CVE-'));
           const idLabel = cve && cve !== adv.id ? `${adv.id} (${cve})` : adv.id;
           const cvss = adv.cvss != null ? ` cvss ${adv.cvss}` : '';
-          const hint = fixAvailableHint({ fixedVersions: adv.fixedVersions });
-          const fixed = hint ? ` — ${hint}` : '';
-          info(`    ${severityTag(adv.severity)} ${idLabel}${c.dim(cvss)}${c.dim(fixed)}`);
+          const hint = fixAvailableHint(adv.fixedVersions);
+          const fixed = hint ? c.dim(` — ${hint}`) : '';
+          info(`    ${severityTag(adv.severity)} ${idLabel}${c.dim(cvss)}${fixed}`);
           if (adv.cvssDiagnostic) info(c.dim(`        ${adv.cvssDiagnostic.message}`));
           if (adv.introduced) {
             const exposure = adv.exposureDays != null ? `, ${adv.exposureDays}d exposed` : '';

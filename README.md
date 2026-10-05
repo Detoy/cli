@@ -422,8 +422,6 @@ One scan gives you:
 
 `vg scan --vulns` checks your installed dependencies against the public [OSV](https://vibgrate.com/glossary/osv) database and reports each known vulnerability with its severity, CVSS score, and the version that fixes it — as text, JSON, or SARIF. JSON also includes `epss`, `epssPercentile`, and `kev` when the advisory data already carried them; a missing score is omitted, never written as `0`. Offline and manifest scans do not contact an EPSS service. `--offline` with `--package-manifest` runs the same check from a local package-version manifest: no registry call, no OSV call, and no upload. The file shape, the exit code when the file is missing, and what offline mode skips are in [DOCS.md](./DOCS.md#offline-package-manifest).
 
-When a finding already carries a fixed version (`fixedVersions` or `fixedVersion`) or a remediation string, the default text report follows it with `fix available: …`. That line is omitted when the metadata is missing or empty — the report does not claim there is no fix, and it does not look one up.
-
 ```bash
 vg scan --vulns                 # drift score + known vulnerabilities
 vg scan --vulns --offline --package-manifest ./package-versions.json --format json --out scan.json
@@ -561,6 +559,7 @@ vg scan --baseline .vibgrate/baseline.json --drift-budget 40 --drift-worsening 5
 
 - `--drift-budget <score>` fails the build if drift exceeds your budget.
 - `--drift-worsening <percent>` fails the build if drift worsens by more than X% vs baseline.
+- Matched findings stay in the report. JSON records them in `baselineComparison` (`compared`, `suppressedCount`, `suppressed` sorted by `ruleId`, `location`, `id`), and SARIF puts those ids on `suppressions`. See [DOCS.md](./DOCS.md#what-a-baseline-comparison-records).
 - `--junit <file>` writes a deterministic JUnit XML summary of findings and those gates, next to `--format` (JSON or SARIF). The exit code is unchanged; see [DOCS.md](./DOCS.md#junit).
 
 ```bash

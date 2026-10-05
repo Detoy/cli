@@ -451,8 +451,6 @@ vg report [--in <file>] [--format md|text|json]
 | `--in`     | `.vibgrate/scan_result.json` | Input artifact file                    |
 | `--format` | `text`                       | Output format: `md`, `text`, or `json` |
 
-Text output follows each finding that already carries a fixed version or remediation with a `fix available: …` line. When that metadata is absent, the line is omitted — the report does not claim there is no fix.
-
 ---
 
 
@@ -1198,7 +1196,7 @@ vg scan [path] [--vulns] [--full] [--format text|json|sarif|md] [--out <file>] [
 | `--out <file>` | — | Write output to a file |
 | `--junit <file>` | — | Also write a deterministic JUnit XML report of findings and gates. See [JUnit](#junit). Does not replace `--format` |
 | `--fail-on <level>` | — | Exit with code 2 if findings at this level exist. `warn` / `error` gate on drift findings. `architecture-finding` (hard boundary violations) and `architecture-warning` (violations and warnings) gate on the architecture module's boundary findings, judged under the policy pack in force — `hexagonal-v1` unless `.vibgrate/architecture.toml`, `VIBGRATE_ARCHITECTURE_POLICY` or `vg build --policy` says `layered-v1`. The output names the pack whether the gate passes or fails; each failing row is `file:line  symbol  violation: … (rule)`. Pick the pack before turning this on: see [Architecture policy packs](./docs/architecture-policies.md) |
-| `--baseline <file>` | — | Compare against a previous baseline |
+| `--baseline <file>` | — | Compare against a previous baseline. Matched findings stay in the report and are listed in `baselineComparison` (see [Drift Baselines](#drift-baselines--fitness-functions)) |
 | `--changed-only` | — | Only scan changed files |
 | `--concurrency <n>` | `8` | Max concurrent npm registry calls |
 | `--drift-budget <score>` | — | Fitness gate: fail if drift score is above this budget |
@@ -1253,7 +1251,7 @@ Expected results:
 
 ### Vulnerabilities and exposure attribution
 
-`vg scan --vulns` matches your installed dependencies against the public OSV database and records each known vulnerability — advisory id and CVE, severity, CVSS, and the fixing version — in the scan artifact, as findings, and in SARIF. With `--offline`, the same check uses advisories carried in a [`--package-manifest`](#offline-package-manifest) file and does not call OSV. How those findings show up in SARIF when one issue is known under several ids is described under [Advisory aliases](#advisory-aliases): one result per advisory record, primary id on `properties.advisoryId`, the other ids on `properties.aliases`. The default text output follows a finding with `fix available: …` when that fixing version (or a remediation string) is already on the finding, and omits the line when it is not.
+`vg scan --vulns` matches your installed dependencies against the public OSV database and records each known vulnerability — advisory id and CVE, severity, CVSS, and the fixing version — in the scan artifact, as findings, and in SARIF. With `--offline`, the same check uses advisories carried in a [`--package-manifest`](#offline-package-manifest) file and does not call OSV. How those findings show up in SARIF when one issue is known under several ids is described under [Advisory aliases](#advisory-aliases): one result per advisory record, primary id on `properties.advisoryId`, the other ids on `properties.aliases`.
 
 Machine-readable JSON (`vg scan --format json`, and the `.vibgrate/scan_result.json` artifact) lists each advisory under `extended.vulnerabilities.packages[].advisories`. When the advisory data used for that scan already carries exploitability, the same object includes these optional fields:
 
@@ -1442,7 +1440,7 @@ Explain a dependency from git history: who added it, every version since, and an
 vg why <package>
 ```
 
-`vg why` reads your lockfile's history, so it works across npm / pnpm / yarn, pip / poetry, cargo, composer, bundler, go, pub, hex, NuGet, and Maven/Gradle projects. For Maven/Gradle the history comes from a resolved `gradle.lockfile`, or a `pom.xml`'s pinned direct-dependency versions (versions managed by a BOM/`dependencyManagement` aren't resolved). Open vulnerabilities and their introduction attribution come from your most recent `vg scan --vulns`. An advisory that already names a fixed version is marked `fix available: …`; when it does not, that clause is left off.
+`vg why` reads your lockfile's history, so it works across npm / pnpm / yarn, pip / poetry, cargo, composer, bundler, go, pub, hex, NuGet, and Maven/Gradle projects. For Maven/Gradle the history comes from a resolved `gradle.lockfile`, or a `pom.xml`'s pinned direct-dependency versions (versions managed by a BOM/`dependencyManagement` aren't resolved). Open vulnerabilities and their introduction attribution come from your most recent `vg scan --vulns`.
 
 #### Which agent session wrote a line
 
@@ -3111,6 +3109,37 @@ Recommended workflow:
 
 This makes drift a formal quality gate (fitness function), not just reporting.
 
+### What a baseline comparison records
+
+`vg scan --baseline` still reports the numeric drift delta (`delta`, and `--drift-worsening` uses that delta). It also writes an additive `baselineComparison` block on the scan artifact so a matched finding is not a silent drop. Findings stay in `findings`. The block is omitted when no baseline file was read (missing or unreadable). A file that was read and matched nothing is still recorded, with `suppressedCount: 0`.
+
+```json
+"baseline": ".vibgrate/baseline.json",
+"delta": 2,
+"baselineComparison": {
+  "compared": true,
+  "suppressedCount": 2,
+  "suppressed": [
+    {
+      "ruleId": "vibgrate/dependency-rot",
+      "location": "package.json",
+      "id": "c0ffee…"
+    }
+  ]
+}
+```
+
+| Field | Meaning |
+| ----- | ------- |
+| `baseline` | Repo-relative path of the file that was compared (basename if the file is outside the repo) |
+| `baselineComparison.compared` | `true` when that file was read |
+| `baselineComparison.suppressedCount` | How many current findings were already in the baseline |
+| `baselineComparison.suppressed` | `{ ruleId, location, id }` for each match, sorted by `ruleId`, then `location`, then `id` |
+
+`id` is 32 lowercase hex characters: the first 128 bits of SHA-256 over the length-prefixed `ruleId`, `level`, `location`, and `message`. The same finding always produces the same id. A changed message is a different finding and is not listed as suppressed. Text and Markdown reports include `Baseline suppressions: N` and mark matched rows `(baselined)`.
+
+`baseline` remains the path string it has always been. `baselineComparison` is the new audit record. `delta` is still set only when both scores are numbers; an unmeasured score is not treated as zero.
+
 ## DriftScore
 
 ### How the Score Is Calculated
@@ -3151,11 +3180,14 @@ The default output. A coloured, human-readable report showing:
 - Overall drift score and risk level
 - Score component breakdown with visual bars
 - Per-project details: runtime lag, framework versions, dependency distribution
-- Findings with severity icons. A finding that already includes a fixed version or remediation is followed by `fix available: …`. The hint is omitted when that metadata is absent.
+- Findings with severity icons. A vulnerability finding whose advisory lists fixed versions shows `fix available (<versions>)`; the clause is omitted when no fixed version is recorded.
+- When a baseline was compared: the drift delta, `Baseline suppressions: N`, and `(baselined)` on matched rows
 
 ### JSON Artifact
 
 The full scan artifact in JSON format. Contains all raw data, scores, findings, and VCS metadata. Stable schema (`schemaVersion: "1.0"`). This is the same artifact saved to `.vibgrate/scan_result.json`.
+
+When the scan compared a baseline, the artifact also carries `baseline` (the file path) and `baselineComparison` (`compared`, `suppressedCount`, and `suppressed` — see [What a baseline comparison records](#what-a-baseline-comparison-records)). Matched findings remain in `findings`.
 
 ### SARIF
 
@@ -3177,10 +3209,10 @@ Each installed package produces one result per advisory record that affects the 
 The result `ruleId` is `vibgrate/vulnerability`. The location `uri` is the package name. `critical` and `high` map to SARIF level `error`, `moderate` to `warning`, and `low` or `unknown` to `note`. The message text looks like:
 
 ```text
-widget@1.2.0: GHSA-widg-et00-0001 (CVE-2099-9999) (high 7.5) — fixed in 1.2.1
+widget@1.2.0: GHSA-widg-et00-0001 (CVE-2099-9999) (high 7.5) — fix available (1.2.1)
 ```
 
-The id in front is `properties.advisoryId`. The parenthetical CVE is the first alias that starts with `CVE-`, and only when that CVE is not already the primary id. Any other alias — including a GHSA id when the primary id is the CVE — stays in `properties.aliases` and is left out of the message. The message ends with `— fixed in <versions>` when a fix is listed, and `— no fix available` when it is not. The CVSS score is left out of the severity parentheses when the advisory has no score (`(low)` rather than `(low 2.1)`).
+The id in front is `properties.advisoryId`. The parenthetical CVE is the first alias that starts with `CVE-`, and only when that CVE is not already the primary id. Any other alias — including a GHSA id when the primary id is the CVE — stays in `properties.aliases` and is left out of the message. The message ends with `— fix available (<versions>)` when the advisory lists fixed versions. When it lists none, that clause is omitted; the scan does not claim there is no fix. The CVSS score is left out of the severity parentheses when the advisory has no score (`(low)` rather than `(low 2.1)`).
 
 **Two records stay two results.** `aliases` is not a grouping key. If OSV or your manifest returns a GHSA record and a separate CVE record for the same issue, and each names the other in `aliases`, the SARIF output contains both results. A code-scanning upload can show those as near-duplicate alerts. `vg scan` does not collapse them.
 
@@ -3197,11 +3229,13 @@ Read `runs[0].results`. One advisory record with several aliases is one object i
 
 A declared license names its evidence file in JSON and SARIF when `vg scan` has one. A `package.json` `license` or `licenses` field is that file; otherwise the first existing `LICENSE`, `LICENCE`, `COPYING`, or `NOTICE` file in the project directory (also `.md` and `.txt`, in that order) is. The path is `projects[].license.path`. Text that does not resolve as SPDX is a `vibgrate/license-parse-failed` finding: JSON sets `location` and `details.path` to the repo-relative path, and SARIF uses the same path as `physicalLocation.artifactLocation.uri` and `properties.path`. The license body is not copied into the artifact. An explicit `NOASSERTION` is not a failure. A registry license string has no local file, so the finding stays on the dependency and `location` remains the project path, without `details.path`. Those file findings are sorted by path.
 
+A finding that matched the baseline stays in `runs[0].results`. Its result gains a SARIF `suppressions` entry (`kind: "external"`, `status: "accepted"`) whose `properties.id` is the same id as `baselineComparison.suppressed`. Results that did not match have no `suppressions` field.
+
 Test reporters that ingest JUnit can take a companion file from the same scan. See [JUnit](#junit). The process exit code is unchanged either way; see [Exit Codes](#exit-codes).
 
 ### Markdown
 
-A clean Markdown report suitable for PRs, wikis, or documentation.
+A clean Markdown report suitable for PRs, wikis, or documentation. When a baseline was compared, it includes `Baseline suppressions: N` and marks matched rows `(baselined)`.
 
 ### JUnit
 

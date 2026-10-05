@@ -3,6 +3,7 @@ import { describe, it, expect } from 'vitest';
 // reporting-side copy was a stale duplicate and is gone. These tests keep
 // exercising the live writer.
 import { formatSarif as formatSarifCore } from '../../core-open/formatters/sarif.js';
+import { compareBaselineFindings } from '../../core-open/baseline-comparison.js';
 import { formatMarkdown } from '../formatters/markdown.js';
 import { formatText } from '../formatters/text.js';
 import type { ScanArtifact } from '../types.js';
@@ -145,6 +146,25 @@ describe('formatSarif', () => {
     expect(sarif.runs[0].invocations[0].startTimeUtc).toBe('2026-02-16T00:00:00.000Z');
     expect(sarif.runs[0].invocations[0].executionSuccessful).toBe(true);
   });
+
+  it('keeps baselined findings and copies their ids into SARIF suppressions', () => {
+    const artifact = makeArtifact();
+    const matched = artifact.findings[1]!;
+    artifact.baselineComparison = compareBaselineFindings(artifact.findings, [matched]);
+    const sarif = formatSarif(artifact) as any;
+    const results = sarif.runs[0].results;
+
+    expect(results).toHaveLength(artifact.findings.length);
+    expect(results[0].suppressions).toBeUndefined();
+    expect(results[1].suppressions).toEqual([
+      {
+        kind: 'external',
+        status: 'accepted',
+        justification: 'Matched the compared drift baseline',
+        properties: { id: artifact.baselineComparison.suppressed[0]!.id },
+      },
+    ]);
+  });
 });
 
 // ── Markdown formatter ──
@@ -247,6 +267,16 @@ describe('formatMarkdown', () => {
     const md = formatMarkdown(makeArtifact({ delta: -3 }));
     expect(md).toContain('-3');
     expect(md).toContain('📉');
+  });
+
+  it('includes the baseline suppression count', () => {
+    const artifact = makeArtifact();
+    artifact.baselineComparison = compareBaselineFindings(artifact.findings, [artifact.findings[1]!]);
+    const md = formatMarkdown(artifact);
+    expect(md).toContain('Baseline suppressions: 1');
+    expect(md).toContain('/test/app (baselined)');
+    expect(md).toContain('vibgrate/runtime-lag');
+    expect(formatMarkdown(makeArtifact())).not.toContain('Baseline suppressions');
   });
 
   it('handles empty findings', () => {
@@ -440,6 +470,14 @@ describe('formatText', () => {
     const text = formatText(makeArtifact({ delta: 10 }));
     expect(text).toContain('Drift Delta');
     expect(text).toContain('vs baseline');
+  });
+
+  it('includes the baseline suppression count', () => {
+    const artifact = makeArtifact({ delta: 1 });
+    artifact.baselineComparison = compareBaselineFindings(artifact.findings, artifact.findings);
+    const text = formatText(artifact);
+    expect(text).toContain('Baseline suppressions: 2');
+    expect(text).toContain('/test/app (baselined)');
   });
 
   it('handles empty projects', () => {
