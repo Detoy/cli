@@ -67,7 +67,9 @@ map the scan builds and the Architecture module, which the CLI provisions on
 first use; on an air-gapped runner install it with `vg module install arch`
 from a bundle or set `VIBGRATE_ARCH_PATH`. A gate that cannot be evaluated
 exits 2 with a one-line reason rather than passing. Rule catalogue and output
-shapes: [`../security-packs.md`](../security-packs.md).
+shapes: [`../security-packs.md`](../security-packs.md). How `.tf` and `.tofu`
+are selected, including a same-stem pair and a `.tofu`-only tree:
+[`../security-packs.md`](../security-packs.md#terraform-and-opentofu-files).
 
 ## Drift gate behavior
 
