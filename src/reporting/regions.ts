@@ -54,6 +54,33 @@ function findRegion(id: string): CliRegion | undefined {
   return REGIONS.find((r) => r.id === id);
 }
 
+const CREDENTIAL_QUERY_KEY =
+  /^(?:access[_-]?token|private[_-]?token|api[_-]?key|apikey|token|secret|password|passwd|auth|authorization|x-token|sig|signature|key)$/i;
+
+/**
+ * Remove userinfo and credential query parameters from a string that will be
+ * quoted in an error. A parsed `--ingest` URL never reaches this: `URL.host`
+ * already drops userinfo. This is only for values that fail to parse.
+ */
+function redactCredentialBearingUrl(value: string): string {
+  const noUser = value.replace(/\/\/[^/\s]*@/g, '//');
+  const q = noUser.indexOf('?');
+  if (q === -1) return noUser;
+  const base = noUser.slice(0, q);
+  const kept: string[] = [];
+  for (const pair of noUser.slice(q + 1).split('&')) {
+    const rawKey = pair.split('=')[0] ?? '';
+    let key = rawKey.replace(/\+/g, ' ');
+    try {
+      key = decodeURIComponent(key);
+    } catch {
+      // Not valid percent-encoding; test the raw key.
+    }
+    if (!CREDENTIAL_QUERY_KEY.test(key)) kept.push(pair);
+  }
+  return kept.length > 0 ? `${base}?${kept.join('&')}` : base;
+}
+
 /**
  * Resolve the ingest host for a region (or an explicit --ingest URL override).
  *
@@ -65,7 +92,7 @@ export function resolveIngestHost(region?: string, ingest?: string): string {
     try {
       return new URL(ingest).host;
     } catch {
-      throw new Error(`Invalid ingest URL: ${ingest}`);
+      throw new Error(`Invalid ingest URL: ${redactCredentialBearingUrl(ingest)}`);
     }
   }
   const id = (region ?? DEFAULT_REGION).toLowerCase();

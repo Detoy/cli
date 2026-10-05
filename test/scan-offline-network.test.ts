@@ -55,6 +55,9 @@ describe('offline scan network boundary', () => {
                 summary: 'Fixture advisory for the offline path',
                 severity: 'moderate',
                 ranges: [{ introduced: '0', fixed: '1.3.1' }],
+                epss: 0.42,
+                epssPercentile: 0.91,
+                kev: true,
               },
             ],
           },
@@ -91,9 +94,21 @@ describe('offline scan network boundary', () => {
     expect(fs.existsSync(reportPath)).toBe(true);
     const report = JSON.parse(fs.readFileSync(reportPath, 'utf8')) as {
       findings: Array<{ ruleId?: string; message?: string }>;
-      extended?: { vulnerabilities?: { source?: string; totalAdvisories?: number } };
+      extended?: {
+        vulnerabilities?: {
+          source?: string;
+          totalAdvisories?: number;
+          packages?: Array<{ advisories?: Array<Record<string, unknown>> }>;
+        };
+      };
     };
     expect(report.extended?.vulnerabilities).toMatchObject({ source: 'manifest', totalAdvisories: 1 });
+    expect(report.extended?.vulnerabilities?.packages?.[0]?.advisories?.[0]).toMatchObject({
+      id: 'GHSA-offline-fixture',
+      epss: 0.42,
+      epssPercentile: 0.91,
+      kev: true,
+    });
     expect(report.findings.some((finding) => finding.message?.includes('GHSA-offline-fixture'))).toBe(true);
     expect(fs.existsSync(path.join(root, '.vibgrate', 'scan_result.json'))).toBe(true);
   });

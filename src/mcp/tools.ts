@@ -807,7 +807,7 @@ export const TOOLS: VgTool[] = [
   },
   {
     name: 'list_vulnerabilities',
-    description: 'Known vulnerabilities from the last `vg scan --vulns`: id/CVE, severity, CVSS, fixed version.',
+    description: 'Known vulnerabilities from the last `vg scan --vulns`: id/CVE, severity, CVSS, fixed version, and EPSS or known-exploited fields when that scan already recorded them.',
     inputSchema: obj(
       { severity: { type: 'string', enum: ['low', 'moderate', 'high', 'critical'], description: 'minimum severity' } },
       [],
@@ -839,6 +839,9 @@ export const TOOLS: VgTool[] = [
             ...(a.cvssDiagnostic ? { cvssDiagnostic: a.cvssDiagnostic } : {}),
             fixedVersions: a.fixedVersions,
             summary: a.summary,
+            ...(a.epss != null ? { epss: a.epss } : {}),
+            ...(a.epssPercentile != null ? { epssPercentile: a.epssPercentile } : {}),
+            ...(a.kev != null ? { kev: a.kev } : {}),
           })),
         })),
       };

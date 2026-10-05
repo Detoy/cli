@@ -26,6 +26,19 @@ export interface ManifestAdvisory {
   published?: string;
   withdrawn?: string;
   references?: string[];
+  /**
+   * FIRST EPSS probability (0–1) already known for this advisory. Omitted or
+   * null when unknown — never use `0` to mean "not scored". A numeric string
+   * such as `"0.42"` is accepted; values outside 0–1 are ignored.
+   */
+  epss?: number | string | null;
+  /** EPSS percentile (0–1) already known for this advisory. Same absence rule as `epss`. */
+  epssPercentile?: number | string | null;
+  /**
+   * CISA Known Exploited Vulnerabilities membership, when this bundle already
+   * says so. Omit when unknown; `false` means the bundle explicitly says not listed.
+   */
+  kev?: boolean | null;
 }
 
 export interface EcosystemVersionEntry {
