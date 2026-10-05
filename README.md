@@ -599,6 +599,8 @@ vg sbom delta  --from .vibgrate/baseline.json --to .vibgrate/scan_result.json --
 vg vex                          # generate an OpenVEX document for attestation
 ```
 
+CycloneDX `type` and SPDX `primaryPackagePurpose` (omitted on every package) are mapped in [Component type](./DOCS.md#component-type). An inventory, not a compliance determination.
+
 ## Review a change
 
 **Vibgrate Review** reads the current change against the declared architecture and security-control policy. It reports change integrity, not a proof of security.

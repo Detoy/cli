@@ -1045,6 +1045,9 @@ vg sbom vex [--from <file>] [--statement <json>...] [--product <ref>] [--out <fi
 | `vg sbom vex` | Emit a spec-compliant OpenVEX document (exploitability statements) for attestation |
 
 Use this to treat SBOMs as operational intelligence instead of static compliance output.
+How CycloneDX `type` is set, and when SPDX `primaryPackagePurpose` is omitted,
+is [Component type](#component-type). The export is an inventory, not a
+compliance determination.
 
 `vg sbom export` reports the full resolved dependency tree, not just what's declared
 in the manifest: it reads `package-lock.json` / `pnpm-lock.yaml` / `yarn.lock` (npm,
@@ -1158,6 +1161,139 @@ array, or SPDX `DEPENDS_ON` relationships. Where edges aren't resolvable, that s
 is left out entirely rather than shipping a graph that claims "no dependencies" when
 the truth is "not tracked". In a multi-project scan those edges are the root
 lockfile's edges, as described above.
+
+#### Component type
+
+`vg sbom export` builds the document from the scan artifact and the lockfiles
+under `--root`. CycloneDX `type` is assigned from that inventory. SPDX 2.3
+omits `primaryPackagePurpose` on every package, so the SPDX file has no field
+that restates the CycloneDX type. This is an inventory, not a compliance
+determination. `vg sbom vex` is a separate OpenVEX document and does not carry
+these fields.
+
+| Source | CycloneDX | SPDX `primaryPackagePurpose` |
+| --- | --- | --- |
+| Scan root (`metadata.component`) | `type` is `application`. `bom-ref` is `vibgrate-root`. `name` is the scanned directory's basename (`rootPath`), the directory passed to `vg scan`, which is independent of `package.json` `"name"`. No `version` and no `purl`. Written for an application package, a library package, a Dockerfile, a Compose file, a Helm chart, and a Terraform tree. | Omitted. There is no root package. The document `SPDXID` is `SPDXRef-DOCUMENT` and `name` is `<rootPath>-sbom`. When the lockfile resolves edges, each root dependency is a `DEPENDS_ON` relationship from `SPDXRef-DOCUMENT`. |
+| Manifest and lockfile packages | `type` is `library` on every `components` entry, `vibgrate:scope` `direct` or `transitive`. The same assignment is used for every ecosystem the scan records as a project dependency. | Omitted. |
+| Container image (`Dockerfile` `FROM`, Compose `image:`) | `type` is `library`. `name` is `<namespace>/<image>`, and the namespace is `library` when the reference has none (`node:20` is `library/node`, version `20`). `purl` is omitted. | Omitted. |
+| Helm chart dependency (`Chart.yaml`, version from `Chart.lock` when that file pins one) | `type` is `library`. | Omitted. |
+| Terraform provider or module | `type` is `library`. `name` is `provider:<source>` or `module:<source>`. `purl` is omitted. | Omitted. |
+| OS package (apk, deb, rpm, including packages inside an image) | No component is written, so there is no `type`. A base image is the container-image row above. | Omitted, because there is no package. |
+
+The architecture archetype `vg scan` prints is a separate report. On the npm
+fixtures in the examples, and on Dockerfile, Compose, Helm, and Terraform
+trees checked the same way, that archetype was `library`. The SBOM still
+writes `metadata.component.type` `application`.
+
+`FROM alpine:3.19` exported one component, `library/alpine` at version
+`3.19`, `type` `library`. The document listed no apk packages from inside
+the image.
+
+**Gaps** (the exporter is unchanged):
+
+- Docker, Compose, Helm, and Terraform projects are outside the purl
+  ecosystem switch, which then uses `npm`. When the name cannot be a Package
+  URL, the component stays in the document, `purl` is omitted,
+  `vibgrate:purlStatus` is `unavailable`, and the warning calls it an npm
+  package. That is what `library/node`, `library/alpine`, `library/nginx`,
+  `provider:hashicorp/aws`, and `module:terraform-aws-modules/vpc/aws`
+  produced.
+- A Helm dependency whose name can be a Package URL receives an npm purl. A
+  chart depending on `nginx` at `15.4.0` exported `type` `library` and `purl`
+  `pkg:npm/nginx@15.4.0`. That purl is the npm fallback. Recording a Helm
+  chart dependency as `pkg:npm/nginx` is a gap.
+- The only CycloneDX `type` values this export writes are `application` on
+  the metadata component and `library` on each dependency. `container`,
+  `operating-system`, `platform`, `file`, and `machine-learning-model` are
+  unused. SPDX `primaryPackagePurpose` is omitted, so `APPLICATION`,
+  `LIBRARY`, `CONTAINER`, and `OPERATING-SYSTEM` are unused too.
+
+##### Examples
+
+The JSON below is the type-bearing fields from `vg sbom export` on a tiny
+tree. Document ids, timestamps, and `vibgrate:*` properties follow the rules
+earlier in this section and are left out of the excerpts.
+
+Directory `app/` (basename `app`). `package.json`:
+
+```json
+{
+  "name": "demo-app",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": { "left-pad": "1.3.0" }
+}
+```
+
+`package-lock.json` lockfileVersion 3 resolves `left-pad@1.3.0`, and that
+package depends on `once@1.4.0`.
+
+```bash
+vg scan app --offline --no-graph
+vg sbom export --in app/.vibgrate/scan_result.json --root app --format cyclonedx
+vg sbom export --in app/.vibgrate/scan_result.json --root app --format spdx
+```
+
+Application root, `metadata.component`. The manifest name `demo-app` is
+`vibgrate:project` on the direct row. The metadata name is the directory:
+
+```json
+{
+  "type": "application",
+  "bom-ref": "vibgrate-root",
+  "name": "app"
+}
+```
+
+Lockfile libraries. `left-pad` is the manifest dependency (`scope` `direct`).
+`once` is only in the lockfile (`scope` `transitive`):
+
+```json
+{
+  "type": "library",
+  "bom-ref": "pkg:npm/left-pad@1.3.0",
+  "name": "left-pad",
+  "version": "1.3.0",
+  "purl": "pkg:npm/left-pad@1.3.0"
+}
+```
+
+```json
+{
+  "type": "library",
+  "bom-ref": "pkg:npm/once@1.4.0",
+  "name": "once",
+  "version": "1.4.0",
+  "purl": "pkg:npm/once@1.4.0"
+}
+```
+
+The SPDX package for `left-pad` has no `primaryPackagePurpose` key. The
+exported object also has an annotation comment
+`project=demo-app; drift=unknown; majorsBehind=unknown; scope=direct`
+(`drift` is `unknown` because this scan was offline):
+
+```json
+{
+  "name": "left-pad",
+  "SPDXID": "SPDXRef-Package-1",
+  "versionInfo": "1.3.0",
+  "downloadLocation": "NOASSERTION",
+  "filesAnalyzed": false,
+  "externalRefs": [
+    {
+      "referenceCategory": "PACKAGE-MANAGER",
+      "referenceType": "purl",
+      "referenceLocator": "pkg:npm/left-pad@1.3.0"
+    }
+  ]
+}
+```
+
+The same commands on a directory named `lib`, whose `package.json` name is
+`demo-lib` and which has no `"private"` field, still write
+`metadata.component` as `application` with `name` `lib`. `left-pad` is
+`library`.
 
 `vg sbom vex` is input-agnostic: it assembles a complete OpenVEX document from the statements you supply (`--from <file>` and/or repeatable `--statement`), so it works regardless of which scanner flagged the components. A zero-statement document is valid and honest — it asserts no known affected components.
 
@@ -3415,7 +3551,7 @@ vg sbom export --in .vibgrate/scan_result.json --format spdx --out sbom.spdx.jso
 
 Expected result:
 
-- A standards-based SBOM file (`spdx` or `cyclonedx`) is written for downstream governance tooling.
+- A standards-based SBOM file (`spdx` or `cyclonedx`) is written for downstream governance tooling. CycloneDX `type` and SPDX `primaryPackagePurpose` in that file are [Component type](#component-type). The file is an inventory, not a compliance determination.
 
 ### Tooling Inventory
 
