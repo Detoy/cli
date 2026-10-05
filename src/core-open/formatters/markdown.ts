@@ -1,7 +1,8 @@
 // VENDORED from @vibgrate/core-open (packages/vibgrate-core-open) by
 // scripts/vendor-core-open.mjs. Do not edit here — change the source package
 // and re-run the vendor script. Apache-2.0.
-import type { ScanArtifact } from '../types.js';
+import type { ScanArtifact, Finding } from '../types.js';
+import { baselineSuppressionSummary, baselinedIdSet, driftFindingId } from '../baseline-comparison.js';
 import { securityPacksLabel } from './text.js';
 
 /** Rows shown before the infrastructure-findings table is cut with an "… N more" line. */
@@ -24,6 +25,11 @@ function markdownDriftCell(score: number | null): string {
 /** Generate a Markdown report from scan artifact */
 export function formatMarkdown(artifact: ScanArtifact): string {
   const lines: string[] = [];
+  const baselined = baselinedIdSet(artifact.baselineComparison);
+  const locationOf = (finding: Finding): string => {
+    const marked = baselined.has(driftFindingId(finding));
+    return marked ? `${finding.location} (baselined)` : finding.location;
+  };
 
   // Billing (micro-project pricing) is a commercial signal attached by the full
   // scan; the open base scan omits it.
@@ -180,7 +186,7 @@ export function formatMarkdown(artifact: ScanArtifact): string {
     lines.push(`|-------|------|---------|----------|`);
     for (const f of artifact.findings) {
       const emoji = f.level === 'error' ? '🔴' : f.level === 'warning' ? '🟡' : '🔵';
-      lines.push(`| ${emoji} ${f.level} | ${f.ruleId} | ${f.message} | ${f.location} |`);
+      lines.push(`| ${emoji} ${f.level} | ${f.ruleId} | ${f.message} | ${locationOf(f)} |`);
     }
     lines.push('');
   }
@@ -188,6 +194,11 @@ export function formatMarkdown(artifact: ScanArtifact): string {
   if (artifact.delta !== undefined) {
     const dir = artifact.delta > 0 ? '📈' : artifact.delta < 0 ? '📉' : '➡️';
     lines.push(`## Drift Delta: ${dir} ${artifact.delta > 0 ? '+' : ''}${artifact.delta} vs baseline`);
+    lines.push('');
+  }
+
+  if (artifact.baselineComparison) {
+    lines.push(baselineSuppressionSummary(artifact.baselineComparison.suppressedCount));
     lines.push('');
   }
 

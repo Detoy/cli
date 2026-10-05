@@ -1,4 +1,5 @@
-import type { ScanArtifact } from '../types.js';
+import type { ScanArtifact, Finding } from '../types.js';
+import { baselineSuppressionSummary, baselinedIdSet, driftFindingId } from '../../core-open/baseline-comparison.js';
 
 /** A measured zero stays `0`. An unmeasured component is `n/a`, never `0`. */
 function markdownDriftCell(score: number | null): string {
@@ -8,6 +9,11 @@ function markdownDriftCell(score: number | null): string {
 /** Generate a Markdown report from scan artifact */
 export function formatMarkdown(artifact: ScanArtifact): string {
   const lines: string[] = [];
+  const baselined = baselinedIdSet(artifact.baselineComparison);
+  const locationOf = (finding: Finding): string => {
+    const marked = baselined.has(driftFindingId(finding));
+    return marked ? `${finding.location} (baselined)` : finding.location;
+  };
 
   lines.push('# Vibgrate Drift Report');
   lines.push('');
@@ -122,7 +128,7 @@ export function formatMarkdown(artifact: ScanArtifact): string {
     lines.push(`|-------|------|---------|----------|`);
     for (const f of artifact.findings) {
       const emoji = f.level === 'error' ? '🔴' : f.level === 'warning' ? '🟡' : '🔵';
-      lines.push(`| ${emoji} ${f.level} | ${f.ruleId} | ${f.message} | ${f.location} |`);
+      lines.push(`| ${emoji} ${f.level} | ${f.ruleId} | ${f.message} | ${locationOf(f)} |`);
     }
     lines.push('');
   }
@@ -132,6 +138,11 @@ export function formatMarkdown(artifact: ScanArtifact): string {
     const dir = artifact.delta > 0 ? '📈' : artifact.delta < 0 ? '📉' : '➡️';
     const trend = artifact.delta > 0 ? ' _(worsened)_' : artifact.delta < 0 ? ' _(improved)_' : '';
     lines.push(`## Drift Delta: ${dir} ${artifact.delta > 0 ? '+' : ''}${artifact.delta} vs baseline${trend}`);
+    lines.push('');
+  }
+
+  if (artifact.baselineComparison) {
+    lines.push(baselineSuppressionSummary(artifact.baselineComparison.suppressedCount));
     lines.push('');
   }
 
