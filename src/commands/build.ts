@@ -22,6 +22,7 @@ import { renderReport } from '../engine/report.js';
 import { renderHtml } from '../engine/html.js';
 import { UsageError, mergeExcludes } from '../engine/discover.js';
 import { ResourceLimitError } from '../engine/limits.js';
+import { UnsafeRootError } from '../engine/root-safety.js';
 import { CliError, ExitCode, usageError } from '../util/exit.js';
 import { resolveSelfJsEntry } from '../util/cli-invocation.js';
 import { c, info, out, json } from '../util/output.js';
@@ -53,6 +54,7 @@ interface BuildCmdOpts {
   pub?: string;
   /** Commander `--no-publish` arrives as `publish: false`. */
   publish?: boolean;
+  allowUnsafeRoot?: boolean;
 }
 
 export function registerBuild(program: Command): void {
@@ -62,6 +64,10 @@ export function registerBuild(program: Command): void {
     .argument('[paths...]', 'folders or files to map (default: current folder)')
     .option('--only <langs>', 'restrict to languages, e.g. ts,py,go')
     .option('--exclude <glob>', 'extra ignore glob (repeatable)', collect, [])
+    .option(
+      '--allow-unsafe-root',
+      'Map a filesystem root, an OS-image layout, or a tree over the walk budget anyway',
+    )
     .option('--no-html', 'do not write graph.html')
     .option('--no-report', 'do not write GRAPH_REPORT.md')
     .option('--no-ground', 'do not attach grounding (Phase 2)')
@@ -128,6 +134,7 @@ export async function runBuild(
       paths: paths.length ? paths : undefined,
       only,
       exclude: opts.exclude,
+      allowUnsafeRoot: opts.allowUnsafeRoot,
       jobs,
       noCache: global.noCache,
       deep: global.deep,
@@ -148,7 +155,9 @@ export async function runBuild(
   } catch (err) {
     bar?.done();
     if (err instanceof UsageError) throw usageError(err.message);
-    if (err instanceof ResourceLimitError) throw new CliError(err.message, ExitCode.ERROR);
+    if (err instanceof ResourceLimitError || err instanceof UnsafeRootError) {
+      throw new CliError(err.message, ExitCode.ERROR);
+    }
     throw err;
   }
   bar?.done();

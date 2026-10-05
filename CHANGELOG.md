@@ -14,6 +14,14 @@ backward compatible.
 
 ### Fixed
 
+- **`vg scan` and `vg build` refuse a filesystem-sized root instead of walking it.**
+  A filesystem root, a directory laid out like an operating-system image, or a
+  tree past the walk budget (`VG_MAX_WALK_ENTRIES`, default `1000000`) exits 1
+  with one stable message. The message names the path and tells you to pass a
+  project subdirectory, narrow the walk with `--exclude` ignore patterns,
+  raise `VG_MAX_WALK_ENTRIES` (`0` disables the budget), or pass
+  `--allow-unsafe-root`. The same root always produces the same message.
+
 - **Vulnerability lines in `vg scan` and `vg report` text name a fix only when
   the scan result already has one.** A finding with published fixed versions
   now shows `fix available` (and those versions). A finding with no fix

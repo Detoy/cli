@@ -58,6 +58,7 @@ import { writeSnapshot } from '../../engine/freshness.js';
 import { detectAiAssistant, printAiContextPrompt } from '../ai-context-prompt.js';
 import { resolveCliInvocation } from '../../util/cli-invocation.js';
 import { CliError, ExitCode, usageError } from '../../util/exit.js';
+import { assertSafeScanRoot, UnsafeRootError } from '../../engine/root-safety.js';
 import { loadPackageVersionManifest, PackageManifestError } from '../package-version-manifest.js';
 import { runSecurityPacks, type SecurityRunResult } from '../../security/run-packs.js';
 import { evaluateSecurityGate, lowestThreshold, parseFailOn } from '../../security/gate.js';
@@ -403,6 +404,10 @@ export const scanCommand = new Command('scan')
     collectExcludes,
     [],
   )
+  .option(
+    '--allow-unsafe-root',
+    'Scan a filesystem root, an OS-image layout, or a tree over the walk budget anyway',
+  )
   .option('--concurrency <n>', 'Max concurrent registry lookups', '8')
   .option('--push', 'Auto-push results to Vibgrate API after scan')
   .option('--dsn <dsn>', 'DSN token for push (or use VIBGRATE_DSN env)')
@@ -432,6 +437,7 @@ export const scanCommand = new Command('scan')
     baseline?: string;
     changedOnly?: boolean;
     exclude: string[];
+    allowUnsafeRoot?: boolean;
     concurrency: string;
     push?: boolean;
     dsn?: string;
@@ -462,6 +468,15 @@ export const scanCommand = new Command('scan')
     if (!(await pathExists(rootDir))) {
       console.error(chalk.red(`Path does not exist: ${rootDir}`));
       process.exit(1);
+    }
+
+    // Fail closed before preflight, config execution, or the file walk. A
+    // filesystem root or OS image must not start a scan that hangs or OOMs.
+    try {
+      assertSafeScanRoot(rootDir, { allowUnsafeRoot: opts.allowUnsafeRoot });
+    } catch (err) {
+      if (err instanceof UnsafeRootError) throw new CliError(err.message, ExitCode.ERROR);
+      throw err;
     }
 
     // Fail closed before any scan work. A missing, unreadable, or unusable
@@ -633,6 +648,7 @@ export const scanCommand = new Command('scan')
       baseline: opts.baseline,
       changedOnly: opts.changedOnly,
       exclude: opts.exclude,
+      allowUnsafeRoot: opts.allowUnsafeRoot,
       concurrency: parseInt(opts.concurrency, 10) || 8,
       push: opts.push,
       dsn: opts.dsn,
@@ -693,6 +709,7 @@ export const scanCommand = new Command('scan')
         const result = await buildGraph({
           root: rootDir,
           exclude: opts.exclude,
+          allowUnsafeRoot: opts.allowUnsafeRoot,
           onParseProgress: (done, total) => report(done, total, 'parsing'),
         });
         builtGraph = result.graph;
@@ -747,7 +764,13 @@ export const scanCommand = new Command('scan')
     // Open base scan. The optional advanced-analysis hook is a no-op in this
     // open build, so the scan runs entirely on the open base engine.
     const advanced = await loadAdvancedScanHook();
-    const artifact = await runCoreScan(rootDir, scanOpts, advanced);
+    let artifact: ScanArtifact;
+    try {
+      artifact = await runCoreScan(rootDir, scanOpts, advanced);
+    } catch (err) {
+      if (err instanceof UnsafeRootError) throw new CliError(err.message, ExitCode.ERROR);
+      throw err;
+    }
 
     // The scan just built a code map (its `postScan` step). Start the local
     // runtime if it is not up and hand it that map, so the very first `vg` in a
