@@ -19,6 +19,22 @@ import {
   findConfigFile,
 } from '../../core-open/index.js';
 import { compareDriftBudget, evaluateConfigDriftBudget } from '../drift-budget-gate.js';
+import {
+  ARCHITECTURE_NEEDS_GRAPH,
+  ARCHITECTURE_NOT_CLASSIFIED,
+  IAC_NEEDS_GRAPH,
+  architectureGateSuite,
+  configDriftBudgetAbsentCase,
+  configDriftBudgetCases,
+  driftBudgetFlagCase,
+  driftWorseningFlagCase,
+  securityGateSuite,
+  securityNotEvaluatedMessage,
+  securityUnavailableMessage,
+  writeScanJUnit,
+  type JUnitSuite,
+  type JUnitTestCase,
+} from '../junit-report.js';
 import type { ScanOptions, ScanArtifact } from '../../core-open/index.js';
 import { analyzeReachability, collectPreflightDependencies } from '../reachability.js';
 import type { VgGraph } from '../../schema.js';
@@ -373,6 +389,7 @@ export const scanCommand = new Command('scan')
   .argument('[path]', 'Path to scan', '.')
   .option('--out <file>', 'Output file path')
   .option('--format <format>', 'Output format (text|json|sarif|md)', 'text')
+  .option('--junit <file>', 'Also write a deterministic JUnit XML report of findings and budget gates to this file')
   .option(
     '--fail-on <gates>',
     'Fail on warn or error. architecture-finding (hard boundary violations) or architecture-warning (violations and warnings) gate on the architecture module\'s boundary findings, judged under the policy pack in force: .vibgrate/architecture.toml (policy = "hexagonal-v1" | "layered-v1" | "vertical-v1", plus any [[overlay]] rules), VIBGRATE_ARCHITECTURE_POLICY, or vg build --policy; default hexagonal-v1. The pack is named in the output. See docs/architecture-policies.md. iac-finding[=<severity>] fails on infrastructure findings from the iac-cis-v1 pack at or above <severity> (critical|high|medium|low|info; default high) and needs --iac (or --full) plus the code map — it exits 2 when the Architecture module is missing rather than passing an unevaluated tree; security-finding[=<severity>] is the umbrella across every security pack that ran. Comma-separated: at most one of warn/error/architecture-* plus any security gates, e.g. --fail-on error,iac-finding=medium',
@@ -409,6 +426,7 @@ export const scanCommand = new Command('scan')
   .action(async (targetPath: string, opts: {
     out?: string;
     format: string;
+    junit?: string;
     failOn?: string;
     baseline?: string;
     changedOnly?: boolean;
@@ -464,6 +482,14 @@ export const scanCommand = new Command('scan')
     // security gates are evaluated after the scan against `extended.security`.
     const failOn = parseFailOn(opts.failOn);
     if (failOn.invalid) throw usageError(failOn.invalid);
+    if (opts.format === 'junit') {
+      throw usageError('JUnit XML is written with --junit <file>, alongside --format text, json, sarif, or md.');
+    }
+    const junitFile = opts.junit?.trim();
+    if (opts.junit !== undefined && !junitFile) throw usageError('--junit needs a file path.');
+    if (junitFile && opts.out && path.resolve(junitFile) === path.resolve(opts.out)) {
+      throw usageError('--junit and --out must be different files.');
+    }
     // `--full` is the comprehensive umbrella: it also turns on the infrastructure pack.
     const wantIac = Boolean(opts.iac || opts.full);
 
@@ -769,6 +795,109 @@ export const scanCommand = new Command('scan')
       reportStandards(rootDir);
     }
 
+    // JUnit is a companion file. Record every requested gate before the first
+    // exit so the XML still summarizes later gates (a budget breach after an
+    // error finding, for example). The file is written on stderr-confirmed
+    // success and on gate failure, before process.exit, so CI can publish it
+    // from a failed step. Stdout stays the selected --format.
+    const junitSuites: JUnitSuite[] = [];
+    const gateCases: JUnitTestCase[] = [];
+    let junitWritten = false;
+    const measuredDrift = artifact.drift.score;
+
+    async function writeJUnitFile(): Promise<void> {
+      if (!junitFile || junitWritten) return;
+      junitWritten = true;
+      if (gateCases.length > 0) junitSuites.push({ name: 'gates', cases: gateCases });
+      try {
+        await writeScanJUnit(junitFile, {
+          findings: artifact.findings,
+          driftGate: failOn.legacy === 'warn' || failOn.legacy === 'error' ? failOn.legacy : undefined,
+          extraSuites: junitSuites,
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        throw new CliError(`Could not write JUnit report to ${junitFile}: ${message}`, ExitCode.ERROR);
+      }
+      console.error(chalk.green('✔') + ` JUnit XML written to ${junitFile}`);
+    }
+
+    async function failGate(): Promise<never> {
+      await writeJUnitFile();
+      process.exit(ExitCode.GATE_FAILED);
+    }
+
+    async function recordJUnitGates(): Promise<void> {
+      if (failOn.legacy === 'architecture-finding' || failOn.legacy === 'architecture-warning') {
+        const hardOnly = failOn.legacy === 'architecture-finding';
+        if (!wantGraph) {
+          junitSuites.push(architectureGateSuite({ status: 'blocked', message: ARCHITECTURE_NEEDS_GRAPH }));
+        } else {
+          const found = architectureFindings(rootDir, hardOnly);
+          if (found === null) {
+            junitSuites.push(architectureGateSuite({ status: 'blocked', message: ARCHITECTURE_NOT_CLASSIFIED }));
+          } else if (found.rows.length > 0) {
+            junitSuites.push(architectureGateSuite({ status: 'failed', rows: found.rows }));
+          } else {
+            junitSuites.push(architectureGateSuite({ status: 'clean' }));
+          }
+        }
+      }
+
+      if (failOn.security.length > 0) {
+        const gateName = `--fail-on ${failOn.security.map((r) => (r.cls === 'iac' ? 'iac-finding' : 'security-finding')).join(',')}`;
+        if (wantIac && !wantGraph) {
+          junitSuites.push(securityGateSuite({ status: 'blocked', message: IAC_NEEDS_GRAPH }));
+        } else {
+          const section = artifact.extended?.security;
+          if (!section) {
+            junitSuites.push(securityGateSuite({ status: 'blocked', message: securityNotEvaluatedMessage(gateName) }));
+          } else {
+            const outcome = evaluateSecurityGate(section, failOn.security);
+            if (outcome.unavailable.length > 0) {
+              junitSuites.push(securityGateSuite({ status: 'blocked', message: securityUnavailableMessage(gateName, outcome.unavailable) }));
+            } else {
+              junitSuites.push(securityGateSuite({
+                status: 'evaluated',
+                findings: section.findings,
+                failingIds: outcome.matched.map((f) => f.id),
+              }));
+            }
+          }
+        }
+      }
+
+      if (scanOpts.driftBudget !== undefined) {
+        gateCases.push(driftBudgetFlagCase(measuredDrift, scanOpts.driftBudget));
+      }
+      if (scanOpts.driftWorseningPercent !== undefined) {
+        gateCases.push(driftWorseningFlagCase(measuredDrift, artifact.delta, scanOpts.driftWorseningPercent));
+      }
+      if (scanOpts.driftBudget === undefined && scanOpts.driftWorseningPercent === undefined) {
+        // A config read failure must not run ahead of the finding gates below.
+        // The budget block still loads the config and reports that failure.
+        try {
+          const projectConfig = await loadConfig(rootDir);
+          if (measuredDrift === null) {
+            if (projectConfig.driftBudget !== undefined && projectConfig.driftBudget !== null) {
+              gateCases.push(configDriftBudgetAbsentCase());
+            }
+          } else {
+            gateCases.push(...configDriftBudgetCases(evaluateConfigDriftBudget({
+              raw: projectConfig.driftBudget,
+              configFile: findConfigFile(rootDir),
+              headScore: measuredDrift,
+              baseScore: artifact.delta === undefined ? null : measuredDrift - artifact.delta,
+            })));
+          }
+        } catch {
+          // Leave the budget cases out. The gate block below surfaces the error.
+        }
+      }
+    }
+
+    if (junitFile) await recordJUnitGates();
+
     // `--iac` status line: the packs either ran (the section is on the
     // artifact and already printed) or they did not, and then the reason is
     // said out loud — an unevaluated tree must never read as a clean one.
@@ -776,9 +905,9 @@ export const scanCommand = new Command('scan')
       const securityGateRequested = failOn.security.length > 0;
       if (!wantGraph) {
         if (securityGateRequested || !opts.quiet) {
-          console.error(chalk.red('\n--iac needs the code map: remove --no-graph / --max-privacy / --no-local-artifacts.'));
+          console.error(chalk.red(`\n${IAC_NEEDS_GRAPH}`));
         }
-        if (securityGateRequested) process.exit(2);
+        if (securityGateRequested) return failGate();
       } else if (!opts.quiet) {
         const notEvaluated = 'no infrastructure findings were evaluated.';
         if (iacRun === null) {
@@ -840,21 +969,21 @@ export const scanCommand = new Command('scan')
     // the evidence, so the gate needs it (no --no-graph / --max-privacy).
     if (failOn.legacy === 'architecture-finding' || failOn.legacy === 'architecture-warning') {
       if (!wantGraph) {
-        console.error(chalk.red('\n--fail-on architecture-finding needs the code map: remove --no-graph / --max-privacy / --no-local-artifacts.'));
-        process.exit(2);
+        console.error(chalk.red(`\n${ARCHITECTURE_NEEDS_GRAPH}`));
+        return failGate();
       }
       const hardOnly = failOn.legacy === 'architecture-finding';
       const gate = architectureFindings(rootDir, hardOnly);
       if (gate === null) {
-        console.error(chalk.red('\n--fail-on architecture-finding: the architecture module did not classify this map (install it with `vg module install arch`; a rejected .vibgrate/architecture.toml is reported above).'));
-        process.exit(2);
+        console.error(chalk.red(`\n${ARCHITECTURE_NOT_CLASSIFIED}`));
+        return failGate();
       }
       const { policy, rows } = gate;
       if (rows.length) {
         console.error(chalk.red(`\nFailing: ${rows.length} architecture ${hardOnly ? 'boundary violation' : 'boundary finding'}${rows.length === 1 ? '' : 's'} (${policy}).`));
         for (const r of rows.slice(0, 50)) console.error(chalk.dim(`  ${r.file}${r.line ? `:${r.line}` : ''}  ${r.symbol}  ${r.severity === 'hard' ? 'violation' : 'warning'}: ${r.message} (${r.rule})`));
         if (rows.length > 50) console.error(chalk.dim(`  … ${rows.length - 50} more`));
-        process.exit(2);
+        return failGate();
       }
       // A passing gate still names the pack: a layered app judged as a
       // hexagon (or the reverse) is the mistake this line exists to catch.
@@ -868,11 +997,11 @@ export const scanCommand = new Command('scan')
 
       if (failOn.legacy === 'error' && hasErrors) {
         console.error(chalk.red(`\nFailing: ${artifact.findings.filter((f: { level: string }) => f.level === 'error').length} error finding(s) detected.`));
-        process.exit(2);
+        return failGate();
       }
       if (failOn.legacy === 'warn' && (hasErrors || hasWarnings)) {
         console.error(chalk.red(`\nFailing: findings detected at warn level or above.`));
-        process.exit(2);
+        return failGate();
       }
     }
 
@@ -884,14 +1013,14 @@ export const scanCommand = new Command('scan')
       const gateName = `--fail-on ${failOn.security.map((r) => (r.cls === 'iac' ? 'iac-finding' : 'security-finding')).join(',')}`;
       const section = artifact.extended?.security;
       if (!section) {
-        console.error(chalk.red(`\n${gateName}: no infrastructure findings were evaluated (module missing or --iac not requested)`));
-        process.exit(2);
+        console.error(chalk.red(`\n${securityNotEvaluatedMessage(gateName)}`));
+        return failGate();
       }
       const threshold = lowestThreshold(failOn.security);
       const outcome = evaluateSecurityGate(section, failOn.security);
       if (outcome.unavailable.length > 0) {
-        console.error(chalk.red(`\n${gateName}: pack ${outcome.unavailable.join(', ')} is not available in the installed Architecture module (run \`vg module install arch\` to update it); no infrastructure findings were evaluated.`));
-        process.exit(2);
+        console.error(chalk.red(`\n${securityUnavailableMessage(gateName, outcome.unavailable)}`));
+        return failGate();
       }
       const packNames = Object.keys(section.packs).sort().join(', ');
       if (outcome.failed) {
@@ -899,18 +1028,17 @@ export const scanCommand = new Command('scan')
         console.error(chalk.red(`\nFailing: ${n} infrastructure finding${n === 1 ? '' : 's'} at or above ${threshold} (${packNames}).`));
         for (const f of outcome.matched.slice(0, 50)) console.error(chalk.dim(`  ${securityFindingRow(f)}`));
         if (n > 50) console.error(chalk.dim(`  … ${n - 50} more`));
-        process.exit(2);
+        return failGate();
       }
       if (!opts.quiet) console.error(chalk.dim(`\niac gate: no findings at or above ${threshold} (${securityPacksLabel(section)}).`));
     }
 
-    const measuredDrift = artifact.drift.score;
     if (scanOpts.driftBudget !== undefined) {
       const budget = compareDriftBudget(measuredDrift, scanOpts.driftBudget);
       if (budget.message) {
         console.error(budget.exitCode === 2 ? chalk.red(`\n${budget.message}`) : chalk.yellow(`\n${budget.message}`));
       }
-      if (budget.exitCode === 2) process.exit(2);
+      if (budget.exitCode === 2) return failGate();
     }
 
     if (scanOpts.driftWorseningPercent !== undefined) {
@@ -918,7 +1046,7 @@ export const scanCommand = new Command('scan')
         console.error(chalk.yellow('\nDriftScore is absent; --drift-worsening was not compared.'));
       } else if (artifact.delta === undefined) {
         console.error(chalk.red('\nFailing fitness function: --drift-worsening requires --baseline to compare against previous drift.'));
-        process.exit(2);
+        return failGate();
       } else if (artifact.delta > 0) {
         const baselineScore = measuredDrift - artifact.delta;
         const denominator = Math.max(Math.abs(baselineScore), 0.0001);
@@ -926,7 +1054,7 @@ export const scanCommand = new Command('scan')
 
         if (worseningPercent > scanOpts.driftWorseningPercent) {
           console.error(chalk.red(`\nFailing fitness function: drift worsened by ${worseningPercent.toFixed(2)}% (threshold ${scanOpts.driftWorseningPercent}%).`));
-          process.exit(2);
+          return failGate();
         }
       }
     }
@@ -951,9 +1079,11 @@ export const scanCommand = new Command('scan')
           else if (line.level === 'warn') console.error(chalk.yellow(line.text));
           else if (!opts.quiet) console.error(chalk.dim(line.text));
         }
-        if (gate.exitCode === 2) process.exit(2);
+        if (gate.exitCode === 2) return failGate();
       }
     }
+
+    await writeJUnitFile();
 
     // Reachability hand-off (before push): post the dependency coordinates the
     // scan found in the package manifests to the symbols preflight, then query
