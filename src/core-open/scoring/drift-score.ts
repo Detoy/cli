@@ -4,6 +4,7 @@
 import * as crypto from 'node:crypto';
 import type { ProjectScan, DriftScore, Finding, RiskLevel, VibgrateConfig } from '../types.js';
 import { licenseParseDiagnostic } from '../licenses/diagnostic.js';
+import { licenseEvidencePath } from '../licenses/dependency-license.js';
 import { aggregateDependencyDrift } from './dependency-drift-v3.js';
 
 /**
@@ -388,7 +389,9 @@ export function generateFindings(
     // A non-empty license that does not resolve, or an expression with an
     // unresolved constituent, is a data-quality finding. An explicit
     // NOASSERTION / empty declaration is not. Sort so the same manifest
-    // always emits the same order.
+    // always emits the same order. When the row recorded an evidence file,
+    // `location` and `details.path` are that file; a registry license has no
+    // local file, so the finding stays on the project path and omits `path`.
     const licenseFindings: Finding[] = [];
     const licenseDeps = [...project.dependencies].sort(
       (a, b) =>
@@ -397,14 +400,17 @@ export function generateFindings(
         a.section.localeCompare(b.section),
     );
     for (const dep of licenseDeps) {
-      const diag = licenseParseDiagnostic(dep.license?.raw, project.path, dep.package);
+      const evidence = licenseEvidencePath(dep.license?.path);
+      const diag = licenseParseDiagnostic(dep.license?.raw, evidence ?? project.path, dep.package);
       if (!diag) continue;
       licenseFindings.push({
         ruleId: diag.code,
         level: 'warning',
         message: diag.message,
         location: diag.location,
-        details: { raw: diag.raw },
+        details: evidence
+          ? { raw: diag.raw, path: evidence, source: dep.license?.source ?? 'manifest' }
+          : { raw: diag.raw },
       });
     }
     findings.push(...licenseFindings);

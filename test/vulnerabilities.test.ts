@@ -17,7 +17,7 @@ const VULNS: VulnerabilityScanResult = {
       package: 'lodash',
       version: '4.17.20',
       advisories: [
-        { id: 'GHSA-crit', aliases: ['CVE-2021-1'], summary: 'bad', severity: 'critical', cvss: 9.8, cvssVector: null, fixedVersions: ['4.17.21'], published: null, withdrawn: null, references: [] },
+        { id: 'GHSA-crit', aliases: ['CVE-2021-1'], summary: 'bad', severity: 'critical', cvss: 9.8, cvssVector: null, fixedVersions: ['4.17.21'], published: null, withdrawn: null, references: [], epss: 0.42, epssPercentile: 0.91, kev: true },
       ],
     },
     {
@@ -78,6 +78,11 @@ describe('vuln-data + list_vulnerabilities MCP tool', () => {
     expect(res.totalAdvisories).toBe(2);
     expect(res.affectedPackages).toBe(2);
     expect(res.packages.find((p) => p.package === 'lodash')?.advisories[0].cve).toBe('CVE-2021-1');
+    const lodash = res.packages.find((p) => p.package === 'lodash')?.advisories[0] as Record<string, unknown>;
+    expect(lodash).toMatchObject({ epss: 0.42, epssPercentile: 0.91, kev: true });
+    const minimist = res.packages.find((p) => p.package === 'minimist')?.advisories[0] as Record<string, unknown>;
+    expect(minimist).not.toHaveProperty('epss');
+    expect(minimist).not.toHaveProperty('kev');
   });
 
   it('filters by minimum severity', () => {

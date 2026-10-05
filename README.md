@@ -169,7 +169,7 @@ written to disk, and never phones home. `vg serve config` lists every knob and
 - **guide_node** — cited standards and practices for a node (OWASP/CWE).
 - **check_drift** — offline dependency inventory with optional git who-added attribution.
 - **vuln_attribution** — who introduced each open vulnerability, exposure windows, CRA remediation metrics.
-- **list_vulnerabilities** — known vulnerabilities from the last `vg scan --vulns`: CVE, severity, CVSS, fixed version.
+- **list_vulnerabilities** — known vulnerabilities from the last `vg scan --vulns`: CVE, severity, CVSS, fixed version, and EPSS or known-exploited fields when that scan recorded them.
 - **upgrade_impact** — what breaks if you upgrade a package: major distance, import blast radius, vulns fixed.
 - **list_models** — local models on disk (Ollama / LM Studio / gguf).
 - **resolve_library** — resolve a library to its canonical id and the version your project uses.
@@ -412,14 +412,15 @@ One scan gives you:
 - **Score breakdown** — runtime, frameworks, dependencies, EOL
 - **Per-project detail** across Node.js/TypeScript, .NET, Python, and Java
 - **Actionable findings** ranked by likely impact
+- **License evidence paths** in JSON and SARIF (`projects[].license.path`, finding `location`). A manifest `license` field, or a LICENSE / NOTICE / COPYING file, is named when one exists. Text that does not parse as SPDX is a `vibgrate/license-parse-failed` finding at that path; the file body is not copied into the result
 - **[SBOM](https://vibgrate.com/glossary/sbom) export** (CycloneDX / SPDX)
-- **Known vulnerabilities** (opt in with `--vulns`) — severity, CVSS, the fixing version, and, in a git repo, who introduced them
+- **Known vulnerabilities** (opt in with `--vulns`) — severity, CVSS, the fixing version, EPSS when the advisory data already has it, and, in a git repo, who introduced them
 
 ---
 
 ## Find known vulnerabilities and who introduced them
 
-`vg scan --vulns` checks your installed dependencies against the public [OSV](https://vibgrate.com/glossary/osv) database and reports each known vulnerability with its severity, CVSS score, and the version that fixes it — as text, JSON, or SARIF. `--offline` with `--package-manifest` runs the same check from a local package-version manifest: no registry call, no OSV call, and no upload. The file shape, the exit code when the file is missing, and what offline mode skips are in [DOCS.md](./DOCS.md#offline-package-manifest).
+`vg scan --vulns` checks your installed dependencies against the public [OSV](https://vibgrate.com/glossary/osv) database and reports each known vulnerability with its severity, CVSS score, and the version that fixes it — as text, JSON, or SARIF. JSON also includes `epss`, `epssPercentile`, and `kev` when the advisory data already carried them; a missing score is omitted, never written as `0`. Offline and manifest scans do not contact an EPSS service. `--offline` with `--package-manifest` runs the same check from a local package-version manifest: no registry call, no OSV call, and no upload. The file shape, the exit code when the file is missing, and what offline mode skips are in [DOCS.md](./DOCS.md#offline-package-manifest).
 
 When a finding already carries a fixed version (`fixedVersions` or `fixedVersion`) or a remediation string, the default text report follows it with `fix available: …`. That line is omitted when the metadata is missing or empty — the report does not claim there is no fix, and it does not look one up.
 
@@ -636,7 +637,7 @@ when you want that change set explicitly. It writes nothing unless you pass
 - No data leaves your machine unless you run `--push` / `vg push` / `vg share`.
 - Drift scoring reads manifests and configs only. The code graph (`vg build`/`vg map`) and a few extended scanners (code quality, database schema, UI text) read your source **locally** to compute structural facts and metrics — never a raw source line, and never uploaded as-is; see [DOCS.md](./DOCS.md#extended-scanners) for exactly what each one reads.
 - Works without login and without any SaaS dependency.
-- `--offline` skips registry and OSV lookups and skips upload. `--package-manifest <file>` supplies latest versions for drift and, with `--vulns`, the advisories to match. A missing or invalid manifest exits 1. See [DOCS.md](./DOCS.md#offline-package-manifest).
+- `--offline` skips registry and OSV lookups and skips upload. `--package-manifest <file>` supplies latest versions for drift and, with `--vulns`, the advisories to match. A missing or invalid manifest exits 1. See [DOCS.md](./DOCS.md#offline-package-manifest). The messages for a down network, a refused registry, or a failed upload — and what to do next — are in [DOCS.md](./DOCS.md#registry-auth-and-network-failures). Do not paste DSNs, `Authorization` headers, or `.npmrc` tokens into logs or issues.
 - `--max-privacy` suppresses local artifact writes and high-context scanners; `--no-local-artifacts` skips writing `.vibgrate/*.json` to disk.
 - `vg code --local` keeps model inference on-device: a local model, the local graph, no hosted call and no model-catalog fetch. The agent's own web tools stay available and, like every network step, are approved by you before they run.
 - `vg code` never reads a secrets file into a prompt, and redacts credential shapes from files it does read.
@@ -831,6 +832,7 @@ Recommended rollout: `vg build` + `vg install` now, add `vg scan` to CI this wee
 - **`--auto` is a denylist, not a sandbox.** It blocks known-catastrophic commands; it does not confine the agent. Run untrusted instructions in a container, or under `--worktree` with `--security-tier L1`.
 - **`--verify` re-runs your tests; it does not prove correctness.** Failures are fed back for a repair attempt. Passing tests mean passing tests.
 - **Vulnerability data is only as current as its source.** `--vulns` reports what OSV knows at scan time. With `--offline`, it reports the advisories in the `--package-manifest` file.
+- **SARIF keeps every alias of one advisory on a single result.** `properties.advisoryId` is that record's own id; the other ids (CVE, GHSA, OSV) are `properties.aliases`. A second advisory record stays a second result, including when the two ids alias each other, so a code-scanning upload can show a near-duplicate. See [Advisory aliases](./DOCS.md#advisory-aliases).
 - **Vibgrate Evidence produces evidence, not a compliance determination.** It supports your obligations under a regime; it does not decide that you meet them, does not certify anything, and is not legal advice. The filing is yours.
 - **Evidence cannot look backwards.** Exposure is answered from manifests frozen at ship time. A release you never froze stays `undetermined` — there is no way to reconstruct it after the fact.
 - **`vg evidence watch` surfaces a KEV listing, not a determination.** Whether a vulnerability is "actively exploited" for the purposes of a filing is your call, not the tool's.

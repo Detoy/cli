@@ -31,6 +31,7 @@ import { ComposerCache } from './scanners/composer-cache.js';
 import { PubCache } from './scanners/pub-cache.js';
 import { Semaphore } from './utils/semaphore.js';
 import { computeDriftScore, generateFindings, computeProjectId, computeSolutionId } from './scoring/drift-score.js';
+import { attachLicenseEvidence } from './licenses/evidence.js';
 import { formatText } from './formatters/text.js';
 import { formatSarif } from './formatters/sarif.js';
 import { formatMarkdown } from './formatters/markdown.js';
@@ -727,7 +728,11 @@ export async function runCoreScan(
 
   // ── Step: Findings ──
   progress.startStep('findings');
-  const findings = [...generateFindings(allProjects, config), ...vulnFindings];
+  // Local license declarations (manifest field or LICENSE / NOTICE / COPYING).
+  // Unparseable SPDX text is a finding at that file. Registry licenses have no
+  // local file; generateFindings keeps those on the project path.
+  const licenseFileFindings = await attachLicenseEvidence(rootDir, allProjects);
+  const findings = [...generateFindings(allProjects, config), ...licenseFileFindings, ...vulnFindings];
   const warnCount = findings.filter((f) => f.level === 'warning').length;
   const errCount = findings.filter((f) => f.level === 'error').length;
   const noteCount = findings.filter((f) => f.level === 'note').length;

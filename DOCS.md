@@ -87,6 +87,7 @@ For a quick overview, see the [README](./README.md). This document covers everyt
   - [Text](#text)
   - [JSON Artifact](#json-artifact)
   - [SARIF](#sarif)
+    - [Advisory aliases](#advisory-aliases)
   - [Markdown](#markdown)
   - [JUnit](#junit)
 - [Configuration](#configuration)
@@ -118,6 +119,7 @@ For a quick overview, see the [README](./README.md). This document covers everyt
 - [Vibgrate Cloud Upload](#vibgrate-cloud-upload)
   - [DSN Tokens](#dsn-tokens)
   - [Data Residency](#data-residency)
+- [Registry, auth, and network failures](#registry-auth-and-network-failures)
 - [Privacy & Security](#privacy--security)
 - [Exit Codes](#exit-codes)
 - [Programmatic API](#programmatic-api)
@@ -1218,7 +1220,7 @@ vg scan [path] [--vulns] [--full] [--format text|json|sarif|md] [--out <file>] [
 
 By default, the scan writes `.vibgrate/scan_result.json`. Use `--no-local-artifacts` or `--max-privacy` to suppress local JSON artifact files.
 
-For offline drift scoring and offline vulnerability checks, pass `--package-manifest <file>` (a JSON file, or a ZIP such as `https://github.com/vibgrate/manifests/latest-packages.zip`). The file shape, the exit code when it is missing, and what `--offline` skips are under [Offline package manifest](#offline-package-manifest).
+For offline drift scoring and offline vulnerability checks, pass `--package-manifest <file>` (a JSON file, or a ZIP such as `https://github.com/vibgrate/manifests/latest-packages.zip`). The file shape, the exit code when it is missing, and what `--offline` skips are under [Offline package manifest](#offline-package-manifest). When a registry, advisory source, or upload fails, the messages and the next step are in [Registry, auth, and network failures](#registry-auth-and-network-failures).
 
 Examples:
 
@@ -1251,8 +1253,32 @@ Expected results:
 
 ### Vulnerabilities and exposure attribution
 
-`vg scan --vulns` matches your installed dependencies against the public OSV database and records each known vulnerability — advisory id and CVE, severity, CVSS, and the fixing version — in the scan artifact, as findings, and in SARIF. With `--offline`, the same check uses advisories carried in a [`--package-manifest`](#offline-package-manifest) file and does not call OSV. The default text output follows a finding with `fix available: …` when that fixing version (or a remediation string) is already on the finding, and omits the line when it is not.
+`vg scan --vulns` matches your installed dependencies against the public OSV database and records each known vulnerability — advisory id and CVE, severity, CVSS, and the fixing version — in the scan artifact, as findings, and in SARIF. With `--offline`, the same check uses advisories carried in a [`--package-manifest`](#offline-package-manifest) file and does not call OSV. How those findings show up in SARIF when one issue is known under several ids is described under [Advisory aliases](#advisory-aliases): one result per advisory record, primary id on `properties.advisoryId`, the other ids on `properties.aliases`. The default text output follows a finding with `fix available: …` when that fixing version (or a remediation string) is already on the finding, and omits the line when it is not.
 
+Machine-readable JSON (`vg scan --format json`, and the `.vibgrate/scan_result.json` artifact) lists each advisory under `extended.vulnerabilities.packages[].advisories`. When the advisory data used for that scan already carries exploitability, the same object includes these optional fields:
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `epss` | number, 0–1 | [FIRST EPSS](https://www.first.org/epss/) probability that the CVE is exploited in the wild within 30 days |
+| `epssPercentile` | number, 0–1 | EPSS percentile for that probability |
+| `kev` | boolean | Whether that advisory data marks the CVE in the CISA Known Exploited Vulnerabilities catalog |
+
+A value that is not in the source is omitted. It is never written as `0` or `false` to mean "unknown". A present `0` is a real EPSS score, and a present `false` means the data explicitly says the CVE is not in the catalog. Text and SARIF findings are unchanged.
+
+`vg scan --vulns --offline` and `--package-manifest` read these fields from the local bundle only. They do not contact an EPSS or KEV service. An online scan reads them from the OSV advisory document when that document already includes them, and does not make a separate exploitability request.
+
+A package-manifest `vulns` entry accepts the same optional fields:
+
+```json
+{
+  "id": "GHSA-example",
+  "severity": "high",
+  "ranges": [{ "introduced": "0", "fixed": "1.3.1" }],
+  "epss": 0.42,
+  "epssPercentile": 0.91,
+  "kev": false
+}
+```
 In a git repository the scan also attributes each finding: the commit, author, and date that introduced the vulnerable version, and how long you have been exposed. These exposure windows aggregate into remediation metrics framed around the [EU Cyber Resilience Act (CRA)](https://vibgrate.com/compliance/cra): open counts by severity, mean and maximum time exposed, and per-severity SLA breaches (defaults: critical 7 days, high 30, moderate 90, low 180). The metrics are descriptive — they show whether remediation keeps pace; they are not a compliance certification.
 
 The scan also reconstructs **closed** exposure windows from history — a vulnerable version that was later bumped out of the affected range or removed from the lockfile entirely — and reports real remediation time (MTTR) from them: measured, not estimated. Offline, a package-version manifest extends this to advisories that are fully fixed today, so a dependency that is clean now but was once vulnerable still counts toward your remediation record.
@@ -3133,7 +3159,43 @@ The full scan artifact in JSON format. Contains all raw data, scores, findings, 
 
 ### SARIF
 
-[Static Analysis Results Interchange Format](https://sarifweb.azurewebsites.net/) — compatible with GitHub Code Scanning and Azure DevOps. Contains findings only (not all metrics). Ideal for integrating drift findings directly into your PR review workflow.
+[Static Analysis Results Interchange Format](https://sarifweb.azurewebsites.net/) 2.1.0 — compatible with GitHub code scanning and Azure DevOps. The document contains findings, not the drift score or the other metrics.
+
+```bash
+vg scan --format sarif
+vg scan --vulns --format sarif
+```
+
+`runs[0]` holds the drift findings and, when you passed `--vulns`, the vulnerability findings. A second run is added only for infrastructure findings (`vg scan --iac`). Advisory results stay on the first run.
+
+#### Advisory aliases
+
+A vulnerability is often published under more than one id: a GHSA id, a CVE id, and sometimes an OSV id. When those ids belong to **one advisory record**, `vg scan --format sarif` keeps them on **one result**.
+
+Each installed package produces one result per advisory record that affects the installed version. The record's own id is the primary id, on `properties.advisoryId`. The other ids are `properties.aliases`, in the order OSV or your offline package-version manifest supplied. That array is not sorted. An advisory with no aliases has `"aliases": []`. The formatter copies the finding's `details` object onto `properties`, so the same object also carries `ecosystem`, `package`, `installedVersion`, `severity`, `cvss` (`null` when the advisory has no score), and `fixedVersions`.
+
+The result `ruleId` is `vibgrate/vulnerability`. The location `uri` is the package name. `critical` and `high` map to SARIF level `error`, `moderate` to `warning`, and `low` or `unknown` to `note`. The message text looks like:
+
+```text
+widget@1.2.0: GHSA-widg-et00-0001 (CVE-2099-9999) (high 7.5) — fixed in 1.2.1
+```
+
+The id in front is `properties.advisoryId`. The parenthetical CVE is the first alias that starts with `CVE-`, and only when that CVE is not already the primary id. Any other alias — including a GHSA id when the primary id is the CVE — stays in `properties.aliases` and is left out of the message. The message ends with `— fixed in <versions>` when a fix is listed, and `— no fix available` when it is not. The CVSS score is left out of the severity parentheses when the advisory has no score (`(low)` rather than `(low 2.1)`).
+
+**Two records stay two results.** `aliases` is not a grouping key. If OSV or your manifest returns a GHSA record and a separate CVE record for the same issue, and each names the other in `aliases`, the SARIF output contains both results. A code-scanning upload can show those as near-duplicate alerts. `vg scan` does not collapse them.
+
+**Order.** The formatter writes `results` in findings order and does not sort them again. `tool.driver.rules` lists each distinct `ruleId` once, in the order that id first appears among the findings. Drift findings come first, in the order the drift scan emitted them. Vulnerability findings follow, sorted by ecosystem, then package name, then version, and within a package by severity (`critical`, `high`, `moderate`, `low`, `unknown`) and then by advisory id. The order of ids in the OSV response or the manifest does not change that. `invocations[0].startTimeUtc` is the time of the scan, so two scans of the same tree are not byte-for-byte identical; the vulnerability results are.
+
+Vulnerability results do not set `partialFingerprints`. Every advisory on a package shares the rule id `vibgrate/vulnerability` and the same location (the package name). Tell those results apart with `properties.advisoryId` and `properties.aliases`.
+
+```bash
+vg scan --vulns --format sarif
+vg scan --vulns --offline --package-manifest ./package-versions.json --format sarif
+```
+
+Read `runs[0].results`. One advisory record with several aliases is one object in that array.
+
+A declared license names its evidence file in JSON and SARIF when `vg scan` has one. A `package.json` `license` or `licenses` field is that file; otherwise the first existing `LICENSE`, `LICENCE`, `COPYING`, or `NOTICE` file in the project directory (also `.md` and `.txt`, in that order) is. The path is `projects[].license.path`. Text that does not resolve as SPDX is a `vibgrate/license-parse-failed` finding: JSON sets `location` and `details.path` to the repo-relative path, and SARIF uses the same path as `physicalLocation.artifactLocation.uri` and `properties.path`. The license body is not copied into the artifact. An explicit `NOASSERTION` is not a failure. A registry license string has no local file, so the finding stays on the dependency and `location` remains the project path, without `details.path`. Those file findings are sorted by path.
 
 Test reporters that ingest JUnit can take a companion file from the same scan. See [JUnit](#junit). The process exit code is unchanged either way; see [Exit Codes](#exit-codes).
 
@@ -3624,6 +3686,213 @@ Vibgrate supports region-specific ingest endpoints:
 | EU           | `eu.ingest.vibgrate.com` |
 
 Use `--region eu` on `push` or `dsn create` to route data to the EU endpoint.
+
+---
+
+## Registry, auth, and network failures
+
+`vg scan` can contact the public npm registry, and with `--vulns` the OSV advisory API. `vg scan --push` and `vg push` can contact a Vibgrate ingest host. `vg update` and `vg module install` contact a package registry to install or refresh the CLI and its optional modules. `vg build` does not contact a package registry. This section lists the messages those paths print and the next step for each one.
+
+Secrets must not appear in `vg` output or in CI logs. The examples below use placeholders (`<token>`, `<key_id>`, `<secret>`, `<status>`, `<path>`). Do not paste a DSN, an `Authorization` header, a `.npmrc` line, or a registry URL that contains a username or token into an issue, a chat, or a log you share. Quote the status code and the message text around it.
+
+`vg dsn create` prints the new DSN once so you can store it as the `VIBGRATE_DSN` secret. That line is a credential. Prefer `vg dsn create --write <path>` (the CLI gitignores the file when it lives in the repo) or your CI secret store, and do not copy the DSN line into a job log.
+
+A value passed to `--ingest` that is not a URL is printed with userinfo and credential query parameters removed (`Invalid ingest URL: …`). A value that does parse contributes only its host. The host is what later messages name (`Could not reach <host>: …`).
+
+### The network is down, or the public npm registry is blocked
+
+Unless you pass `--offline`, `vg scan` sends `HEAD https://registry.npmjs.org/npm/latest` before it scores drift. A thrown request (no route, timeout, DNS) falls back to `npm view`. A non-2xx response does not. If the check fails, the scan stops. The process prints:
+
+```text
+error:
+  ✖ Vibgrate cannot connect to the npm registry to check package versions.
+
+    Possible causes:
+    • No internet connection
+    • Corporate proxy/firewall blocking registry.npmjs.org
+    • npm is not installed or not in PATH
+
+    Try running: npm view npm dist-tags.latest
+  (ref <id>) — re-run with --json for detail, or report at https://vibgrate.com/help
+```
+
+`<id>` is a local reference for that process. It is not a credential. npm's own stderr is not included.
+
+Next step: run `npm view npm dist-tags.latest` as the same user, with the same `PATH`, that the scan uses. When the registry must stay unreachable, skip it and score from a local bundle:
+
+```bash
+vg scan --offline --package-manifest ./package-versions.zip
+```
+
+`--offline` skips the connectivity check, does not upload, and does not query OSV. A lookup already in the on-disk registry cache is still used. Entries live for four hours under `registry/<ecosystem>` inside `VIBGRATE_CACHE_DIR`, or in the user cache directory when that variable is unset. A cache miss leaves that package's latest version unknown, so drift for it is partial until you pass `--package-manifest`.
+
+PyPI, Maven Central, NuGet, RubyGems, crates.io, Go, Packagist, pub.dev, Hex, Docker Hub, Helm, and the Terraform Registry do not abort the scan. A failed or non-2xx lookup becomes empty metadata and is not printed as its own error. Those clients do not send an `Authorization` header and do not read `.npmrc`. After the npm preflight has passed, a later per-package npm failure does the same: it tries `npm view` (which honours `.npmrc`) and, if that fails, records empty metadata without copying npm's stderr.
+
+`vg drift` stays on the local inventory unless you pass `--online`. A registry miss then marks that dependency unknown and prints no extra line. `--online` together with `--offline` or `--local` stops first with:
+
+```text
+error: --online conflicts with --local (no network in local mode)
+```
+
+A code-map failure during `vg scan` does not fail the scan. The progress line reads `skipped (map build failed)`.
+
+`vg update` checks the public npm registry for the CLI:
+
+```text
+Could not reach the npm registry. Check your network connection.
+```
+
+The command exits 1. It does not print a registry URL or a token. A local module that cannot be refreshed warns, and the CLI update itself still succeeds when the CLI package was reachable:
+
+```text
+  <package> module could not be updated — registry unreachable or no published version
+```
+
+### The registry is misconfigured or refused the request
+
+There is no separate sentence for "the registry returned 401". A non-2xx answer from `registry.npmjs.org` during the scan preflight uses the "cannot connect" message above. Per-package npm lookups that get a non-2xx answer fall through to `npm view` and stay silent when that also fails. Fix registry access in the environment npm already uses (proxy, `.npmrc` registry host). Do not put a token on the `vg` command line.
+
+`vg module install <name>` reports the HTTP status only:
+
+```text
+error: install failed: registry <status> — check network access to the registry, or retry later
+```
+
+`<status>` is the number (`registry 401`, `registry 403`, `tarball 404`). `VIBGRATE_MODULE_REGISTRY`, when set, must be a registry base URL without userinfo. The installer does not add an `Authorization` header. The same status text can show up from `vg update` as `<package> module could not be updated — registry <status>`.
+
+### `--package-manifest` is missing or unusable
+
+These stop `vg scan` before any registry call (exit code 1). The path is included. The file contents are not.
+
+```text
+error: Package manifest not found: <path>. Pass a readable JSON or ZIP package-version manifest to --package-manifest.
+error: Package manifest is not readable: <path>. Check permissions and pass a readable JSON or ZIP package-version manifest to --package-manifest.
+error: Package manifest is not readable: <path>. Reading a ZIP manifest needs the unzip command. Pass a JSON package-version manifest to --package-manifest, or install unzip.
+error: Package manifest is not a file: <path>. Pass a JSON or ZIP package-version manifest to --package-manifest.
+error: Package manifest is not usable: <path>. Expected a JSON object of package versions, or a ZIP containing package-versions.json, manifest.json, or index.json.
+error: Package manifest is not usable: <path>. The ZIP must contain package-versions.json, manifest.json, or index.json.
+```
+
+Pass a readable JSON object of package versions, or a ZIP that contains `package-versions.json`, `manifest.json`, or `index.json`.
+
+### The advisory source could not be asked
+
+`vg scan --vulns` queries OSV. When a batch cannot be answered, the vulnerability progress line completes with:
+
+```text
+OSV unreachable — not checked
+```
+
+Treat that run as unchecked. To score advisories without OSV, put them in the manifest bundle and run:
+
+```bash
+vg scan --vulns --offline --package-manifest ./package-versions.zip
+```
+
+`vg evidence`, when it has to fetch one advisory, prints one of:
+
+```text
+error: cannot fetch advisory <id> in --offline mode — supply it with --advisory <file> (OSV or Vibgrate-shaped)
+error: could not reach OSV to resolve <id> — supply it with --advisory <file>, or retry online
+error: OSV returned <status> for <id> — check the id, or supply the advisory with --advisory <file>
+error: network fetch is unavailable in this runtime — supply the advisory with --advisory <file>
+error: advisory file not found: <path>
+error: advisory file is not a valid Vibgrate or OSV advisory: <path>
+```
+
+Supply the advisory with `--advisory <file>`, or retry when the network is available. The advisory id is not a secret. The file messages name the path.
+
+### Upload authentication failed, or the DSN is missing
+
+DSN resolution order for `vg scan --push`, `vg push`, `vg fix`, and `vg lib publish` is: `--dsn`, then `VIBGRATE_DSN`, then the stored login. The store is `~/.vibgrate/credentials.json`, or `<project>/.vibgrate/credentials.json` when that file exists or you passed `vg login --local`. An explicit `VIBGRATE_CREDENTIALS` path wins over both. None of these commands print the DSN they resolved.
+
+`--offline` disables upload even when a DSN is set.
+
+No credential, `vg scan --push`:
+
+```text
+No DSN provided for push.
+Run "vibgrate login", set VIBGRATE_DSN, or use the --dsn flag.
+No account yet? Claim this run: https://dash.vibgrate.com/claim?vid=<install-id>&job=scan_drift&channel=cli
+```
+
+`vg push` prints `No DSN provided.` and the same following lines. The claim URL's `vid` is this machine's install id, not a DSN. Next step: `vg login`, or set `VIBGRATE_DSN` in the CI secret store (never as a plain workflow variable that is echoed). `--strict` turns the missing DSN into exit code 1. Without `--strict` the local scan result is kept and the upload is skipped.
+
+A DSN that does not match `vibgrate+https://<key_id>:<secret>@<host>/<workspace_id>`:
+
+```text
+Invalid DSN format.
+```
+
+`vg push` adds a second line, `Expected: vibgrate+https://<key_id>:<secret>@<host>/<workspace_id>`. Those angle brackets are the placeholders the CLI prints. They are not your key. `vg fix` says `Invalid DSN format. Re-run "vg login" or check VIBGRATE_DSN.` When nothing is stored it prints `vg fix needs a Vibgrate login.` and `Run "vg login" (or set VIBGRATE_DSN / pass --dsn) to analyse upgrades with the hosted planner.` (`vg` is `npx @vibgrate/cli` when you invoked the CLI that way).
+
+`vg lib publish` with no usable DSN:
+
+```text
+error: publishing a private library requires a DSN — run `vibgrate login` or set VIBGRATE_DSN
+```
+
+Under `--offline` or `--local` it stops earlier:
+
+```text
+error: vg lib publish uploads to the hosted catalog — it needs network (remove --offline/--local)
+```
+
+When the upload endpoint answers with a non-2xx status, `vg scan --push` and `vg push` print the status and the response body. They do not print the DSN or the `Authorization` header:
+
+```text
+Upload failed: HTTP <status>: <body>
+```
+
+Pushing a `vg review` receipt prints `Upload failed (<status>): <detail>` (the server `error` string when the body is JSON, otherwise the body, cut to 200 characters). If `<body>` or `<detail>` looks like it contains a secret, do not paste it into a ticket. Quote the status code. Then run `vg login` again, or replace `VIBGRATE_DSN` with a DSN for this workspace. Check `--region us` or `--region eu`. A workspace pinned to another region is retried on its own; the CLI prints `↻ Workspace is pinned to a different region — retrying upload to <host>...`.
+
+Before the scan, when a push will be attempted, a failed preflight prints:
+
+```text
+Preflight check failed: <message>
+```
+
+`<message>` is `HTTP <status>: <json body>` when the server answers, or the transport error when it does not. The local scan continues unless you passed `--strict`. A plan limit (repository cap, scan credits, VM minutes) is a separate warning and still runs the local scan; see the plan-limit note under [`vg scan`](#vg-scan).
+
+`vg login` transport failures:
+
+```text
+Failed to start login (HTTP <status>).
+Could not reach <host>: <message>
+```
+
+`<host>` is the ingest hostname. Browser outcomes: `✖ Login was denied in the browser.`, `✖ Login request expired. Run "vibgrate login" again.`, `✖ Timed out waiting for approval. Run "vibgrate login" again.` After a successful sign-in, workspace setup can still fail: `✖ Signed in, but workspace setup failed: Failed to provision workspace: <error>`, then `Finish setup with "vibgrate dsn create --workspace new".` `vg dsn create --workspace new` prints `Failed to provision DSN: <error>` on the same provision failure. The provision error is the server's `error` string or the transport message. It does not include the new key.
+
+Unknown or unavailable region, and a bad `--ingest` (from `vg login`, `vg dsn create`, `vg scan --region`, or `vg push --region`):
+
+```text
+Unknown region "<id>". Supported: us, eu
+Region "apac" (Asia-Pacific (coming soon)) is not yet available. Supported: us, eu
+Invalid ingest URL: <url>
+```
+
+`vg doctor` reports where the credential came from and never the secret:
+
+```text
+  auth       anonymous — fine for everything local; `vg login` enables push/publish
+  auth       <env|project|home> <path> · workspace <workspace-id> · <host>
+```
+
+`<path>` is empty when the DSN comes from `VIBGRATE_DSN`. The source is `env` (the `VIBGRATE_DSN` or `VIBGRATE_CREDENTIALS` environment), `project` (`.vibgrate/credentials.json` in the repo), or `home` (`~/.vibgrate/credentials.json`). Hosted reachability, when checked, is `hosted <base> · unreachable — local answers still work`. `--local` skips that probe: `hosted skipped under --local (<base>)`.
+
+`vg install <assistant> --login` under `--offline` or `--local`:
+
+```text
+error: --login needs the network; it cannot run under --local/--offline
+```
+
+A Copilot token exchange failure names the HTTP status and does not print the token:
+
+```text
+error: Copilot token exchange failed (<status>); run `vg install copilot-cli --compress --login` to sign in again.
+```
+
+The success line prints a `sha256:` fingerprint, not the token.
 
 ---
 
