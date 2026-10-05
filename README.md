@@ -599,6 +599,8 @@ vg sbom delta  --from .vibgrate/baseline.json --to .vibgrate/scan_result.json --
 vg vex                          # generate an OpenVEX document for attestation
 ```
 
+Component identity in the SBOM is the Package URL on each component (CycloneDX `purl` and `bom-ref`, SPDX purl `externalRef`). `vg scan --format json` records the same package as ecosystem, name, and installed version. Neither output includes a CPE. The fields to key on, including a local advisory match, are in [DOCS.md](./DOCS.md#component-identity).
+
 ## Review a change
 
 **Vibgrate Review** reads the current change against the declared architecture and security-control policy. It reports change integrity, not a proof of security.

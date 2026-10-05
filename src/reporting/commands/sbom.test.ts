@@ -183,6 +183,31 @@ describe('sbom helpers', () => {
     expect(sbom.components[0].purl).toBe('pkg:golang/github.com/gin-contrib/sse@1.9.0');
   });
 
+  it('keeps a nested Maven group in the purl and does not emit a CPE', () => {
+    const artifact = makeArtifact('2.11.0', 90);
+    artifact.projects[0]!.type = 'java';
+    artifact.projects[0]!.dependencies[0]!.package = 'com.google.code.gson:gson';
+    artifact.projects[0]!.dependencies[0]!.currentSpec = '2.11.0';
+    artifact.projects[0]!.dependencies[0]!.resolvedVersion = '2.11.0';
+
+    const cdx = toCycloneDx(artifact) as {
+      components: Array<{ name: string; purl?: string; cpe?: string; 'bom-ref': string }>;
+    };
+    const component = cdx.components[0]!;
+    expect(component.name).toBe('com.google.code.gson:gson');
+    expect(component.purl).toBe('pkg:maven/com.google.code.gson/gson@2.11.0');
+    expect(component['bom-ref']).toBe(component.purl);
+    expect(component.cpe).toBeUndefined();
+    expect(Object.prototype.hasOwnProperty.call(component, 'cpe')).toBe(false);
+
+    const spdx = toSpdx(artifact) as {
+      packages: Array<{ externalRefs?: Array<{ referenceType: string; referenceLocator: string }> }>;
+    };
+    const refs = spdx.packages[0]!.externalRefs ?? [];
+    expect(refs.map((ref) => ref.referenceType)).toEqual(['purl']);
+    expect(refs[0]!.referenceLocator).toBe('pkg:maven/com.google.code.gson/gson@2.11.0');
+  });
+
   it('dedupes a direct dependency shared by several scanned projects (a Cargo/npm workspace or Gradle multi-module repo) into one component', () => {
     const artifact = makeArtifact('5.3.0', 90);
     artifact.projects.push({ ...artifact.projects[0]!, name: 'other-workspace-member' } as ProjectScan);
