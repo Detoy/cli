@@ -7,7 +7,8 @@ import { resolveIngestHost } from './dsn.js';
 import { resolveDsn } from '../credentials.js';
 import { availableRegionIds, dashHostForIngestHost } from '../regions.js';
 import { prepareCompressedUpload } from '../utils/compact-artifact.js';
-import { uploadScanArtifact } from '../utils/upload.js';
+import { formatUploadHttpFailure, uploadScanArtifact } from '../utils/upload.js';
+import { redactForDisplay } from '../../core-open/utils/redact.js';
 import { loadConfig } from '../../core-open/index.js';
 import { installId } from '../../engine/stats-share.js';
 import type { ScanArtifact } from '../types.js';
@@ -114,7 +115,7 @@ export const pushCommand = new Command('push')
       );
       const result = await pushReceipt(parsed, envelope);
       if (!result.ok) {
-        console.error(chalk.red(`Upload failed (${result.status}): ${result.detail ?? ''}`));
+        console.error(chalk.red(`Upload failed (${result.status}): ${redactForDisplay(result.detail ?? '')}`));
         if (opts.strict) process.exit(1);
         return;
       }
@@ -168,7 +169,7 @@ export const pushCommand = new Command('push')
 
       if (!response.ok) {
         const text = await response.text();
-        throw new Error(`HTTP ${response.status}: ${text}`);
+        throw new Error(formatUploadHttpFailure(response.status, text));
       }
 
       const result = await response.json() as { status: string; ingestId?: string };
@@ -186,7 +187,7 @@ export const pushCommand = new Command('push')
         console.log(chalk.dim('View report: ') + chalk.underline(reportUrl));
       }
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = redactForDisplay(e instanceof Error ? e.message : String(e));
       console.error(chalk.red(`Upload failed: ${msg}`));
       if (opts.strict) process.exit(1);
     }

@@ -13,6 +13,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { redactForDisplay } from '../core-open/utils/redact.js';
 import { CliError, ExitCode } from '../util/exit.js';
 import { VERSION } from '../version.js';
 import type { AnalysisCapsule, ReviewIngestEnvelope, ReviewReceipt } from './schemas.js';
@@ -197,7 +198,7 @@ export async function postIngest(dsn: ParsedDsn, route: string, body: unknown, f
     });
   } catch (e) {
     throw new CliError(
-      `could not reach ${dsn.host}: ${e instanceof Error ? e.message : String(e)}`,
+      `could not reach ${dsn.host}: ${redactForDisplay(e instanceof Error ? e.message : String(e))}`,
       ExitCode.ERROR,
     );
   }
@@ -212,7 +213,7 @@ export async function postIngest(dsn: ParsedDsn, route: string, body: unknown, f
     } catch {
       /* not JSON: keep the raw text */
     }
-    return { ok: false, status: res.status, host: dsn.host, detail: (error ?? detail).slice(0, 200), ...(code ? { code } : {}) };
+    return { ok: false, status: res.status, host: dsn.host, detail: redactForDisplay(error ?? detail).slice(0, 200), ...(code ? { code } : {}) };
   }
   const text = await res.text().catch(() => '');
   let json: unknown;

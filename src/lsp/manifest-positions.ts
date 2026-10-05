@@ -74,8 +74,9 @@ export function findPackageLine(text: string, pkg: string, kind: ManifestKind): 
         return [new RegExp(`^\\s*"${p}"\\s*:`)];
 
       case 'go.mod':
-        // 	github.com/foo/bar v1.2.3      (inside a require block, or `require x v1`)
-        return [new RegExp(`^\\s*(?:require\\s+)?${p}\\s+v?\\d`)];
+        // github.com/foo/bar v1.2.3   or a require with no version
+        // (inside a require block, or `require x`)
+        return [new RegExp(`^\\s*(?:require\\s+)?${p}(?:\\s|$)`)];
 
       case 'requirements.txt':
         // requests==2.31.0 · requests>=2 · requests[security]==2 · requests

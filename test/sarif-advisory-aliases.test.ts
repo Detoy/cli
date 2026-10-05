@@ -1,21 +1,9 @@
-/**
- * Pins the SARIF shape documented under "Advisory aliases" in DOCS.md.
- *
- * One advisory record is one result, even when it lists several ids. Two
- * records that name each other in `aliases` stay two results. Order comes from
- * the offline scan (ecosystem, package, version, then severity, then id), not
- * from the order of the manifest.
- */
-import { describe, expect, it } from 'vitest';
-import {
-  formatSarif,
-  generateVulnerabilityFindings,
-  scanVulnerabilities,
-  Semaphore,
-  type Finding,
-  type ScanArtifact,
-  type VulnerabilityScanResult,
-} from '../src/core-open/index.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { formatSarif } from '../src/core-open/formatters/sarif.js';
+import { generateVulnerabilityFindings, scanVulnerabilities } from '../src/core-open/index.js';
+import type { PackageVersionManifest } from '../src/core-open/package-version-manifest.js';
+import type { Finding, ScanArtifact } from '../src/core-open/types.js';
+import { Semaphore } from '../src/core-open/utils/semaphore.js';
 
 interface SarifResult {
   ruleId: string;
@@ -23,228 +11,232 @@ interface SarifResult {
   message: { text: string };
   locations: Array<{ physicalLocation: { artifactLocation: { uri: string } } }>;
   properties?: Record<string, unknown>;
-  partialFingerprints?: Record<string, string>;
 }
 
 interface SarifDoc {
-  version: string;
   runs: Array<{
     tool: { driver: { rules: Array<{ id: string }> } };
     results: SarifResult[];
   }>;
 }
 
-function toSarif(result: VulnerabilityScanResult, leading: Finding[] = []): SarifDoc {
-  const artifact: ScanArtifact = {
+/** Manifest order is deliberately not the documented SARIF order. */
+const MANIFEST: PackageVersionManifest = {
+  pypi: {
+    requests: {
+      vulns: [
+        {
+          id: 'GHSA-req',
+          aliases: ['CVE-2023-1'],
+          severity: 'low',
+          cvss: 2.1,
+          ranges: [{ introduced: '0' }],
+        },
+      ],
+    },
+  },
+  npm: {
+    lodash: {
+      vulns: [
+        {
+          id: 'CVE-2024-1111',
+          aliases: ['GHSA-bbbb'],
+          severity: 'high',
+          cvss: 7.5,
+          ranges: [{ introduced: '0', fixed: '4.17.21' }],
+        },
+        {
+          id: 'GHSA-cccc',
+          aliases: [],
+          severity: 'moderate',
+          ranges: [{ introduced: '0' }],
+        },
+        {
+          id: 'GHSA-bbbb',
+          aliases: ['CVE-2024-1111', 'OSV-1'],
+          severity: 'critical',
+          cvss: 9.1,
+          ranges: [{ introduced: '0', fixed: '4.17.21' }],
+        },
+      ],
+    },
+    'left-pad': {
+      vulns: [
+        {
+          id: 'GHSA-zzzz',
+          aliases: ['CVE-2024-2000'],
+          severity: 'moderate',
+          ranges: [{ introduced: '0' }],
+        },
+      ],
+    },
+  },
+};
+
+const TARGETS = [
+  { ecosystem: 'pypi' as const, package: 'requests', version: '2.31.0' },
+  { ecosystem: 'npm' as const, package: 'lodash', version: '4.17.20' },
+  { ecosystem: 'npm' as const, package: 'left-pad', version: '1.0.0' },
+];
+
+function artifact(findings: Finding[]): ScanArtifact {
+  return {
     schemaVersion: '1.0',
-    timestamp: '2026-01-01T00:00:00.000Z',
+    timestamp: '2026-10-04T00:00:00.000Z',
     vibgrateVersion: '0.0.0-test',
-    rootPath: 'fixture',
+    rootPath: '.',
     projects: [],
     drift: {
       score: 0,
       riskLevel: 'low',
-      components: {
-        runtimeScore: 0,
-        frameworkScore: 0,
-        dependencyScore: 0,
-        eolScore: 0,
-      },
+      components: { runtimeScore: 0, frameworkScore: 0, dependencyScore: 0, eolScore: 0 },
     },
-    findings: [...leading, ...generateVulnerabilityFindings(result)],
+    findings,
   };
-  return formatSarif(artifact) as SarifDoc;
 }
 
-describe('SARIF advisory aliases', () => {
-  it('emits one result for an advisory that lists several ids', async () => {
-    const scanned = await scanVulnerabilities(
-      [{ ecosystem: 'npm', package: 'widget', version: '1.2.0' }],
-      {
-        sem: new Semaphore(1),
-        offline: true,
-        manifest: {
-          npm: {
-            widget: {
-              latest: '1.2.0',
-              vulns: [
-                {
-                  id: 'GHSA-widg-et00-0001',
-                  // OSV id first, CVE second: the message still picks the CVE,
-                  // and properties.aliases keeps this order.
-                  aliases: ['OSV-2099-9', 'CVE-2099-9999'],
-                  severity: 'high',
-                  cvss: 7.5,
-                  ranges: [{ introduced: '0', fixed: '1.2.1' }],
-                },
-              ],
-            },
-          },
-        },
-      },
-    );
+const DRIFT: Finding = {
+  ruleId: 'vibgrate/runtime-lag',
+  level: 'warning',
+  message: 'Node.js runtime is 2 major versions behind.',
+  location: 'app',
+};
 
-    const sarif = toSarif(scanned);
-    expect(sarif.version).toBe('2.1.0');
-    expect(sarif.runs).toHaveLength(1);
-    expect(sarif.runs[0].tool.driver.rules.map((rule) => rule.id)).toEqual(['vibgrate/vulnerability']);
-    expect(sarif.runs[0].results).toHaveLength(1);
-
-    const [result] = sarif.runs[0].results;
-    expect(result).toEqual({
-      ruleId: 'vibgrate/vulnerability',
-      level: 'error',
-      message: {
-        text: 'widget@1.2.0: GHSA-widg-et00-0001 (CVE-2099-9999) (high 7.5) — fix available (1.2.1)',
-      },
-      locations: [
-        {
-          physicalLocation: {
-            artifactLocation: { uri: 'widget' },
-          },
-        },
-      ],
-      properties: {
-        ecosystem: 'npm',
-        package: 'widget',
-        installedVersion: '1.2.0',
-        advisoryId: 'GHSA-widg-et00-0001',
-        aliases: ['OSV-2099-9', 'CVE-2099-9999'],
-        severity: 'high',
-        cvss: 7.5,
-        fixedVersions: ['1.2.1'],
-      },
-    });
-    expect(result.partialFingerprints).toBeUndefined();
-    expect(JSON.stringify(toSarif(scanned))).toBe(JSON.stringify(sarif));
+describe('vg scan SARIF advisory aliases', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
-  it('keeps aliasing records separate and orders results independent of manifest order', async () => {
-    // Targets and advisories are listed backwards from the documented order.
-    const scanned = await scanVulnerabilities(
-      [
-        { ecosystem: 'npm', package: 'zeta', version: '1.0.0' },
-        { ecosystem: 'npm', package: 'alpha', version: '2.0.0' },
-        { ecosystem: 'cargo', package: 'zzz-crate', version: '0.1.0' },
-      ],
-      {
-        sem: new Semaphore(1),
-        offline: true,
-        manifest: {
-          npm: {
-            zeta: {
-              vulns: [
-                {
-                  id: 'CVE-2099-0001',
-                  aliases: ['GHSA-aaaa-bbbb-cccc'],
-                  severity: 'moderate',
-                  cvss: 5.3,
-                  ranges: [{ introduced: '0', fixed: '1.2.0' }],
-                },
-                {
-                  id: 'GHSA-aaaa-bbbb-cccc',
-                  aliases: ['CVE-2099-0001', 'OSV-2099-1'],
-                  severity: 'high',
-                  cvss: 7.5,
-                  ranges: [{ introduced: '0', fixed: '1.2.0' }],
-                },
-              ],
-            },
-            alpha: {
-              vulns: [
-                {
-                  id: 'GHSA-bbbb-0000-0002',
-                  aliases: ['CVE-2099-0002'],
-                  severity: 'moderate',
-                  cvss: 5,
-                  ranges: [{ introduced: '0', fixed: '2.1.0' }],
-                },
-                {
-                  id: 'GHSA-aaaa-0000-0001',
-                  aliases: [],
-                  severity: 'moderate',
-                  cvss: null,
-                  ranges: [{ introduced: '0' }],
-                },
-              ],
-            },
-          },
-          cargo: {
-            'zzz-crate': {
-              vulns: [
-                {
-                  id: 'RUSTSEC-2099-0001',
-                  aliases: ['CVE-2099-4242'],
-                  severity: 'low',
-                  ranges: [{ introduced: '0', fixed: '0.2.0' }],
-                },
-              ],
-            },
-          },
-        },
-      },
+  it('pins one result per advisory, copies aliases onto properties, and keeps a stable order', async () => {
+    const sem = new Semaphore(2);
+    const first = await scanVulnerabilities(TARGETS, { sem, offline: true, manifest: MANIFEST });
+    const second = await scanVulnerabilities([...TARGETS].reverse(), { sem, offline: true, manifest: MANIFEST });
+    expect(second.packages).toEqual(first.packages);
+
+    const findings = generateVulnerabilityFindings(first);
+    const scan = artifact([DRIFT, ...findings]);
+    const sarif = formatSarif(scan) as SarifDoc;
+    expect(formatSarif(scan)).toEqual(sarif);
+
+    const run = sarif.runs[0]!;
+    expect(run.tool.driver.rules.map((rule) => rule.id)).toEqual([
+      'vibgrate/runtime-lag',
+      'vibgrate/vulnerability',
+    ]);
+
+    const results = run.results;
+    expect(results.map((result) => result.ruleId)).toEqual([
+      'vibgrate/runtime-lag',
+      'vibgrate/vulnerability',
+      'vibgrate/vulnerability',
+      'vibgrate/vulnerability',
+      'vibgrate/vulnerability',
+      'vibgrate/vulnerability',
+    ]);
+
+    const vulns = results.slice(1);
+    expect(vulns.map((result) => result.properties?.advisoryId)).toEqual([
+      'GHSA-zzzz',
+      'GHSA-bbbb',
+      'CVE-2024-1111',
+      'GHSA-cccc',
+      'GHSA-req',
+    ]);
+    expect(vulns.map((result) => result.level)).toEqual(['warning', 'error', 'error', 'warning', 'note']);
+    expect(vulns.map((result) => result.locations[0]?.physicalLocation.artifactLocation.uri)).toEqual([
+      'left-pad',
+      'lodash',
+      'lodash',
+      'lodash',
+      'requests',
+    ]);
+
+    // The alias list does not become extra results, and it does not merge the two ids.
+    expect(vulns.map((result) => result.properties?.advisoryId)).not.toContain('OSV-1');
+    expect(vulns.map((result) => result.properties?.advisoryId)).not.toContain('CVE-2024-2000');
+    expect(vulns.filter((result) => result.properties?.advisoryId === 'GHSA-bbbb')).toHaveLength(1);
+    expect(vulns.filter((result) => result.properties?.advisoryId === 'CVE-2024-1111')).toHaveLength(1);
+
+    const ghsa = vulns[1]!;
+    expect(ghsa.message.text).toBe(
+      'lodash@4.17.20: GHSA-bbbb (CVE-2024-1111) (critical 9.1) — fix available (4.17.21)',
+    );
+    expect(ghsa.properties).toEqual({
+      ecosystem: 'npm',
+      package: 'lodash',
+      installedVersion: '4.17.20',
+      advisoryId: 'GHSA-bbbb',
+      aliases: ['CVE-2024-1111', 'OSV-1'],
+      severity: 'critical',
+      cvss: 9.1,
+      fixedVersions: ['4.17.21'],
+    });
+
+    const cve = vulns[2]!;
+    expect(cve.message.text).toBe('lodash@4.17.20: CVE-2024-1111 (high 7.5) — fix available (4.17.21)');
+    expect(cve.properties?.aliases).toEqual(['GHSA-bbbb']);
+    expect(cve.message.text).not.toContain('GHSA-bbbb');
+
+    expect(vulns[0]!.message.text).toBe('left-pad@1.0.0: GHSA-zzzz (CVE-2024-2000) (moderate)');
+    expect(vulns[0]!.properties?.aliases).toEqual(['CVE-2024-2000']);
+    expect(vulns[3]!.message.text).toBe('lodash@4.17.20: GHSA-cccc (moderate)');
+    expect(vulns[3]!.properties?.aliases).toEqual([]);
+    expect(vulns[4]!.message.text).toBe('requests@2.31.0: GHSA-req (CVE-2023-1) (low 2.1)');
+
+    for (const [index, result] of vulns.entries()) {
+      expect(result.properties).toEqual(findings[index]!.details);
+    }
+  });
+
+  it('keeps two OSV advisories that alias each other as two SARIF results', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        const u = String(url);
+        if (u.includes('querybatch')) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ results: [{ vulns: [{ id: 'CVE-2024-1111' }, { id: 'GHSA-bbbb' }] }] }),
+          };
+        }
+        const id = decodeURIComponent(u.split('/v1/vulns/')[1] ?? '');
+        const aliases = id === 'GHSA-bbbb' ? ['CVE-2024-1111', 'OSV-1'] : ['GHSA-bbbb'];
+        const severity = id === 'GHSA-bbbb' ? 'CRITICAL' : 'HIGH';
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            id,
+            aliases,
+            database_specific: { severity },
+            affected: [
+              {
+                package: { ecosystem: 'npm', name: 'lodash' },
+                ranges: [{ type: 'SEMVER', events: [{ introduced: '0' }, { fixed: '4.17.21' }] }],
+              },
+            ],
+          }),
+        };
+      }),
     );
 
-    const leading: Finding = {
-      ruleId: 'vibgrate/runtime-lag',
-      level: 'warning',
-      message: 'runtime lag',
-      location: '.',
-    };
-    const sarif = toSarif(scanned, [leading]);
-    const rules = sarif.runs[0].tool.driver.rules.map((rule) => rule.id);
-    expect(rules).toEqual(['vibgrate/runtime-lag', 'vibgrate/vulnerability']);
+    const scanned = await scanVulnerabilities(
+      [{ ecosystem: 'npm', package: 'lodash', version: '4.17.20' }],
+      { sem: new Semaphore(2) },
+    );
+    const findings = generateVulnerabilityFindings(scanned);
+    const sarif = formatSarif(artifact(findings)) as SarifDoc;
+    const results = sarif.runs[0]!.results;
 
-    const vulns = sarif.runs[0].results.slice(1);
-    expect(vulns.map((result) => result.partialFingerprints)).toEqual([
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-    ]);
-    expect(vulns.map((result) => ({
-      uri: result.locations[0].physicalLocation.artifactLocation.uri,
-      level: result.level,
-      advisoryId: result.properties?.advisoryId,
-      aliases: result.properties?.aliases,
-      message: result.message.text,
-    }))).toEqual([
-      {
-        uri: 'zzz-crate',
-        level: 'note',
-        advisoryId: 'RUSTSEC-2099-0001',
-        aliases: ['CVE-2099-4242'],
-        message: 'zzz-crate@0.1.0: RUSTSEC-2099-0001 (CVE-2099-4242) (low) — fix available (0.2.0)',
-      },
-      {
-        uri: 'alpha',
-        level: 'warning',
-        advisoryId: 'GHSA-aaaa-0000-0001',
-        aliases: [],
-        message: 'alpha@2.0.0: GHSA-aaaa-0000-0001 (moderate)',
-      },
-      {
-        uri: 'alpha',
-        level: 'warning',
-        advisoryId: 'GHSA-bbbb-0000-0002',
-        aliases: ['CVE-2099-0002'],
-        message: 'alpha@2.0.0: GHSA-bbbb-0000-0002 (CVE-2099-0002) (moderate 5) — fix available (2.1.0)',
-      },
-      {
-        uri: 'zeta',
-        level: 'error',
-        advisoryId: 'GHSA-aaaa-bbbb-cccc',
-        aliases: ['CVE-2099-0001', 'OSV-2099-1'],
-        message: 'zeta@1.0.0: GHSA-aaaa-bbbb-cccc (CVE-2099-0001) (high 7.5) — fix available (1.2.0)',
-      },
-      {
-        uri: 'zeta',
-        level: 'warning',
-        advisoryId: 'CVE-2099-0001',
-        aliases: ['GHSA-aaaa-bbbb-cccc'],
-        message: 'zeta@1.0.0: CVE-2099-0001 (moderate 5.3) — fix available (1.2.0)',
-      },
-    ]);
+    expect(results.map((result) => result.ruleId)).toEqual(['vibgrate/vulnerability', 'vibgrate/vulnerability']);
+    expect(results.map((result) => result.properties?.advisoryId)).toEqual(['GHSA-bbbb', 'CVE-2024-1111']);
+    expect(results[0]!.properties?.aliases).toEqual(['CVE-2024-1111', 'OSV-1']);
+    expect(results[0]!.message.text).toBe(
+      'lodash@4.17.20: GHSA-bbbb (CVE-2024-1111) (critical) — fix available (4.17.21)',
+    );
+    expect(results[1]!.properties?.aliases).toEqual(['GHSA-bbbb']);
+    expect(results[1]!.message.text).toBe('lodash@4.17.20: CVE-2024-1111 (high) — fix available (4.17.21)');
+    expect(results.map((result) => result.properties?.advisoryId)).not.toContain('OSV-1');
   });
 });

@@ -66,3 +66,12 @@ export function redactUrlCredentials(url: string): string {
     .filter((pair) => !CREDENTIAL_QUERY_KEYS.test(pair.split('=')[0] ?? ''));
   return kept.length ? `${base}?${kept.join('&')}` : base;
 }
+
+/**
+ * Scrub text before it is printed or stored on an Error. URL userinfo and
+ * credential query parameters go first, then token and header shapes.
+ * Deterministic: the same input always yields the same output.
+ */
+export function redactForDisplay(text: string): string {
+  return redactSecrets(redactUrlCredentials(text));
+}

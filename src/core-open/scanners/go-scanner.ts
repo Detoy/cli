@@ -85,7 +85,14 @@ const KNOWN_GO_FRAMEWORKS: Record<string, string> = {
 
 interface GoDependency {
   path: string;
-  version: string;
+  /**
+   * Concrete `v…` token from the require line, or null when the line names a
+   * module and does not pin one. A range is not a version — it stays on
+   * `declared` and `version` stays null. Never synthesize a number.
+   */
+  version: string | null;
+  /** What was written after the module path, or null when the line has no spec. */
+  declared: string | null;
   indirect: boolean;
 }
 
@@ -115,8 +122,8 @@ function parseGoMod(content: string): { goVersion?: string; deps: GoDependency[]
       continue;
     }
 
-    // Track require blocks
-    if (trimmed.startsWith('require (')) {
+    // Track require blocks. A one-line `require ( … )` is a require, not a block.
+    if (/^require\s*\(/.test(trimmed) && !/^require\s*\(.*\)\s*$/.test(trimmed)) {
       inRequireBlock = true;
       continue;
     }
@@ -129,9 +136,12 @@ function parseGoMod(content: string): { goVersion?: string; deps: GoDependency[]
     // Parse dependency lines
     // Format: github.com/gin-gonic/gin v1.9.1
     // Format: github.com/gin-gonic/gin v1.9.1 // indirect
+    // Format: example.com/mod            (no version — still a direct require)
     let depLine = trimmed;
     if (inRequireBlock) {
       depLine = trimmed;
+    } else if (/^require\s*\(.*\)\s*$/.test(trimmed)) {
+      depLine = trimmed.replace(/^require\s*\(/, '').replace(/\)\s*$/, '');
     } else if (trimmed.startsWith('require ')) {
       depLine = trimmed.substring(8);
     } else {
@@ -140,21 +150,41 @@ function parseGoMod(content: string): { goVersion?: string; deps: GoDependency[]
 
     const indirect = depLine.includes('// indirect');
     depLine = depLine.replace(/\/\/.*$/, '').trim();
+    if (!depLine || depLine === '(' || depLine === ')' || depLine.includes('=>')) continue;
 
     const parts = depLine.split(/\s+/);
-    if (parts.length >= 2) {
-      const [modulePath, version] = parts;
-      if (modulePath && version) {
-        deps.push({
-          path: modulePath,
-          version,
-          indirect,
-        });
-      }
-    }
+    const modulePath = parts[0];
+    if (!modulePath) continue;
+    const rest = parts.slice(1);
+    const concrete =
+      rest.length === 1 && /^v\S+$/.test(rest[0]!) && !/[\^~*<>|]/.test(rest[0]!) ? rest[0]! : null;
+    // A `v…` pin is kept as written. A bare module path (version inherited or
+    // not yet chosen) and a range stay visible with no invented version.
+    if (!concrete && !looksLikeGoModule(modulePath)) continue;
+    deps.push({
+      path: modulePath,
+      version: concrete,
+      declared: concrete ?? (rest.length ? rest.join(' ') : null),
+      indirect,
+    });
   }
 
   return { goVersion, deps };
+}
+
+function looksLikeGoModule(token: string): boolean {
+  if (
+    token === 'require' ||
+    token === 'module' ||
+    token === 'go' ||
+    token === 'replace' ||
+    token === 'exclude' ||
+    token === 'retract' ||
+    token === 'toolchain'
+  ) {
+    return false;
+  }
+  return token.includes('.') || token.includes('/');
 }
 
 // ── Go project file names ──
@@ -267,7 +297,7 @@ async function scanOneGoProject(
   const resolved = await Promise.all(metaPromises);
 
   for (const { dep, meta } of resolved) {
-    const resolvedVersion = semver.valid(semver.clean(dep.version));
+    const resolvedVersion = dep.version ? semver.valid(semver.clean(dep.version)) : null;
     const latestStable = meta.latestStableOverall;
 
     let majorsBehind: number | null = null;
@@ -296,7 +326,10 @@ async function scanOneGoProject(
     dependencies.push({
       package: dep.path,
       section: 'dependencies',
-      currentSpec: dep.version,
+      // `*` is the existing marker for a dependency declared with no version
+      // (same as an unpinned Python/Ruby requirement). A written range stays
+      // the spec. Neither is promoted to resolvedVersion.
+      currentSpec: dep.version ?? dep.declared ?? '*',
       resolvedVersion,
       latestStable,
       majorsBehind,

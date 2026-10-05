@@ -22,13 +22,27 @@ backward compatible.
 
 ### Added
 
-- **`vg scan --vulns` JSON includes EPSS and KEV when the advisory data already has them.** An advisory in `extended.vulnerabilities` carries `epss`, `epssPercentile`, and `kev` when the OSV document or the `--package-manifest` bundle already carried them. A missing score is omitted, never written as `0` or `false`; a real `0` is kept. Offline and manifest scans do not contact an EPSS service. Text and SARIF findings are unchanged.
-
 - **`vg scan --junit <file>` writes a deterministic JUnit XML report.**
   CI test reporters (GitLab, Azure DevOps, Jenkins) can publish it beside
   JSON or SARIF. One testcase per drift finding, plus architecture, security,
   and drift-budget gates when those gates ran. Names and order are stable,
   and the file has no wall-clock timestamp. The process exit code is unchanged.
+
+- **Offline `vg scan --package-manifest` is documented end to end.** The
+  manifest is JSON, or a ZIP whose root contains `package-versions.json`,
+  `manifest.json`, or `index.json`. `vg scan --vulns --offline
+  --package-manifest ./package-versions.json` scores drift and known
+  vulnerabilities from that file. A missing, unreadable, or invalid manifest
+  exits 1 and does not write a scan. Offline mode does not contact package
+  registries, does not query OSV, and does not upload. The same tree and the
+  same manifest keep the same findings order and advisory ids.
+
+- **`vg scan --baseline` records findings that already appear in the baseline.**
+  JSON includes `baselineComparison`: whether a baseline was compared, how many
+  findings matched, and each match as a rule, location, and id, sorted. The
+  text report prints that count. SARIF lists the same ids as suppressions.
+  Matching findings stay in the report, so a comparison does not drop them
+  without a record. The DriftScore delta is unchanged.
 
 - **`vg sbom export` now reports the full resolved dependency tree, not just
   direct manifest deps.** SBOM export previously flattened only the packages
@@ -146,12 +160,6 @@ backward compatible.
   release and is no longer listed in `vg show --help`.
 
 ### Fixed
-
-- **A rejected `--ingest` URL no longer includes credentials.** `vg login`,
-  `vg dsn create`, `vg scan`, and `vg push` quote the value when it is not a
-  URL. Userinfo (`https://<user>:<token>@host`) and credential query
-  parameters are removed before that line is printed. A URL that does parse
-  still contributes only its host.
 
 - **`vg scan --package-manifest` stops when the manifest cannot be read.** A
   missing path, a file this process cannot read, or content that is not a

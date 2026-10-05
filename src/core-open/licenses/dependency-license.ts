@@ -8,39 +8,46 @@
  * The scanner records the raw declared string plus a best-effort canonical
  * SPDX id; full classification (category / obligations / risk) and the growing
  * library lookup happen during API enrichment.
- *
- * A registry signal has no local file, so `path` stays omitted. Pass
- * `evidencePath` when the declaration was read from a manifest or license
- * file — scan JSON and SARIF then point the finding at that file instead of
- * dropping the path.
  */
 import type { DependencyLicense } from '../types.js';
 import { normalizeLicense } from './normalize.js';
 
+/** Long enough for a deep monorepo path; longer evidence is not a stable location. */
+const SOURCE_PATH_MAX = 1024;
+
 /**
- * Repo-relative evidence path, or undefined when the caller has none.
- * Rejects absolute paths and `..` so a finding never points outside the repo.
- * Deterministic: only string rewriting, no filesystem access.
+ * Repo-relative path of a license declaration.
+ *
+ * Forward slashes, no leading `./`, no absolute path, no parent traversal,
+ * no URI. Returns null when the value is absent or not a path inside the
+ * repo. A path that passes these checks is returned unchanged in substance
+ * — callers must not drop it.
  */
-export function licenseEvidencePath(input: string | null | undefined): string | undefined {
-  if (typeof input !== 'string') return undefined;
-  const norm = input.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '');
-  if (!norm || norm === '.') return undefined;
-  if (norm.startsWith('/') || /^[A-Za-z]:\//.test(norm)) return undefined;
-  const parts = norm.split('/');
-  if (parts.some((segment) => segment === '' || segment === '.' || segment === '..')) return undefined;
-  return norm;
+export function normalizeLicenseSourcePath(value: string | null | undefined): string | null {
+  if (typeof value !== 'string') return null;
+  let p = value.trim().replace(/\\/g, '/');
+  while (p.startsWith('./')) p = p.slice(2);
+  p = p.replace(/\/+$/, '');
+  if (!p || p.length > SOURCE_PATH_MAX) return null;
+  if (p.startsWith('/')) return null;
+  if (/^[a-zA-Z]:\//.test(p)) return null;
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(p)) return null;
+  if (/[\u0000-\u001f]/.test(p)) return null;
+  const segments = p.split('/');
+  if (segments.some((seg) => seg.length === 0 || seg === '.' || seg === '..')) return null;
+  return segments.join('/');
 }
 
 export function buildDependencyLicense(
   raw: string | null | undefined,
   source: DependencyLicense['source'],
-  evidencePath?: string | null,
+  sourcePath?: string | null,
 ): DependencyLicense {
-  const path = licenseEvidencePath(evidencePath);
+  const path = normalizeLicenseSourcePath(sourcePath);
+  const located = path ? { sourcePath: path } : {};
   const trimmed = (raw ?? '').trim();
   if (!trimmed) {
-    return { raw: null, spdxId: null, source: 'none', confidence: 0, ...(path ? { path } : {}) };
+    return { raw: null, spdxId: null, source: 'none', confidence: 0, ...located };
   }
   const verdict = normalizeLicense(trimmed);
   return {
@@ -48,6 +55,6 @@ export function buildDependencyLicense(
     spdxId: verdict.matchStatus === 'unknown' ? null : verdict.spdxId,
     source,
     confidence: verdict.confidence,
-    ...(path ? { path } : {}),
+    ...located,
   };
 }

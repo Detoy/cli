@@ -207,8 +207,23 @@ describe('scan JUnit gates', () => {
       status: 'evaluated',
       failingIds: ['bbb'],
       findings: [
-        { id: 'bbb', pack: 'iac-cis-v1', rule: 'public-bucket', path: 'infra/b.tf', line: 4, severity: 'high', message: 'bucket is public' },
-        { id: 'aaa', pack: 'iac-cis-v1', rule: 'public-bucket', path: 'infra/a.tf', severity: 'low', message: 'note' },
+        {
+          id: 'bbb',
+          pack: 'iac-cis-v1',
+          rule: 'public-bucket',
+          path: 'infra/b.tf',
+          line: 4,
+          severity: 'high',
+          message: 'bucket is public',
+        },
+        {
+          id: 'aaa',
+          pack: 'iac-cis-v1',
+          rule: 'public-bucket',
+          path: 'infra/a.tf',
+          severity: 'low',
+          message: 'note',
+        },
       ],
     });
     expect(suite.cases.map((c) => c.name)).toEqual([

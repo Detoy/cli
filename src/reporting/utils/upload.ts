@@ -10,6 +10,7 @@
  */
 
 import chalk from 'chalk';
+import { redactForDisplay } from '../../core-open/utils/redact.js';
 import { ingestHostForRegionId } from '../regions.js';
 
 export interface ScanUploadInput {
@@ -39,6 +40,16 @@ export interface ScanUploadResult {
   response: Response;
   /** The host the (final) request was sent to — differs from input.host on a region redirect. */
   host: string;
+}
+
+/**
+ * HTTP failure text for an upload response. The body is included so the status
+ * is actionable, after tokens, authorization headers, and credential-bearing
+ * URLs are removed.
+ */
+export function formatUploadHttpFailure(status: number, body: string): string {
+  const detail = redactForDisplay(body).trim();
+  return detail ? `HTTP ${status}: ${detail}` : `HTTP ${status}`;
 }
 
 function postOnce(input: ScanUploadInput, host: string): Promise<Response> {

@@ -1,8 +1,7 @@
 // VENDORED from @vibgrate/core-open (packages/vibgrate-core-open) by
 // scripts/vendor-core-open.mjs. Do not edit here — change the source package
 // and re-run the vendor script. Apache-2.0.
-import type { ScanArtifact, Finding, SecurityFinding, SecuritySection, SecuritySeverity } from '../types.js';
-import { driftFindingId } from '../baseline-comparison.js';
+import type { BaselineSuppression, ScanArtifact, Finding, SecurityFinding, SecuritySection, SecuritySeverity } from '../types.js';
 
 /**
  * Generate a SARIF 2.1.0 document from scan artifact.
@@ -15,9 +14,9 @@ import { driftFindingId } from '../baseline-comparison.js';
  * bytes as before.
  */
 export function formatSarif(artifact: ScanArtifact): object {
-  const suppressedIds = new Set(artifact.baselineComparison?.suppressed.map((entry) => entry.id) ?? []);
+  const suppressed = suppressionIndex(artifact);
   const rules = buildRules(artifact.findings);
-  const results = artifact.findings.map((f) => toSarifResult(f, suppressedIds));
+  const results = artifact.findings.map((f) => toSarifResult(f, suppressed.get(suppressionKey(f.ruleId, f.location))));
 
   const runs: object[] = [
     {
@@ -186,8 +185,20 @@ function buildRules(findings: Finding[]) {
   });
 }
 
-function toSarifResult(finding: Finding, suppressedIds: ReadonlySet<string>) {
-  const id = driftFindingId(finding);
+function suppressionKey(ruleId: string, location: string): string {
+  return `${ruleId}\n${location}`;
+}
+
+/** rule+location → the audit record, so SARIF can cite the same id. */
+function suppressionIndex(artifact: ScanArtifact): Map<string, BaselineSuppression> {
+  const index = new Map<string, BaselineSuppression>();
+  for (const entry of artifact.baselineComparison?.suppressed ?? []) {
+    index.set(suppressionKey(entry.ruleId, entry.location), entry);
+  }
+  return index;
+}
+
+function toSarifResult(finding: Finding, suppression?: BaselineSuppression) {
   return {
     ruleId: finding.ruleId,
     level: finding.level === 'error' ? 'error' : finding.level === 'warning' ? 'warning' : 'note',
@@ -204,16 +215,21 @@ function toSarifResult(finding: Finding, suppressedIds: ReadonlySet<string>) {
     // Surface structured finding detail (e.g. advisory id, CVSS, fixed version)
     // to consumers like GitHub code scanning without bloating the message text.
     ...(finding.details && Object.keys(finding.details).length > 0 ? { properties: finding.details } : {}),
-    // The finding stays in `results`. The suppression carries the same id as
-    // `baselineComparison.suppressed` so a baseline match is not a silent drop.
-    ...(suppressedIds.has(id)
+    // The result stays in the run. The suppression cites the same id as
+    // `baselineComparison.suppressed`, so a baseline match is not dropped.
+    ...(suppression
       ? {
+          partialFingerprints: { 'vg/finding-id/v1': suppression.id },
           suppressions: [
             {
               kind: 'external',
               status: 'accepted',
-              justification: 'Matched the compared drift baseline',
-              properties: { id },
+              justification: 'Matches the drift baseline',
+              properties: {
+                id: suppression.id,
+                ruleId: suppression.ruleId,
+                location: suppression.location,
+              },
             },
           ],
         }

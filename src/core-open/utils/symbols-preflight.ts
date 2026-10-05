@@ -14,6 +14,7 @@
  */
 
 import type { ParsedDsn } from './dsn.js';
+import { redactForDisplay } from './redact.js';
 import type { ProjectType } from '../types.js';
 
 /** One dependency coordinate posted to the preflight (OSV ecosystem naming). */
@@ -106,7 +107,7 @@ export async function fetchRiskySymbols(
 
   const payload = (await response.json()) as SymbolsPreflightResponse;
   if (!response.ok && payload.status !== 'error') {
-    throw new Error(`HTTP ${response.status}: ${JSON.stringify(payload)}`);
+    throw new Error(`HTTP ${response.status}: ${redactForDisplay(JSON.stringify(payload))}`);
   }
   return payload;
 }

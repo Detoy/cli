@@ -17,6 +17,7 @@
  *     fail a successful CLI update.
  */
 import semver from 'semver';
+import { redactForDisplay } from '../core-open/utils/redact.js';
 import {
   type InstallOptions,
   type InstallResult,
@@ -118,7 +119,8 @@ export async function updateLocalModules(
         reports.push({ ...base, status: 'failed', from: existing.version, to: latest, detail: result.detail ?? result.status });
       }
     } catch (err) {
-      reports.push({ ...base, status: 'failed', detail: err instanceof Error ? err.message : String(err) });
+      const raw = err instanceof Error ? err.message : String(err);
+      reports.push({ ...base, status: 'failed', detail: redactForDisplay(raw) });
     }
   }
   return reports;

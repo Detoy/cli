@@ -4,7 +4,7 @@
 import * as crypto from 'node:crypto';
 import type { ProjectScan, DriftScore, Finding, RiskLevel, VibgrateConfig } from '../types.js';
 import { licenseParseDiagnostic } from '../licenses/diagnostic.js';
-import { licenseEvidencePath } from '../licenses/dependency-license.js';
+import { normalizeLicenseSourcePath } from '../licenses/dependency-license.js';
 import { aggregateDependencyDrift } from './dependency-drift-v3.js';
 
 /**
@@ -389,28 +389,27 @@ export function generateFindings(
     // A non-empty license that does not resolve, or an expression with an
     // unresolved constituent, is a data-quality finding. An explicit
     // NOASSERTION / empty declaration is not. Sort so the same manifest
-    // always emits the same order. When the row recorded an evidence file,
-    // `location` and `details.path` are that file; a registry license has no
-    // local file, so the finding stays on the project path and omits `path`.
+    // always emits the same order.
     const licenseFindings: Finding[] = [];
     const licenseDeps = [...project.dependencies].sort(
       (a, b) =>
         a.package.localeCompare(b.package) ||
         (a.license?.raw ?? '').localeCompare(b.license?.raw ?? '') ||
-        a.section.localeCompare(b.section),
+        a.section.localeCompare(b.section) ||
+        (a.license?.sourcePath ?? '').localeCompare(b.license?.sourcePath ?? ''),
     );
     for (const dep of licenseDeps) {
-      const evidence = licenseEvidencePath(dep.license?.path);
-      const diag = licenseParseDiagnostic(dep.license?.raw, evidence ?? project.path, dep.package);
+      // Location is the manifest path the scanner recorded, when it recorded one.
+      const sourcePath = normalizeLicenseSourcePath(dep.license?.sourcePath);
+      const location = sourcePath ?? project.path;
+      const diag = licenseParseDiagnostic(dep.license?.raw, location, dep.package);
       if (!diag) continue;
       licenseFindings.push({
         ruleId: diag.code,
         level: 'warning',
         message: diag.message,
-        location: diag.location,
-        details: evidence
-          ? { raw: diag.raw, path: evidence, source: dep.license?.source ?? 'manifest' }
-          : { raw: diag.raw },
+        location,
+        details: sourcePath ? { raw: diag.raw, sourcePath } : { raw: diag.raw },
       });
     }
     findings.push(...licenseFindings);

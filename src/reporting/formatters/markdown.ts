@@ -1,5 +1,5 @@
-import type { ScanArtifact, Finding } from '../types.js';
-import { baselineSuppressionSummary, baselinedIdSet, driftFindingId } from '../../core-open/baseline-comparison.js';
+import type { ScanArtifact } from '../types.js';
+import { baselineSuppressionLabel } from '../../core-open/baseline-suppressions.js';
 
 /** A measured zero stays `0`. An unmeasured component is `n/a`, never `0`. */
 function markdownDriftCell(score: number | null): string {
@@ -9,11 +9,6 @@ function markdownDriftCell(score: number | null): string {
 /** Generate a Markdown report from scan artifact */
 export function formatMarkdown(artifact: ScanArtifact): string {
   const lines: string[] = [];
-  const baselined = baselinedIdSet(artifact.baselineComparison);
-  const locationOf = (finding: Finding): string => {
-    const marked = baselined.has(driftFindingId(finding));
-    return marked ? `${finding.location} (baselined)` : finding.location;
-  };
 
   lines.push('# Vibgrate Drift Report');
   lines.push('');
@@ -128,7 +123,7 @@ export function formatMarkdown(artifact: ScanArtifact): string {
     lines.push(`|-------|------|---------|----------|`);
     for (const f of artifact.findings) {
       const emoji = f.level === 'error' ? '🔴' : f.level === 'warning' ? '🟡' : '🔵';
-      lines.push(`| ${emoji} ${f.level} | ${f.ruleId} | ${f.message} | ${locationOf(f)} |`);
+      lines.push(`| ${emoji} ${f.level} | ${f.ruleId} | ${f.message} | ${f.location} |`);
     }
     lines.push('');
   }
@@ -141,8 +136,9 @@ export function formatMarkdown(artifact: ScanArtifact): string {
     lines.push('');
   }
 
-  if (artifact.baselineComparison) {
-    lines.push(baselineSuppressionSummary(artifact.baselineComparison.suppressedCount));
+  const baselineLabel = baselineSuppressionLabel(artifact.baselineComparison);
+  if (baselineLabel) {
+    lines.push(baselineLabel);
     lines.push('');
   }
 

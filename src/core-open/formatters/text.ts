@@ -2,8 +2,8 @@
 // scripts/vendor-core-open.mjs. Do not edit here — change the source package
 // and re-run the vendor script. Apache-2.0.
 import chalk from 'chalk';
-import type { ScanArtifact, BillingSummary, ExtendedScanResults, InventoryItem, ServiceDependencyItem, ArchitectureResult, SecurityFinding, SecuritySection, Finding } from '../types.js';
-import { baselineSuppressionSummary, baselinedIdSet, driftFindingId } from '../baseline-comparison.js';
+import type { ScanArtifact, BillingSummary, ExtendedScanResults, InventoryItem, ServiceDependencyItem, ArchitectureResult, SecurityFinding, SecuritySection } from '../types.js';
+import { baselineSuppressionLabel } from '../baseline-suppressions.js';
 import { humanFindingText } from './fix-hint.js';
 import { driftBar } from '../ui/bar.js';
 import { titleBox, panelBox } from '../ui/box.js';
@@ -46,11 +46,6 @@ export interface FormatTextOptions {
 
 export function formatText(artifact: ScanArtifact, opts: FormatTextOptions = {}): string {
   const lines: string[] = [];
-  const baselined = baselinedIdSet(artifact.baselineComparison);
-  const locationOf = (finding: Finding): string => {
-    const marked = baselined.has(driftFindingId(finding));
-    return marked ? `${finding.location} (baselined)` : finding.location;
-  };
 
   lines.push('');
   lines.push(...titleBox('Vibgrate Drift Report'));
@@ -101,11 +96,12 @@ export function formatText(artifact: ScanArtifact, opts: FormatTextOptions = {})
         ? chalk.red(`+${artifact.delta}`)
         : chalk.dim('0');
     lines.push(chalk.bold('  Drift Delta: ') + deltaStr + ' (vs baseline)');
+    lines.push('');
   }
-  if (artifact.baselineComparison) {
-    lines.push(chalk.bold(`  ${baselineSuppressionSummary(artifact.baselineComparison.suppressedCount)}`));
-  }
-  if (artifact.delta !== undefined || artifact.baselineComparison) {
+
+  const baselineLabel = baselineSuppressionLabel(artifact.baselineComparison);
+  if (baselineLabel) {
+    lines.push(chalk.dim(`  ${baselineLabel}`));
     lines.push('');
   }
 
@@ -130,7 +126,7 @@ export function formatText(artifact: ScanArtifact, opts: FormatTextOptions = {})
       const icon = f.level === 'error' ? chalk.red('✖') : f.level === 'warning' ? chalk.yellow('⚠') : chalk.blue('ℹ');
       const shown = humanFindingText(f);
       lines.push(`    ${icon} ${shown.message}`);
-      lines.push(chalk.dim(`      ${f.ruleId} in ${locationOf(f)}`));
+      lines.push(chalk.dim(`      ${f.ruleId} in ${f.location}`));
       if (shown.hint) lines.push(chalk.dim(`      ${shown.hint}`));
     }
     lines.push('');

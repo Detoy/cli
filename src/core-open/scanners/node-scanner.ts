@@ -10,7 +10,7 @@ import { loadNpmLockIndex, type NpmLockIndex, type LockfileIo } from './npm-lock
 import { Semaphore } from '../utils/semaphore.js';
 import { withTimeout } from '../utils/timeout.js';
 import { NpmCache, isSemverSpec } from './npm-cache.js';
-import { buildDependencyLicense } from '../licenses/dependency-license.js';
+import { buildDependencyLicense, normalizeLicenseSourcePath } from '../licenses/dependency-license.js';
 import { ageDaysBetween, daysToLibyears, aggregateLibyears } from '../scoring/libyear.js';
 import { latestLts, runtimeEolStatus, extractCycle, eolDate } from '../runtimes/catalog.js';
 import { BUNDLED_RUNTIME_CATALOG } from '../runtimes/snapshot.js';
@@ -304,6 +304,7 @@ async function scanOnePackageJson(
     : await readJsonFile<PackageJson>(packageJsonPath);
   const absProjectPath = path.dirname(packageJsonPath);
   const projectPath = path.relative(rootDir, absProjectPath) || '.';
+  const manifestPath = normalizeLicenseSourcePath(path.relative(rootDir, packageJsonPath));
 
   // Detect Node runtime version
   const nodeEngine = pj.engines?.node ?? undefined;
@@ -428,7 +429,7 @@ async function scanOnePackageJson(
       latestSatisfying,
       majorsBehind,
       drift,
-      license: buildDependencyLicense(meta.license, 'registry'),
+      license: buildDependencyLicense(meta.license, 'registry', manifestPath),
       ageDays,
       libyears,
       ...(abandoned ? { abandoned: true } : {}),
@@ -459,7 +460,7 @@ async function scanOnePackageJson(
         latestStable: null,
         majorsBehind: null,
         drift: 'unknown',
-        license: { raw: null, spdxId: null, source: 'none', confidence: 0 },
+        license: buildDependencyLicense(null, 'none', manifestPath),
       });
       buckets.unknown++;
     }

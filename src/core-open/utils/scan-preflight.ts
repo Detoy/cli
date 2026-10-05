@@ -2,6 +2,7 @@
 // scripts/vendor-core-open.mjs. Do not edit here — change the source package
 // and re-run the vendor script. Apache-2.0.
 import type { ParsedDsn } from './dsn.js';
+import { redactForDisplay } from './redact.js';
 
 export interface ScanPreflightResponse {
   status: 'ok' | 'error';
@@ -98,7 +99,7 @@ export async function fetchScanPreflight(
 
   const body = (await response.json()) as ScanPreflightResponse;
   if (!response.ok && body.status !== 'error') {
-    throw new Error(`HTTP ${response.status}: ${JSON.stringify(body)}`);
+    throw new Error(`HTTP ${response.status}: ${redactForDisplay(JSON.stringify(body))}`);
   }
   return body;
 }

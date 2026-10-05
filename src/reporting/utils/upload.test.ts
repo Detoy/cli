@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { uploadScanArtifact, type ScanUploadInput } from './upload.js';
+import { formatUploadHttpFailure, uploadScanArtifact, type ScanUploadInput } from './upload.js';
 
 const baseInput: ScanUploadInput = {
   scheme: 'https',
@@ -134,5 +134,19 @@ describe('uploadScanArtifact', () => {
     const headers = init.headers as Record<string, string>;
     expect(headers['X-Vibgrate-Run-Id']).toBeUndefined();
     expect(headers['X-Vibgrate-Run-Token']).toBeUndefined();
+  });
+});
+
+describe('formatUploadHttpFailure', () => {
+  it('keeps the status and drops a token, header, and credential URL', () => {
+    const token = 'npm' + '_' + 'f'.repeat(20);
+    const message = formatUploadHttpFailure(
+      401,
+      `Authorization: Bearer ${token}\nhttps://ci:${token}@ingest.example/v1/ingest/scan`,
+    );
+    expect(message.startsWith('HTTP 401:')).toBe(true);
+    expect(message).not.toContain(token);
+    expect(message).toContain('[REDACTED]');
+    expect(message).toContain('https://ingest.example/v1/ingest/scan');
   });
 });

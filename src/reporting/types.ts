@@ -1,9 +1,5 @@
 // ── Core types for Vibgrate CLI ──
 
-import type { BaselineComparison } from '../core-open/types.js';
-
-export type { BaselineComparison };
-
 export type DepSection = 'dependencies' | 'devDependencies' | 'peerDependencies' | 'optionalDependencies';
 
 export type RiskLevel = 'low' | 'moderate' | 'high' | 'none';
@@ -238,6 +234,26 @@ export interface TreeCount {
   totalDirs: number;
 }
 
+/**
+ * One drift finding already present in a baseline snapshot.
+ * `id` is 32 lowercase hex characters, stable for the same rule and location.
+ */
+export interface BaselineSuppression {
+  ruleId: string;
+  location: string;
+  id: string;
+}
+
+/**
+ * Audit written by `vg scan --baseline`. Matching findings stay in `findings`.
+ * `suppressed` is sorted by ruleId, then location, then id.
+ */
+export interface BaselineComparison {
+  compared: true;
+  suppressedCount: number;
+  suppressed: BaselineSuppression[];
+}
+
 // ── Full scan artifact (stable schema) ──
 
 export interface ScanArtifact {
@@ -251,12 +267,9 @@ export interface ScanArtifact {
   solutions?: SolutionScan[];
   drift: DriftScore;
   findings: Finding[];
-  /** Repo-relative baseline path. See core-open `ScanArtifact.baseline`. */
+  /** Repo-relative path of the `--baseline` file, when one was compared. */
   baseline?: string;
-  /**
-   * Auditable record of findings already present in the baseline. Findings
-   * stay in `findings`. Absent when no baseline was compared.
-   */
+  /** Present only after a baseline file was read. Absent means no comparison. */
   baselineComparison?: BaselineComparison;
   delta?: number;
   extended?: ExtendedScanResults;

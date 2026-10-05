@@ -8,6 +8,7 @@ import { findGitRoot, ensureGitignored } from '../utils/gitignore.js';
 import { resolveCliInvocation } from '../../util/cli-invocation.js';
 import * as path from 'node:path';
 import { openUrl } from '../utils/open-url.js';
+import { redactForDisplay } from '../../core-open/utils/redact.js';
 
 interface StartResponse {
   deviceCode: string;
@@ -75,7 +76,7 @@ export const loginCommand = new Command('login')
       }
       start = (await res.json()) as StartResponse;
     } catch (e: unknown) {
-      console.error(chalk.red(`Could not reach ${ingestHost}: ${e instanceof Error ? e.message : String(e)}`));
+      console.error(chalk.red(`Could not reach ${ingestHost}: ${redactForDisplay(e instanceof Error ? e.message : String(e))}`));
       process.exit(1);
     }
 
@@ -149,7 +150,7 @@ export const loginCommand = new Command('login')
           } catch (e: unknown) {
             console.error(
               chalk.red('✖ Signed in, but workspace setup failed: ') +
-                (e instanceof Error ? e.message : String(e)),
+                redactForDisplay(e instanceof Error ? e.message : String(e)),
             );
             console.error(
               chalk.dim('  Finish setup with "vibgrate dsn create --workspace new".'),
@@ -201,7 +202,7 @@ export const loginCommand = new Command('login')
         process.exit(1);
       }
       if (token.status === 'error') {
-        console.error(chalk.red(`✖ ${token.error ?? 'Login failed.'}`));
+        console.error(chalk.red(`✖ ${redactForDisplay(token.error ?? 'Login failed.')}`));
         process.exit(1);
       }
     }

@@ -20,10 +20,9 @@ For a quick overview, see the [README](./README.md). This document covers everyt
   - [vg report](#vg-report)
   - [vg review](#vg-review)
   - [vg sbom](#vg-sbom)
-    - [Multiple versions of the same package](#multiple-versions-of-the-same-package)
   - [vg scan](#vg-scan)
+    - [Offline scan with a package-version manifest](#offline-scan-with-a-package-version-manifest)
     - [Vulnerabilities and exposure attribution](#vulnerabilities-and-exposure-attribution)
-      - [Offline package manifest](#offline-package-manifest)
   - [vg update](#vg-update)
   - [vg why](#vg-why)
 - [Workspace auth & cloud upload](#workspace-auth--cloud-upload)
@@ -87,7 +86,7 @@ For a quick overview, see the [README](./README.md). This document covers everyt
   - [Text](#text)
   - [JSON Artifact](#json-artifact)
   - [SARIF](#sarif)
-    - [Advisory aliases](#advisory-aliases)
+    - [Advisories with several ids](#advisories-with-several-ids)
   - [Markdown](#markdown)
   - [JUnit](#junit)
 - [Configuration](#configuration)
@@ -119,7 +118,7 @@ For a quick overview, see the [README](./README.md). This document covers everyt
 - [Vibgrate Cloud Upload](#vibgrate-cloud-upload)
   - [DSN Tokens](#dsn-tokens)
   - [Data Residency](#data-residency)
-- [Registry, auth, and network failures](#registry-auth-and-network-failures)
+- [Troubleshooting: registry, auth, and network](#troubleshooting-registry-auth-and-network)
 - [Privacy & Security](#privacy--security)
 - [Exit Codes](#exit-codes)
 - [Programmatic API](#programmatic-api)
@@ -1065,115 +1064,100 @@ the purl is omitted. CycloneDX sets `vibgrate:purlStatus` to `unavailable` and
 records the reason on `vibgrate:purlWarning`. SPDX omits the purl externalRef,
 records `purlStatus=unavailable` on the package annotation, and repeats the
 reason in a second annotation. `vg sbom export` prints the same warning on
-stderr. The warning names the package and its ecosystem.
+stderr. The warning names the package and its ecosystem. The purl rules above
+are the identity a scanner should store. The rest of this section says how that
+identity behaves when one package is installed more than once.
+
+#### Several versions of one package
+
+A component's identity is **package name + resolved version**. That pair is what
+deduplication uses. The purl, when one can be built, is the same pair in Package
+URL form, and it is what you should match on.
+
+| Field | What it is |
+| --- | --- |
+| CycloneDX `purl` and `bom-ref` | The purl (`pkg:npm/left-pad@1.3.0`). `bom-ref` falls back to `vibgrate:<ecosystem>:<name>@<version>` when the purl is omitted (see above). |
+| SPDX `externalRefs` | The same purl, `referenceType: purl`. |
+| SPDX `SPDXID` | `SPDXRef-Package-N`, N being this row's position in `packages` (1-based). |
+
+`left-pad@1.3.0` and `left-pad@1.2.0` are two components. An npm
+`package-lock.json` v2/v3 that records both — `node_modules/left-pad` at 1.3.0
+and `node_modules/widget/node_modules/left-pad` at 1.2.0 — exports both, with
+distinct purls and distinct `bom-ref` values. The same `name@version` is one
+component: a second install path of that exact version, or a second scanned
+project that resolved that exact version, does not add a row.
+
+The row that is kept for a shared `name@version` is the first project in the
+scan artifact that declared it. `vibgrate:project`, `vibgrate:currentSpec`,
+`vibgrate:drift`, and `vibgrate:majorsBehind` come from that project. A later
+project's copy of the same version is dropped.
+
+`vibgrate:scope` (SPDX: `scope=` on the package annotation) is `direct` when a
+scanned manifest declared that exact `name@version`, and `transitive` when the
+version appears only in a lockfile. The manifest row wins, so a version that is
+both declared and locked is `direct`. The lockfile copy of that same version
+is omitted. A second version that the lockfile resolved and no manifest
+declared stays in the document as `transitive`. On a transitive row,
+`vibgrate:project` is the scan root's name.
+
+```bash
+vg sbom export --format cyclonedx --out sbom.cdx.json
+vg sbom export --no-transitive --format cyclonedx --out sbom-direct.cdx.json
+```
+
+`--no-transitive` keeps manifest-declared rows only. Lockfile-only versions are
+absent, and so is the dependency graph. A consumer that filters to
+`vibgrate:scope=direct` sees the same gap: other installed versions of that
+package are still in the full document, marked `transitive`.
+
+**Order.** Direct rows follow `projects` on the scan artifact, and within a
+project they follow that project's `dependencies` array. The npm scanner sorts
+each project's array by drift, then by package name, before it writes the
+artifact. Lockfile-only rows are appended after the direct rows, sorted by
+package name and then by version. That combined list is the order of CycloneDX
+`components`, CycloneDX `dependencies`, and SPDX `packages`. `dependsOn` entries
+and the names inside one lockfile edge are sorted on their own.
+
+**Same inputs, same document.** For one scan artifact and the lockfiles under
+`--root`, `vg sbom export` writes the same JSON on every run, including the
+CycloneDX `serialNumber` and the SPDX `documentNamespace`. Those document ids
+are a hash of that artifact — timestamp included — and of the ordered component
+list and edges. A later scan of the same tree records a new timestamp, so the
+document id changes. Purls and CycloneDX `bom-ref` values do not.
+
+**Known limitations** (the exporters are unchanged):
+
+- Direct-row order, and which project's attribution is kept for a shared
+  `name@version`, follow the scan artifact. Reordering projects changes
+  `vibgrate:project` on that row, reassigns SPDX `SPDXID` values to match the
+  new positions, retargets SPDX `DEPENDS_ON` relationships (they point at
+  SPDX IDs), and changes the document serial number and namespace. CycloneDX `bom-ref` stays on the purl,
+  so a scanner that stored the purl still matches.
+- npm `package-lock.json` v2/v3 collapses two install paths of the same
+  `name@version` into one component. When those paths declare different
+  dependencies, the edge list is the path that appears last in the lockfile
+  `packages` object. The other path's dependencies remain components when they
+  are different versions, and they are omitted from that parent's `dependsOn`.
+- In a multi-project scan the component list is the union of every scanned
+  project's lockfile, still keyed by `name@version`. The CycloneDX
+  `dependencies` array and the SPDX `DEPENDS_ON` relationships describe the
+  lockfile at the scan root (the first lockfile found, when the root has none).
+  A version that exists only in a nested lockfile is still a component. Its
+  `dependsOn` is empty when the root lockfile has no edge for it.
+- PyPI purl names are normalized (PEP 503: lowercase, runs of `-_.` folded to
+  one `-`). Deduplication uses the name string the scan recorded, before that
+  normalization. `Flask@3.0.0` and `flask@3.0.0` are therefore two components
+  with one purl and one CycloneDX `bom-ref` (`pkg:pypi/flask@3.0.0`). SPDX
+  still assigns each row its own `SPDXID`. An npm name is copied into the purl
+  as scanned, so `left-pad@1.3.0` and `left-pad@1.2.0` stay two purls.
 
 When the lockfile format resolves real dependency edges (npm
 `package-lock.json` v2/v3 today; pnpm and yarn report components without edges), the
 SBOM also carries the resolved dependency graph: CycloneDX's top-level `dependencies`
 array, or SPDX `DEPENDS_ON` relationships. Where edges aren't resolvable, that section
 is left out entirely rather than shipping a graph that claims "no dependencies" when
-the truth is "not tracked".
-
-#### Multiple versions of the same package
-
-A component's identity is the package **name** plus the exact **version string**.
-Two versions of one package are two components. The same name and version string is
-one component: several scanned projects, a manifest plus a lockfile, or several
-install paths all collapse onto that single row. Project name and install path are
-metadata on the row. Package URL shape, including when a purl is omitted, is
-described [above](#vg-sbom); which versions are present is a separate question
-([#167](https://github.com/vibgrate/cli/issues/167)).
-
-The version string is the concrete version on the scan row (`resolvedVersion`, or
-the declared spec when that spec is already one version). A range, dist-tag, or
-protocol spec (`^1.2.3`, `latest`, `workspace:*`) is recorded as `unknown`, and
-every unresolved row for that name collapses to that one component. Go rows use
-the declared spec so the version matches `go.sum`.
-
-CycloneDX `bom-ref` is the purl when one can be built, and
-`vibgrate:<ecosystem>:<name>@<version>` otherwise. Each emitted component has its
-own `bom-ref`, because rows that share a name and version have already been
-collapsed. SPDX `SPDXID` is `SPDXRef-Package-N` for the Nth row, starting at 1.
-The purl is also the SPDX `externalRefs` PACKAGE-MANAGER locator. Match on the
-purl: it carries the version, so `pkg:npm/left-pad@1.3.0` and
-`pkg:npm/left-pad@1.2.0` stay distinct.
-
-`vibgrate:scope` is `direct` when a scanned manifest declares that name and
-version, and `transitive` when the row comes only from a lockfile. SPDX stores
-the same value as `scope=` on the package annotation. Direct rows are written
-first, so a lockfile copy of the same name and version stays `direct` and does
-not add a second component. A different version that appears only in the lockfile
-is its own row with `scope` `transitive`. On a lockfile-only row,
-`vibgrate:project` is the scan root recorded on the artifact; on a direct row it
-is the manifest project that supplied the row.
-
-`pnpm-lock.yaml`, `yarn.lock`, `Cargo.lock`, and `go.sum` use this same
-name-and-version component key, so two versions are two components there as
-well. The dependency-graph section is still only filled for npm
-`package-lock.json` v2/v3, as described above.
-
-Row order, for a given scan artifact and the lockfiles on disk:
-
-1. Direct rows, in scan-artifact order. `vg scan` sorts each project's
-   dependencies by drift severity (`major-behind`, `minor-behind`, `current`,
-   `unknown`), then by package name. The projects themselves follow discovery
-   order.
-2. Lockfile-only rows that are not already present, sorted by package name and
-   then by version string. That version sort is lexicographic, so `10.0.0`
-   comes before `2.0.0`.
-
-That order assigns SPDX IDs. CycloneDX `dependencies` lists the root
-(`bom-ref` `vibgrate-root`) and then each component in the same order. Each
-`dependsOn` list is sorted. A second `vg sbom export` of the same artifact and
-the same lockfiles repeats this order, these purls, and these SPDX IDs.
-
-`--no-transitive` skips lockfiles. The document is manifest rows only, still
-collapsed by name and version across projects, and it has no dependency graph.
-A version that exists only in a lockfile is left out.
-
-Example: an npm package whose `package.json` depends on `left-pad@^1.3.0` and
-`nested-holder@1.0.0`, with a v3 `package-lock.json` that resolves
-`node_modules/left-pad` to `1.3.0` and
-`node_modules/nested-holder/node_modules/left-pad` to `1.2.0`:
-
-```bash
-vg scan --offline --no-graph
-vg sbom export --format cyclonedx
-vg sbom export --format spdx
-```
-
-The export contains `pkg:npm/left-pad@1.3.0` (`vibgrate:scope` `direct`) and
-`pkg:npm/left-pad@1.2.0` (`transitive`). `--no-transitive` leaves only the
-`1.3.0` row. When `packages/a` and `packages/b` both declare `ms@2.1.3`, the
-export contains one `pkg:npm/ms@2.1.3` component. `vibgrate:project`, the drift
-fields, and `vibgrate:currentSpec` come from whichever of those projects appears
-first in the scan artifact. When they declare different versions (`2.1.3` and
-`2.1.2`), both versions are emitted and both are `direct`.
-
-Three limits of the current exporter are worth knowing before you match a
-graph against an install tree:
-
-- **Same version, several install paths.** npm can list one `name@version` at
-  more than one `packages` path — for example `node_modules/once` and
-  `node_modules/nested-holder/node_modules/once`, both `once@1.4.0`, depending
-  on different `wrappy` versions. The component is emitted once. The dependency
-  edges kept are those of the last `packages` entry for that key, in lockfile
-  order. A later entry replaces an earlier one. The other parent's dependency
-  stays in the component list with no `dependsOn` entry pointing at it.
-- **One dependency graph.** CycloneDX `dependencies` and SPDX `DEPENDS_ON`
-  describe a single lockfile: the root project's when that path has a lockfile,
-  otherwise the first project path in sorted order that has one. Components are
-  the union of every scanned project's lockfile, so a version that only a
-  sub-project resolves is still listed. Edges from a sub-project lockfile
-  appear when that lockfile is the one chosen for the graph.
-- **Project order across a scan.** Sub-project order in the scan artifact
-  follows directory discovery and can differ between two scans of the same
-  tree. That changes which project's metadata is kept for a shared name and
-  version, and it can swap the order of direct rows (and therefore SPDX IDs)
-  when projects declare different packages or different versions. The purl and
-  the CycloneDX `bom-ref` for a given name and version stay the same.
-  Lockfile-only ordering follows the lockfile. The chosen dependency graph
-  follows the sorted project paths.
+the truth is "not tracked". In a multi-project scan those edges are the root
+lockfile's edges, as described above.
 
 `vg sbom vex` is input-agnostic: it assembles a complete OpenVEX document from the statements you supply (`--from <file>` and/or repeatable `--statement`), so it works regardless of which scanner flagged the components. A zero-statement document is valid and honest — it asserts no known affected components.
 
@@ -1190,13 +1174,13 @@ vg scan [path] [--vulns] [--full] [--format text|json|sarif|md] [--out <file>] [
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--vulns` | — | Also detect known vulnerabilities. Online, this queries OSV. With `--offline`, it matches only the advisories in [`--package-manifest`](#offline-package-manifest) |
+| `--vulns` | — | Also detect known vulnerabilities (OSV online; offline via `--package-manifest` advisories) |
 | `--full` | — | Comprehensive scan: enables `--vulns` and reports banned dependencies when a standards policy exists |
 | `--format` | `text` | Output format: `text`, `json`, `sarif`, or `md` |
 | `--out <file>` | — | Write output to a file |
 | `--junit <file>` | — | Also write a deterministic JUnit XML report of findings and gates. See [JUnit](#junit). Does not replace `--format` |
 | `--fail-on <level>` | — | Exit with code 2 if findings at this level exist. `warn` / `error` gate on drift findings. `architecture-finding` (hard boundary violations) and `architecture-warning` (violations and warnings) gate on the architecture module's boundary findings, judged under the policy pack in force — `hexagonal-v1` unless `.vibgrate/architecture.toml`, `VIBGRATE_ARCHITECTURE_POLICY` or `vg build --policy` says `layered-v1`. The output names the pack whether the gate passes or fails; each failing row is `file:line  symbol  violation: … (rule)`. Pick the pack before turning this on: see [Architecture policy packs](./docs/architecture-policies.md) |
-| `--baseline <file>` | — | Compare against a previous baseline. Matched findings stay in the report and are listed in `baselineComparison` (see [Drift Baselines](#drift-baselines--fitness-functions)) |
+| `--baseline <file>` | — | Compare against a previous baseline. JSON records matching findings in `baselineComparison` (rule, location, and id, sorted). Text prints the count. SARIF lists the same ids as suppressions. Those findings stay in the report |
 | `--changed-only` | — | Only scan changed files |
 | `--concurrency <n>` | `8` | Max concurrent npm registry calls |
 | `--drift-budget <score>` | — | Fitness gate: fail if drift score is above this budget |
@@ -1206,8 +1190,8 @@ vg scan [path] [--vulns] [--full] [--format text|json|sarif|md] [--out <file>] [
 | `--region <region>` | — | Override data residency (`us`, `eu`) during push |
 | `--strict` | — | Fail scan command if push fails |
 | `--ui-purpose` | — | Enable optional UI-purpose evidence extraction |
-| `--offline` | — | No registry calls, no OSV calls, and no upload. `--push` is ignored. Latest versions and advisories come from `--package-manifest` |
-| `--package-manifest <file>` | — | JSON or ZIP package-version manifest for offline latest-version and advisory lookups. See [Offline package manifest](#offline-package-manifest). A published version bundle: `https://github.com/vibgrate/manifests/latest-packages.zip` |
+| `--offline` | — | Disable network calls and disable upload/push behavior |
+| `--package-manifest <file>` | — | JSON or ZIP package-version manifest used for offline/latest lookups (latest bundle: `https://github.com/vibgrate/manifests/latest-packages.zip`) |
 | `--no-local-artifacts` | — | Do not write `.vibgrate/*.json` scan artifacts to disk |
 | `--max-privacy` | — | Hardened privacy mode with minimal scanners and no local artifacts |
 | `--no-graph` | — | Skip building the local code map that scan produces after scoring drift |
@@ -1218,7 +1202,90 @@ vg scan [path] [--vulns] [--full] [--format text|json|sarif|md] [--out <file>] [
 
 By default, the scan writes `.vibgrate/scan_result.json`. Use `--no-local-artifacts` or `--max-privacy` to suppress local JSON artifact files.
 
-For offline drift scoring and offline vulnerability checks, pass `--package-manifest <file>` (a JSON file, or a ZIP such as `https://github.com/vibgrate/manifests/latest-packages.zip`). The file shape, the exit code when it is missing, and what `--offline` skips are under [Offline package manifest](#offline-package-manifest). When a registry, advisory source, or upload fails, the messages and the next step are in [Registry, auth, and network failures](#registry-auth-and-network-failures).
+For offline drift scoring, pass `--package-manifest <file>` with a downloaded manifest bundle such as `https://github.com/vibgrate/manifests/latest-packages.zip`. The manifest shape, the fail-closed errors, and what offline mode skips are in [Offline scan with a package-version manifest](#offline-scan-with-a-package-version-manifest).
+
+### Offline scan with a package-version manifest
+
+`--offline` scores drift, and with `--vulns` it matches known vulnerabilities, from files on the machine. `--package-manifest` is the local file those lookups read.
+
+#### Manifest input
+
+The file is JSON, or a ZIP whose root contains `package-versions.json`, `manifest.json`, or `index.json`. A ZIP is unpacked with the `unzip` command. The JSON is one object. These keys are the package ecosystems, and `runtimes` is an optional catalog of runtime versions:
+
+`npm`, `nuget`, `pypi`, `maven`, `rubygems`, `swift`, `go`, `cargo`, `composer`, `pub`, `hex`, `docker`, `helm`, `terraform`, `runtimes`
+
+Each ecosystem value is an object keyed by package name. NuGet names are matched case-insensitively. An entry may include:
+
+| Field | Role |
+| --- | --- |
+| `latest` | Newest version used for drift |
+| `versions` | Versions the scanner may resolve a declared range against |
+| `vulns` | Advisories `--vulns` reads when the scan is offline |
+| `releaseDates` | Optional map of version to an ISO-8601 publish date, so freshness does not need a registry |
+
+A `vulns` entry needs an `id`. `ranges` are half-open: a version matches from `introduced` up to, and not including, `fixed`. `versions` lists affected versions explicitly. `severity` is `low`, `moderate`, `high`, `critical`, or `unknown`. Optional `aliases`, `summary`, `cvss`, `cvssVector`, `epss`, `epssPercentile`, and `kev` are copied onto the advisory when you set them. A withdrawn advisory is skipped.
+
+`vg scan` has no separate advisory-file flag. Offline advisories are the `vulns` arrays in this manifest.
+
+A JSON value that is not this shape is rejected. That includes a `package.json`, a JSON array, and text that is not JSON. An empty object is accepted and supplies no versions and no advisories.
+
+Minimal example, saved as `package-versions.json` next to a project whose lockfile installs `left-pad@1.3.0`:
+
+```json
+{
+  "npm": {
+    "left-pad": {
+      "latest": "1.3.0",
+      "versions": ["1.3.0"],
+      "vulns": [
+        {
+          "id": "GHSA-example",
+          "severity": "high",
+          "ranges": [{ "introduced": "0", "fixed": "1.3.1" }]
+        }
+      ]
+    }
+  }
+}
+```
+
+#### Offline scan
+
+```bash
+vg scan --vulns --offline --package-manifest ./package-versions.json
+```
+
+The installed version comes from the lockfile when that version still satisfies the range declared in the project. `--vulns` turns advisory matching on. `--offline` without `--vulns` still uses the file for latest-version drift and does not report advisories.
+
+#### Missing or invalid manifest
+
+Passing `--package-manifest` when the path is missing, unreadable, or not a package-version manifest stops the command before the scan. The exit code is `1`. Stdout is empty, and no `.vibgrate` scan artifact is written.
+
+A missing file prints:
+
+```text
+error: Package manifest not found: /abs/path/missing.json. Pass a readable JSON or ZIP package-version manifest to --package-manifest.
+```
+
+A file that is not JSON, or JSON that is not a package-version manifest, prints:
+
+```text
+error: Package manifest is not usable: /abs/path/bad.json. Expected a JSON object of package versions, or a ZIP containing package-versions.json, manifest.json, or index.json.
+```
+
+The path in the message is the resolved path you passed. A ZIP that does not contain one of those three names at its root says `The ZIP must contain package-versions.json, manifest.json, or index.json.` A file this process cannot read says `Package manifest is not readable: <path>. Check permissions and pass a readable JSON or ZIP package-version manifest to --package-manifest.`
+
+The fail-closed path is covered by `src/reporting/commands/scan-package-manifest.test.ts`.
+
+#### What offline mode does not do
+
+`--offline` does not contact package registries. It does not query the OSV database. It does not upload results, including when `--push` is set or `VIBGRATE_DSN` is present. It does not call an EPSS or KEV service. A package the manifest does not list is not requested from a registry. Known-vulnerability matches come from the `vulns` entries in the manifest.
+
+#### Determinism
+
+The same tree and the same manifest produce the same findings order and the same advisory ids. Vulnerability findings are ordered by ecosystem, then package name, then installed version. Advisories on one package are ordered by severity — critical, high, moderate, low, unknown — and then by advisory id. That id is the `id` from the manifest. JSON records it as `details.advisoryId`. The order of keys in the manifest file does not change the result. `timestamp` and `durationMs` on the scan artifact still change between runs. In a git checkout, an exposure window's day count follows the scan date. The advisory id and the finding order stay the same.
+
+Registry, sign-in, and upload failures — the message `vg` prints and the next command — are in [Troubleshooting: registry, auth, and network](#troubleshooting-registry-auth-and-network).
 
 Examples:
 
@@ -1251,7 +1318,9 @@ Expected results:
 
 ### Vulnerabilities and exposure attribution
 
-`vg scan --vulns` matches your installed dependencies against the public OSV database and records each known vulnerability — advisory id and CVE, severity, CVSS, and the fixing version — in the scan artifact, as findings, and in SARIF. With `--offline`, the same check uses advisories carried in a [`--package-manifest`](#offline-package-manifest) file and does not call OSV. How those findings show up in SARIF when one issue is known under several ids is described under [Advisory aliases](#advisory-aliases): one result per advisory record, primary id on `properties.advisoryId`, the other ids on `properties.aliases`.
+`vg scan --vulns` matches your installed dependencies against the public OSV database and records each known vulnerability — advisory id and CVE, severity, CVSS, and the fixing version — in the scan artifact, as findings, and in SARIF. Supply advisories in a `--package-manifest` bundle to run it offline. The manifest shape, the exit code `1` errors, and the offline limits are in [Offline scan with a package-version manifest](#offline-scan-with-a-package-version-manifest).
+
+SARIF from that scan is one result per package and advisory. How a GHSA, a CVE, and other aliases share that result, and when a second code-scanning alert is expected, is under [Advisories with several ids](#advisories-with-several-ids).
 
 Machine-readable JSON (`vg scan --format json`, and the `.vibgrate/scan_result.json` artifact) lists each advisory under `extended.vulnerabilities.packages[].advisories`. When the advisory data used for that scan already carries exploitability, the same object includes these optional fields:
 
@@ -1277,6 +1346,7 @@ A package-manifest `vulns` entry accepts the same optional fields:
   "kev": false
 }
 ```
+
 In a git repository the scan also attributes each finding: the commit, author, and date that introduced the vulnerable version, and how long you have been exposed. These exposure windows aggregate into remediation metrics framed around the [EU Cyber Resilience Act (CRA)](https://vibgrate.com/compliance/cra): open counts by severity, mean and maximum time exposed, and per-severity SLA breaches (defaults: critical 7 days, high 30, moderate 90, low 180). The metrics are descriptive — they show whether remediation keeps pace; they are not a compliance certification.
 
 The scan also reconstructs **closed** exposure windows from history — a vulnerable version that was later bumped out of the affected range or removed from the lockfile entirely — and reports real remediation time (MTTR) from them: measured, not estimated. Offline, a package-version manifest extends this to advisories that are fully fixed today, so a dependency that is clean now but was once vulnerable still counts toward your remediation record.
@@ -1287,127 +1357,12 @@ Detection and attribution read each project's lockfile, so they cover npm / pnpm
 # Online detection against OSV
 vg scan --vulns
 
-# Air-gapped: versions and advisories from a local package-version manifest
-vg scan --vulns --offline --package-manifest ./package-versions.json --format json --out scan.json
+# Air-gapped: advisories supplied in the manifest bundle
+vg scan --vulns --offline --package-manifest ./package-versions.zip
 
 # Everything in one run: drift + vulnerabilities + a banned-dependency report
 vg scan --full
 ```
-
-#### Offline package manifest
-
-`vg scan --offline --package-manifest <file>` is the local path for drift scoring and, with `--vulns`, known-vulnerability checks. The file supplies latest versions and advisories. The scan makes no registry call, no OSV call, and no upload. `--push` is ignored for that run, including when `VIBGRATE_DSN` or `--dsn` is set.
-
-`vg scan` has no separate advisory-file flag. Advisories are the `vulns` arrays inside the package-version manifest. `vg evidence --advisory` is a different command: it loads one advisory to ask which frozen releases contain it.
-
-**Input shape.** The file is a JSON object, or a ZIP whose root contains `package-versions.json`, `manifest.json`, or `index.json`. A ZIP is extracted with the `unzip` command. Those three names are tried in that order, and the first one that parses as a package-version manifest is used. A file in a subdirectory of the ZIP is ignored. A `package.json` is not a package-version manifest.
-
-Top-level keys are ecosystem names:
-
-`npm`, `nuget`, `pypi`, `maven`, `rubygems`, `swift`, `go`, `cargo`, `composer`, `pub`, `hex`, `docker`, `helm`, `terraform`
-
-An optional `runtimes` object carries runtime-currency data. It is not an advisory source.
-
-Each ecosystem value maps a package name to an entry:
-
-| Field | Meaning |
-| --- | --- |
-| `latest` | Newest version, used for drift |
-| `versions` | Known versions of that package |
-| `license` | Optional SPDX id or expression |
-| `releaseDates` | Optional map of version → ISO-8601 publish date, for offline age scoring |
-| `vulns` | Optional advisories. This is what `--vulns` matches |
-
-NuGet names are matched case-insensitively. Every other ecosystem matches the package name as written.
-
-Each object in `vulns`:
-
-| Field | Meaning |
-| --- | --- |
-| `id` | Advisory id. This is the finding id |
-| `aliases` | Optional other ids, such as a CVE |
-| `summary` | Optional one-line description |
-| `severity` | `low`, `moderate`, `high`, `critical`, or `unknown`. `medium` is accepted and stored as `moderate` |
-| `cvss` | Optional numeric score |
-| `cvssVector` | Optional CVSS vector |
-| `ranges` | Affected ranges. Each entry is `{ "introduced": "<version>", "fixed": "<version>" }`. The installed version matches when it is greater than or equal to `introduced` and less than `fixed`. Omit `introduced`, or set it to `"0"`, for "from the beginning". Omit `fixed` for "still affected" |
-| `versions` | Optional explicit affected versions. A version that is not valid semver matches only this list |
-| `published` | Optional ISO-8601 date |
-| `withdrawn` | Optional. A withdrawn advisory is skipped |
-| `references` | Optional URLs |
-
-`--vulns` compares installed versions from each project's lockfile with `vulns` on npm, PyPI, Maven, NuGet, Go, Cargo, Composer, RubyGems, pub, and Hex. Swift, Docker, Helm, and Terraform entries still supply `latest` for drift. Their `vulns` arrays are not matched.
-
-A published version bundle such as <https://github.com/vibgrate/manifests/latest-packages.zip> uses this same shape. Offline `--vulns` reports the advisories that file carries under `vulns`. A manifest that only lists versions is valid, and the vulnerability step then reports none.
-
-Minimal `package-versions.json` (the advisory id below is an example, not a real advisory):
-
-```json
-{
-  "npm": {
-    "left-pad": {
-      "latest": "1.3.0",
-      "versions": ["1.2.0", "1.3.0"],
-      "vulns": [
-        {
-          "id": "GHSA-example-0000-0000",
-          "aliases": ["CVE-2024-00000"],
-          "severity": "high",
-          "summary": "Example advisory — replace with a real one.",
-          "ranges": [{ "introduced": "0", "fixed": "1.3.0" }]
-        }
-      ]
-    }
-  }
-}
-```
-
-Installed `left-pad@1.2.0` matches that range. `1.3.0` is the fix (`fixed` is exclusive), so it does not match.
-
-```bash
-vg scan --vulns --offline --package-manifest ./package-versions.json --format json --out scan.json
-```
-
-The same command accepts a ZIP:
-
-```bash
-vg scan --vulns --offline --package-manifest ./package-versions.zip --format json --out scan.json
-```
-
-**Missing or invalid manifest.** A `--package-manifest` path that is missing, unreadable, or not a package-version manifest stops the command before a scan starts. The process exits `1` (`ERROR`). Stderr is a single `error:` line, with no stack trace. `.vibgrate/scan_result.json` is not written. An empty success report is not produced.
-
-```bash
-vg scan --offline --package-manifest ./missing.zip
-```
-
-```text
-error: Package manifest not found: /absolute/path/to/missing.zip. Pass a readable JSON or ZIP package-version manifest to --package-manifest.
-```
-
-The path in the message is the absolute path of the argument.
-
-| What went wrong | Exit | Stderr (after `error: `) |
-| --- | --- | --- |
-| File does not exist | `1` | `Package manifest not found: <path>. Pass a readable JSON or ZIP package-version manifest to --package-manifest.` |
-| File is not readable | `1` | `Package manifest is not readable: <path>. Check permissions and pass a readable JSON or ZIP package-version manifest to --package-manifest.` |
-| ZIP, and `unzip` is not installed | `1` | `Package manifest is not readable: <path>. Reading a ZIP manifest needs the unzip command. Pass a JSON package-version manifest to --package-manifest, or install unzip.` |
-| Path is a directory | `1` | `Package manifest is not a file: <path>. Pass a JSON or ZIP package-version manifest to --package-manifest.` |
-| Not JSON, or JSON that is not a package-version manifest (a `package.json` fails this way) | `1` | `Package manifest is not usable: <path>. Expected a JSON object of package versions, or a ZIP containing package-versions.json, manifest.json, or index.json.` |
-| ZIP whose root has none of those three names | `1` | `Package manifest is not usable: <path>. The ZIP must contain package-versions.json, manifest.json, or index.json.` |
-
-Omitting `--package-manifest` leaves the command running. `vg scan --vulns --offline` with no manifest skips OSV and the vulnerability step reports `none found`. When the rest of the scan succeeds, the exit code is `0`. That line means no advisory source was provided. A path that was passed and cannot be read exits `1`.
-
-A manifest that loads and contains no advisory for the installed versions also finishes successfully. The vulnerability step reports none, because nothing in the file applied.
-
-**What `--offline` skips.** No request is sent to a package registry — npm, NuGet, PyPI, Maven Central, RubyGems, `proxy.golang.org`, crates.io, Packagist, pub.dev, hex.pm, Docker Hub, Artifact Hub, the Terraform Registry, or the GitHub API Swift uses for package tags — or to OSV (`https://api.osv.dev`). No scan result is uploaded.
-
-A package named in the manifest is resolved from that entry. A package the manifest does not name is not fetched. Drift scoring can still reuse a fresh entry in the local registry cache left by an earlier online scan on this machine; otherwise that package's currency stays unknown. Vulnerability matching ignores that cache and uses `vulns` only.
-
-Online, `--vulns` queries OSV. Passing `--package-manifest` as well adds manifest advisories whose ids OSV did not return. When OSV cannot be reached, the vulnerability step reports `OSV unreachable — not checked`. `--offline` stays on the manifest and never reports that OSV line.
-
-**Determinism.** The same tree and the same manifest produce the same vulnerability findings: the same advisory ids, in the same order. Packages are ordered by ecosystem, then package name, then installed version. Advisories on one package are ordered by severity (critical, then high, moderate, low, unknown), then by advisory id. The id is the advisory's `id`. JSON reports it as `findings[].details.advisoryId`. SARIF reports it as `properties.advisoryId` on the `vibgrate/vulnerability` result. Order and ids come from the tree and the manifest.
-
-In a git repository the finding also names who introduced the vulnerable version, and how many days the exposure has been open, measured to the time of that scan. The day count follows the calendar. The advisory id and the order stay the same.
 
 ---
 
@@ -3109,36 +3064,7 @@ Recommended workflow:
 
 This makes drift a formal quality gate (fitness function), not just reporting.
 
-### What a baseline comparison records
-
-`vg scan --baseline` still reports the numeric drift delta (`delta`, and `--drift-worsening` uses that delta). It also writes an additive `baselineComparison` block on the scan artifact so a matched finding is not a silent drop. Findings stay in `findings`. The block is omitted when no baseline file was read (missing or unreadable). A file that was read and matched nothing is still recorded, with `suppressedCount: 0`.
-
-```json
-"baseline": ".vibgrate/baseline.json",
-"delta": 2,
-"baselineComparison": {
-  "compared": true,
-  "suppressedCount": 2,
-  "suppressed": [
-    {
-      "ruleId": "vibgrate/dependency-rot",
-      "location": "package.json",
-      "id": "c0ffee…"
-    }
-  ]
-}
-```
-
-| Field | Meaning |
-| ----- | ------- |
-| `baseline` | Repo-relative path of the file that was compared (basename if the file is outside the repo) |
-| `baselineComparison.compared` | `true` when that file was read |
-| `baselineComparison.suppressedCount` | How many current findings were already in the baseline |
-| `baselineComparison.suppressed` | `{ ruleId, location, id }` for each match, sorted by `ruleId`, then `location`, then `id` |
-
-`id` is 32 lowercase hex characters: the first 128 bits of SHA-256 over the length-prefixed `ruleId`, `level`, `location`, and `message`. The same finding always produces the same id. A changed message is a different finding and is not listed as suppressed. Text and Markdown reports include `Baseline suppressions: N` and mark matched rows `(baselined)`.
-
-`baseline` remains the path string it has always been. `baselineComparison` is the new audit record. `delta` is still set only when both scores are numbers; an unmeasured score is not treated as zero.
+`vg scan --baseline` still compares the DriftScore (`delta`, and `--drift-worsening`). It also records findings that already appear in the snapshot — the same rule at the same location — on the scan document as `baselineComparison`. The list is sorted by rule, location, then id. The text report prints how many were suppressed. SARIF marks those same ids as suppressions. The findings stay in the report, so a comparison does not drop them without that record.
 
 ## DriftScore
 
@@ -3180,62 +3106,74 @@ The default output. A coloured, human-readable report showing:
 - Overall drift score and risk level
 - Score component breakdown with visual bars
 - Per-project details: runtime lag, framework versions, dependency distribution
-- Findings with severity icons. A vulnerability finding whose advisory lists fixed versions shows `fix available (<versions>)`; the clause is omitted when no fixed version is recorded.
-- When a baseline was compared: the drift delta, `Baseline suppressions: N`, and `(baselined)` on matched rows
+- Findings with severity icons
 
 ### JSON Artifact
 
 The full scan artifact in JSON format. Contains all raw data, scores, findings, and VCS metadata. Stable schema (`schemaVersion: "1.0"`). This is the same artifact saved to `.vibgrate/scan_result.json`.
 
-When the scan compared a baseline, the artifact also carries `baseline` (the file path) and `baselineComparison` (`compared`, `suppressedCount`, and `suppressed` — see [What a baseline comparison records](#what-a-baseline-comparison-records)). Matched findings remain in `findings`.
-
 ### SARIF
 
-[Static Analysis Results Interchange Format](https://sarifweb.azurewebsites.net/) 2.1.0 — compatible with GitHub code scanning and Azure DevOps. The document contains findings, not the drift score or the other metrics.
+[Static Analysis Results Interchange Format](https://sarifweb.azurewebsites.net/) (SARIF) 2.1.0. GitHub code scanning and Azure DevOps read this file. It contains findings only. The DriftScore and the other metrics stay in the JSON artifact. Drift findings come first. Vulnerability findings follow when the scan ran with `--vulns`.
 
 ```bash
-vg scan --format sarif
-vg scan --vulns --format sarif
+vg scan --vulns --format sarif --out vibgrate.sarif
 ```
 
-`runs[0]` holds the drift findings and, when you passed `--vulns`, the vulnerability findings. A second run is added only for infrastructure findings (`vg scan --iac`). Advisory results stay on the first run.
+#### Advisories with several ids
 
-#### Advisory aliases
+One advisory often has its own id plus aliases: a GHSA, a CVE, and sometimes another OSV id. SARIF writes **one result per package and advisory**. Every alias stays on that result. A second result appears only when the scan kept a second advisory id. Two advisories stay two results when one lists the other as an alias.
 
-A vulnerability is often published under more than one id: a GHSA id, a CVE id, and sometimes an OSV id. When those ids belong to **one advisory record**, `vg scan --format sarif` keeps them on **one result**.
+A near-duplicate code-scanning alert is expected in that case. If the vulnerability data returns `GHSA-bbbb` and `CVE-2024-1111` as two advisories for the same package, the file contains two results, and each names the other in `aliases`. Match them on `properties.advisoryId`. A CVE string inside the message is an alias of the primary id.
 
-Each installed package produces one result per advisory record that affects the installed version. The record's own id is the primary id, on `properties.advisoryId`. The other ids are `properties.aliases`, in the order OSV or your offline package-version manifest supplied. That array is not sorted. An advisory with no aliases has `"aliases": []`. The formatter copies the finding's `details` object onto `properties`, so the same object also carries `ecosystem`, `package`, `installedVersion`, `severity`, `cvss` (`null` when the advisory has no score), and `fixedVersions`.
+| Field | What it holds |
+| ----- | ------------- |
+| `ruleId` | `vibgrate/vulnerability` on every vulnerability result. The rule is listed once, in the order that id first appears among the findings (after any drift rules). |
+| `level` | `error` for critical and high, `warning` for moderate, `note` for low and unknown. |
+| `message.text` | Starts with `package@version:` and the advisory id. When an alias starts with `CVE-` and that alias is not already the advisory id, the first such alias is added in parentheses. Further CVE aliases stay in `properties.aliases`. |
+| `locations[0].physicalLocation.artifactLocation.uri` | The package name. |
+| `properties.advisoryId` | The advisory's own id. This is the primary id. |
+| `properties.aliases` | The alias list, in the order the advisory supplied. Distinct advisory ids stay distinct results. |
+| `properties` | The finding details, copied as-is: ecosystem, package, installed version, severity, CVSS, and fixing versions, plus introduction details when the scan attributed the advisory. |
 
-The result `ruleId` is `vibgrate/vulnerability`. The location `uri` is the package name. `critical` and `high` map to SARIF level `error`, `moderate` to `warning`, and `low` or `unknown` to `note`. The message text looks like:
+The same advisory set always produces the same result order. Packages are ordered by ecosystem, package name, then version. Advisories on one package are ordered by severity from critical down to unknown, then by advisory id. SARIF emits results in that order: drift findings, then those vulnerability results.
 
-```text
-widget@1.2.0: GHSA-widg-et00-0001 (CVE-2099-9999) (high 7.5) — fix available (1.2.1)
+The ids in this example show the field shape. A real scan fills them from the advisory it read. A critical `GHSA-bbbb` whose aliases are `CVE-2024-1111` and `OSV-1`, fixed in 4.17.21, is one result:
+
+```json
+{
+  "ruleId": "vibgrate/vulnerability",
+  "level": "error",
+  "message": {
+    "text": "lodash@4.17.20: GHSA-bbbb (CVE-2024-1111) (critical 9.1) — fix available (4.17.21)"
+  },
+  "locations": [
+    {
+      "physicalLocation": {
+        "artifactLocation": { "uri": "lodash" }
+      }
+    }
+  ],
+  "properties": {
+    "ecosystem": "npm",
+    "package": "lodash",
+    "installedVersion": "4.17.20",
+    "advisoryId": "GHSA-bbbb",
+    "aliases": ["CVE-2024-1111", "OSV-1"],
+    "severity": "critical",
+    "cvss": 9.1,
+    "fixedVersions": ["4.17.21"]
+  }
+}
 ```
 
-The id in front is `properties.advisoryId`. The parenthetical CVE is the first alias that starts with `CVE-`, and only when that CVE is not already the primary id. Any other alias — including a GHSA id when the primary id is the CVE — stays in `properties.aliases` and is left out of the message. The message ends with `— fix available (<versions>)` when the advisory lists fixed versions. When it lists none, that clause is omitted; the scan does not claim there is no fix. The CVSS score is left out of the severity parentheses when the advisory has no score (`(low)` rather than `(low 2.1)`).
-
-**Two records stay two results.** `aliases` is not a grouping key. If OSV or your manifest returns a GHSA record and a separate CVE record for the same issue, and each names the other in `aliases`, the SARIF output contains both results. A code-scanning upload can show those as near-duplicate alerts. `vg scan` does not collapse them.
-
-**Order.** The formatter writes `results` in findings order and does not sort them again. `tool.driver.rules` lists each distinct `ruleId` once, in the order that id first appears among the findings. Drift findings come first, in the order the drift scan emitted them. Vulnerability findings follow, sorted by ecosystem, then package name, then version, and within a package by severity (`critical`, `high`, `moderate`, `low`, `unknown`) and then by advisory id. The order of ids in the OSV response or the manifest does not change that. `invocations[0].startTimeUtc` is the time of the scan, so two scans of the same tree are not byte-for-byte identical; the vulnerability results are.
-
-Vulnerability results do not set `partialFingerprints`. Every advisory on a package shares the rule id `vibgrate/vulnerability` and the same location (the package name). Tell those results apart with `properties.advisoryId` and `properties.aliases`.
-
-```bash
-vg scan --vulns --format sarif
-vg scan --vulns --offline --package-manifest ./package-versions.json --format sarif
-```
-
-Read `runs[0].results`. One advisory record with several aliases is one object in that array.
-
-A declared license names its evidence file in JSON and SARIF when `vg scan` has one. A `package.json` `license` or `licenses` field is that file; otherwise the first existing `LICENSE`, `LICENCE`, `COPYING`, or `NOTICE` file in the project directory (also `.md` and `.txt`, in that order) is. The path is `projects[].license.path`. Text that does not resolve as SPDX is a `vibgrate/license-parse-failed` finding: JSON sets `location` and `details.path` to the repo-relative path, and SARIF uses the same path as `physicalLocation.artifactLocation.uri` and `properties.path`. The license body is not copied into the artifact. An explicit `NOASSERTION` is not a failure. A registry license string has no local file, so the finding stays on the dependency and `location` remains the project path, without `details.path`. Those file findings are sorted by path.
-
-A finding that matched the baseline stays in `runs[0].results`. Its result gains a SARIF `suppressions` entry (`kind: "external"`, `status: "accepted"`) whose `properties.id` is the same id as `baselineComparison.suppressed`. Results that did not match have no `suppressions` field.
+The same package can also carry `CVE-2024-1111` as its own advisory, with alias `GHSA-bbbb`. That is a second result. Its `properties.advisoryId` is `CVE-2024-1111`, its message names that CVE on its own (the id is already the advisory id), and `properties.aliases` is `["GHSA-bbbb"]`.
 
 Test reporters that ingest JUnit can take a companion file from the same scan. See [JUnit](#junit). The process exit code is unchanged either way; see [Exit Codes](#exit-codes).
 
 ### Markdown
 
-A clean Markdown report suitable for PRs, wikis, or documentation. When a baseline was compared, it includes `Baseline suppressions: N` and marks matched rows `(baselined)`.
+A clean Markdown report suitable for PRs, wikis, or documentation.
 
 ### JUnit
 
@@ -3723,19 +3661,53 @@ Use `--region eu` on `push` or `dsn create` to route data to the EU endpoint.
 
 ---
 
-## Registry, auth, and network failures
+## Troubleshooting: registry, auth, and network
 
-`vg scan` can contact the public npm registry, and with `--vulns` the OSV advisory API. `vg scan --push` and `vg push` can contact a Vibgrate ingest host. `vg update` and `vg module install` contact a package registry to install or refresh the CLI and its optional modules. `vg build` does not contact a package registry. This section lists the messages those paths print and the next step for each one.
+Match the message to the failure, then run the next command. Three cases cover almost every registry, sign-in, and upload failure:
 
-Secrets must not appear in `vg` output or in CI logs. The examples below use placeholders (`<token>`, `<key_id>`, `<secret>`, `<status>`, `<path>`). Do not paste a DSN, an `Authorization` header, a `.npmrc` line, or a registry URL that contains a username or token into an issue, a chat, or a log you share. Quote the status code and the message text around it.
+| What failed | What you see | Next command |
+| --- | --- | --- |
+| No network, or `registry.npmjs.org` refused the check | `Vibgrate cannot connect to the npm registry to check package versions.` | `npm view npm dist-tags.latest`, then either fix registry access or `vg scan --offline --package-manifest <file>` |
+| Upload has no DSN, a bad DSN, or the server rejected it | `No DSN provided for push.` / `Invalid DSN format.` / `Upload failed: HTTP 401` or `403` | `vg login`, or set `VIBGRATE_DSN` |
+| You asked for no network | no registry banner; drift for packages outside the manifest is `unknown` | `vg scan --offline --package-manifest <file>` |
 
-`vg dsn create` prints the new DSN once so you can store it as the `VIBGRATE_DSN` secret. That line is a credential. Prefer `vg dsn create --write <path>` (the CLI gitignores the file when it lives in the repo) or your CI secret store, and do not copy the DSN line into a job log.
+Examples use placeholders (`<token>`, `<key_id>`, `<secret>`, `<file>`, `<host>`, `<path>`). They are not real values.
 
-A value passed to `--ingest` that is not a URL is printed with userinfo and credential query parameters removed (`Invalid ingest URL: …`). A value that does parse contributes only its host. The host is what later messages name (`Could not reach <host>: …`).
+A DSN, an npm token, an `Authorization` header, and a URL that contains a username and password are credentials. They must not appear in `vg` output or in CI logs. `vg` removes those shapes from registry and upload errors before it prints them. If a log already contains one, rotate it. In CI, set `VIBGRATE_DSN` in the secret store. `--dsn` puts the value in the process list. `vg dsn create` prints the new DSN once so you can store it. That line is the secret. Do not run `vg dsn create` in a job whose log is kept.
 
-### The network is down, or the public npm registry is blocked
+Runtime errors are prefixed with `error:` and a line `(ref <id>)`. The id is a correlation id for that process, not a credential.
 
-Unless you pass `--offline`, `vg scan` sends `HEAD https://registry.npmjs.org/npm/latest` before it scores drift. A thrown request (no route, timeout, DNS) falls back to `npm view`. A non-2xx response does not. If the check fails, the scan stops. The process prints:
+### Offline scan
+
+`vg scan --offline` does not call a package registry, does not call OSV, and does not upload, even when a DSN is set. The npm registry banner in the next section is not printed.
+
+Without `--package-manifest`, latest versions are not looked up. Dependency drift for those packages is `unknown`. A missing latest version is not a score of zero.
+
+```bash
+vg scan --offline --package-manifest <file>
+```
+
+`<file>` is JSON, or a ZIP that contains `package-versions.json`, `manifest.json`, or `index.json`. One published bundle is `https://github.com/vibgrate/manifests/latest-packages.zip`.
+
+A bad manifest stops the command (exit code 1) before the scan. The message names the path and what to pass:
+
+| Situation | Message |
+| --- | --- |
+| Missing path | `Package manifest not found: <path>. Pass a readable JSON or ZIP package-version manifest to --package-manifest.` |
+| Not readable | `Package manifest is not readable: <path>. Check permissions and pass a readable JSON or ZIP package-version manifest to --package-manifest.` |
+| A directory | `Package manifest is not a file: <path>. Pass a JSON or ZIP package-version manifest to --package-manifest.` |
+| Not a manifest | `Package manifest is not usable: <path>. Expected a JSON object of package versions, or a ZIP containing package-versions.json, manifest.json, or index.json.` |
+| ZIP has none of those files | `Package manifest is not usable: <path>. The ZIP must contain package-versions.json, manifest.json, or index.json.` |
+| ZIP and `unzip` is missing | `Package manifest is not readable: <path>. Reading a ZIP manifest needs the unzip command. Pass a JSON package-version manifest to --package-manifest, or install unzip.` |
+
+### npm registry check
+
+An online `vg scan` checks `https://registry.npmjs.org/npm/latest` before it scores.
+
+- A network failure (no response: DNS, timeout, connection refused) falls back to `npm view npm dist-tags.latest`, which uses your `.npmrc`.
+- An HTTP response that is not OK, including 401 and 403, fails the check immediately. That path does not fall back to `npm view`, and it does not send your npm token.
+
+Either failure stops the scan (exit code 1):
 
 ```text
 error:
@@ -3747,186 +3719,154 @@ error:
     • npm is not installed or not in PATH
 
     Try running: npm view npm dist-tags.latest
+
   (ref <id>) — re-run with --json for detail, or report at https://vibgrate.com/help
 ```
 
-`<id>` is a local reference for that process. It is not a credential. npm's own stderr is not included.
+Next step:
 
-Next step: run `npm view npm dist-tags.latest` as the same user, with the same `PATH`, that the scan uses. When the registry must stay unreachable, skip it and score from a local bundle:
+1. Run `npm view npm dist-tags.latest`.
+2. If that command cannot resolve a host or times out, you are offline or blocked. Download a package-version manifest and run `vg scan --offline --package-manifest <file>`.
+3. If npm says it is not authorized (HTTP 401 or 403), the registry answered and your npm config is wrong. Fix the registry in `.npmrc`, or sign in with your package manager.
+4. If `npm view` succeeds and `vg` still prints the banner, `registry.npmjs.org` returned a non-OK status, so the npm fallback did not run. Allow that host, or use the offline manifest.
 
-```bash
-vg scan --offline --package-manifest ./package-versions.zip
-```
+PyPI, NuGet, Maven Central, RubyGems, crates.io, the Go module proxy, Packagist, pub.dev, Hex, Docker Hub, Artifact Hub, and the Terraform Registry do not print this banner. A failed lookup leaves that package's drift as `unknown`.
 
-`--offline` skips the connectivity check, does not upload, and does not query OSV. A lookup already in the on-disk registry cache is still used. Entries live for four hours under `registry/<ecosystem>` inside `VIBGRATE_CACHE_DIR`, or in the user cache directory when that variable is unset. A cache miss leaves that package's latest version unknown, so drift for it is partial until you pass `--package-manifest`.
+`npm view` stderr is not printed. If it contains a token, an authorization header, or a URL with a password, that text is removed before it is kept on the error.
 
-PyPI, Maven Central, NuGet, RubyGems, crates.io, Go, Packagist, pub.dev, Hex, Docker Hub, Helm, and the Terraform Registry do not abort the scan. A failed or non-2xx lookup becomes empty metadata and is not printed as its own error. Those clients do not send an `Authorization` header and do not read `.npmrc`. After the npm preflight has passed, a later per-package npm failure does the same: it tries `npm view` (which honours `.npmrc`) and, if that fails, records empty metadata without copying npm's stderr.
-
-`vg drift` stays on the local inventory unless you pass `--online`. A registry miss then marks that dependency unknown and prints no extra line. `--online` together with `--offline` or `--local` stops first with:
-
-```text
-error: --online conflicts with --local (no network in local mode)
-```
-
-A code-map failure during `vg scan` does not fail the scan. The progress line reads `skipped (map build failed)`.
-
-`vg update` checks the public npm registry for the CLI:
+`vg update` uses a separate check against the npm registry. When that check returns nothing, it prints this and exits 1:
 
 ```text
 Could not reach the npm registry. Check your network connection.
 ```
 
-The command exits 1. It does not print a registry URL or a token. A local module that cannot be refreshed warns, and the CLI update itself still succeeds when the CLI package was reachable:
+The next step is the same as the scan banner: confirm `npm view npm dist-tags.latest`, then re-run `vg update`.
 
-```text
-  <package> module could not be updated — registry unreachable or no published version
-```
+### Vulnerability feed
 
-### The registry is misconfigured or refused the request
-
-There is no separate sentence for "the registry returned 401". A non-2xx answer from `registry.npmjs.org` during the scan preflight uses the "cannot connect" message above. Per-package npm lookups that get a non-2xx answer fall through to `npm view` and stay silent when that also fails. Fix registry access in the environment npm already uses (proxy, `.npmrc` registry host). Do not put a token on the `vg` command line.
-
-`vg module install <name>` reports the HTTP status only:
-
-```text
-error: install failed: registry <status> — check network access to the registry, or retry later
-```
-
-`<status>` is the number (`registry 401`, `registry 403`, `tarball 404`). `VIBGRATE_MODULE_REGISTRY`, when set, must be a registry base URL without userinfo. The installer does not add an `Authorization` header. The same status text can show up from `vg update` as `<package> module could not be updated — registry <status>`.
-
-### `--package-manifest` is missing or unusable
-
-These stop `vg scan` before any registry call (exit code 1). The path is included. The file contents are not.
-
-```text
-error: Package manifest not found: <path>. Pass a readable JSON or ZIP package-version manifest to --package-manifest.
-error: Package manifest is not readable: <path>. Check permissions and pass a readable JSON or ZIP package-version manifest to --package-manifest.
-error: Package manifest is not readable: <path>. Reading a ZIP manifest needs the unzip command. Pass a JSON package-version manifest to --package-manifest, or install unzip.
-error: Package manifest is not a file: <path>. Pass a JSON or ZIP package-version manifest to --package-manifest.
-error: Package manifest is not usable: <path>. Expected a JSON object of package versions, or a ZIP containing package-versions.json, manifest.json, or index.json.
-error: Package manifest is not usable: <path>. The ZIP must contain package-versions.json, manifest.json, or index.json.
-```
-
-Pass a readable JSON object of package versions, or a ZIP that contains `package-versions.json`, `manifest.json`, or `index.json`.
-
-### The advisory source could not be asked
-
-`vg scan --vulns` queries OSV. When a batch cannot be answered, the vulnerability progress line completes with:
+`vg scan --vulns` queries OSV. When a batch cannot be completed, the vulnerability step says:
 
 ```text
 OSV unreachable — not checked
 ```
 
-Treat that run as unchecked. To score advisories without OSV, put them in the manifest bundle and run:
+That line means the feed was not reached. It does not mean the tree has no vulnerabilities. The command still exits 0 unless another gate fails.
 
-```bash
-vg scan --vulns --offline --package-manifest ./package-versions.zip
-```
+`vg scan --vulns --offline` does not contact OSV. Advisories come from `--package-manifest`. When that file has no matching advisories, the step says `none found`.
 
-`vg evidence`, when it has to fetch one advisory, prints one of:
+### Upload authentication
 
-```text
-error: cannot fetch advisory <id> in --offline mode — supply it with --advisory <file> (OSV or Vibgrate-shaped)
-error: could not reach OSV to resolve <id> — supply it with --advisory <file>, or retry online
-error: OSV returned <status> for <id> — check the id, or supply the advisory with --advisory <file>
-error: network fetch is unavailable in this runtime — supply the advisory with --advisory <file>
-error: advisory file not found: <path>
-error: advisory file is not a valid Vibgrate or OSV advisory: <path>
-```
+`vg scan` uploads when you pass `--push`, or when a DSN is already available, unless you passed `--offline`. DSN resolution order:
 
-Supply the advisory with `--advisory <file>`, or retry when the network is available. The advisory id is not a secret. The file messages name the path.
+1. `--dsn <dsn>`
+2. `VIBGRATE_DSN`
+3. The `VIBGRATE_CREDENTIALS` file, if set; otherwise `<project>/.vibgrate/credentials.json` when that file exists; otherwise `~/.vibgrate/credentials.json`
 
-### Upload authentication failed, or the DSN is missing
-
-DSN resolution order for `vg scan --push`, `vg push`, `vg fix`, and `vg lib publish` is: `--dsn`, then `VIBGRATE_DSN`, then the stored login. The store is `~/.vibgrate/credentials.json`, or `<project>/.vibgrate/credentials.json` when that file exists or you passed `vg login --local`. An explicit `VIBGRATE_CREDENTIALS` path wins over both. None of these commands print the DSN they resolved.
-
-`--offline` disables upload even when a DSN is set.
-
-No credential, `vg scan --push`:
+No DSN, from `vg scan --push` (and from a scan that expected to upload):
 
 ```text
 No DSN provided for push.
 Run "vibgrate login", set VIBGRATE_DSN, or use the --dsn flag.
-No account yet? Claim this run: https://dash.vibgrate.com/claim?vid=<install-id>&job=scan_drift&channel=cli
+No account yet? Claim this run: https://dash.vibgrate.com/claim?vid=<id>&job=scan_drift&channel=cli
 ```
 
-`vg push` prints `No DSN provided.` and the same following lines. The claim URL's `vid` is this machine's install id, not a DSN. Next step: `vg login`, or set `VIBGRATE_DSN` in the CI secret store (never as a plain workflow variable that is echoed). `--strict` turns the missing DSN into exit code 1. Without `--strict` the local scan result is kept and the upload is skipped.
+`vg push` prints `No DSN provided.` and the same two hint lines. The claim URL identifies this install. It is not a DSN.
 
-A DSN that does not match `vibgrate+https://<key_id>:<secret>@<host>/<workspace_id>`:
+Next step: `vg login`, or set `VIBGRATE_DSN`. With `--strict`, the command exits 1. Without `--strict`, the local result is kept and nothing is uploaded.
+
+Invalid DSN:
 
 ```text
 Invalid DSN format.
 ```
 
-`vg push` adds a second line, `Expected: vibgrate+https://<key_id>:<secret>@<host>/<workspace_id>`. Those angle brackets are the placeholders the CLI prints. They are not your key. `vg fix` says `Invalid DSN format. Re-run "vg login" or check VIBGRATE_DSN.` When nothing is stored it prints `vg fix needs a Vibgrate login.` and `Run "vg login" (or set VIBGRATE_DSN / pass --dsn) to analyse upgrades with the hosted planner.` (`vg` is `npx @vibgrate/cli` when you invoked the CLI that way).
-
-`vg lib publish` with no usable DSN:
+`vg push` also prints:
 
 ```text
-error: publishing a private library requires a DSN — run `vibgrate login` or set VIBGRATE_DSN
+Expected: vibgrate+https://<key_id>:<secret>@<host>/<workspace_id>
 ```
 
-Under `--offline` or `--local` it stops earlier:
+`vg scan --push` does not print the expected format. Next step: `vg login`, or replace `VIBGRATE_DSN`. Do not print the old value.
 
-```text
-error: vg lib publish uploads to the hosted catalog — it needs network (remove --offline/--local)
-```
-
-When the upload endpoint answers with a non-2xx status, `vg scan --push` and `vg push` print the status and the response body. They do not print the DSN or the `Authorization` header:
+When the upload request fails:
 
 ```text
 Upload failed: HTTP <status>: <body>
 ```
 
-Pushing a `vg review` receipt prints `Upload failed (<status>): <detail>` (the server `error` string when the body is JSON, otherwise the body, cut to 200 characters). If `<body>` or `<detail>` looks like it contains a secret, do not paste it into a ticket. Quote the status code. Then run `vg login` again, or replace `VIBGRATE_DSN` with a DSN for this workspace. Check `--region us` or `--region eu`. A workspace pinned to another region is retried on its own; the CLI prints `↻ Workspace is pinned to a different region — retrying upload to <host>...`.
+A network error uses the same `Upload failed:` prefix and the client error text. Tokens, authorization headers, and credential-bearing URLs are removed from `<body>` and from that client text. HTTP 401 or 403 means the DSN was rejected. Next step: `vg login`, or check `VIBGRATE_DSN` (key, secret, host, and workspace). With `--strict`, exit code is 1. Without it, the local scan result remains.
 
-Before the scan, when a push will be attempted, a failed preflight prints:
+Before an upload, scan calls preflight. A transport or HTTP failure prints:
 
 ```text
 Preflight check failed: <message>
 ```
 
-`<message>` is `HTTP <status>: <json body>` when the server answers, or the transport error when it does not. The local scan continues unless you passed `--strict`. A plan limit (repository cap, scan credits, VM minutes) is a separate warning and still runs the local scan; see the plan-limit note under [`vg scan`](#vg-scan).
+`<message>` is `HTTP <status>: <body>` or the client error, with the same redaction. Without `--strict`, the scan continues. With `--strict`, the command exits 1 before the scan.
 
-`vg login` transport failures:
+A plan limit is a separate warning. It names the limit (repository cap, scan credits, or VM minutes), says results will not be uploaded, and the local scan still runs.
+
+`vg login` network failures:
 
 ```text
 Failed to start login (HTTP <status>).
 Could not reach <host>: <message>
 ```
 
-`<host>` is the ingest hostname. Browser outcomes: `✖ Login was denied in the browser.`, `✖ Login request expired. Run "vibgrate login" again.`, `✖ Timed out waiting for approval. Run "vibgrate login" again.` After a successful sign-in, workspace setup can still fail: `✖ Signed in, but workspace setup failed: Failed to provision workspace: <error>`, then `Finish setup with "vibgrate dsn create --workspace new".` `vg dsn create --workspace new` prints `Failed to provision DSN: <error>` on the same provision failure. The provision error is the server's `error` string or the transport message. It does not include the new key.
+`<host>` is the ingest host (`us.ingest.vibgrate.com` or `eu.ingest.vibgrate.com`, or the host of `--ingest`). Next step: check the network, then retry `vg login`. `--region` selects `us` or `eu`. An unknown region prints `Unknown region "<id>". Supported: us, eu`. A region that is not live yet prints `Region "<id>" (<label>) is not yet available. Supported: us, eu`. A bad `--ingest` value prints `Invalid ingest URL: <input>` with credentials removed from `<input>`.
 
-Unknown or unavailable region, and a bad `--ingest` (from `vg login`, `vg dsn create`, `vg scan --region`, or `vg push --region`):
-
-```text
-Unknown region "<id>". Supported: us, eu
-Region "apac" (Asia-Pacific (coming soon)) is not yet available. Supported: us, eu
-Invalid ingest URL: <url>
-```
-
-`vg doctor` reports where the credential came from and never the secret:
+Browser outcomes:
 
 ```text
-  auth       anonymous — fine for everything local; `vg login` enables push/publish
-  auth       <env|project|home> <path> · workspace <workspace-id> · <host>
+✖ Login was denied in the browser.
+✖ Login request expired. Run "vibgrate login" again.
+✖ Timed out waiting for approval. Run "vibgrate login" again.
 ```
 
-`<path>` is empty when the DSN comes from `VIBGRATE_DSN`. The source is `env` (the `VIBGRATE_DSN` or `VIBGRATE_CREDENTIALS` environment), `project` (`.vibgrate/credentials.json` in the repo), or `home` (`~/.vibgrate/credentials.json`). Hosted reachability, when checked, is `hosted <base> · unreachable — local answers still work`. `--local` skips that probe: `hosted skipped under --local (<base>)`.
+Next step: `vg login`.
 
-`vg install <assistant> --login` under `--offline` or `--local`:
+Signed in, workspace not created:
 
 ```text
-error: --login needs the network; it cannot run under --local/--offline
+✖ Signed in, but workspace setup failed: Failed to provision workspace: <error>
+  Finish setup with "vibgrate dsn create --workspace new".
 ```
 
-A Copilot token exchange failure names the HTTP status and does not print the token:
+`vg dsn create --workspace new` prints `Failed to provision DSN: <error>` when the provision call fails. `<error>` is the server text or `HTTP <status>`, with credentials removed. Next step: confirm the ingest host, then retry.
+
+### Build and module install
+
+`vg build` fetches the Architecture module when it is missing, unless you passed `--offline` or `--local`. When the registry cannot provide it, and the output is not `--json` or `--quiet`, build prints:
 
 ```text
-error: Copilot token exchange failed (<status>); run `vg install copilot-cli --compress --login` to sign in again.
+  architecture module could not be installed — role/purpose lines are omitted; vg retries automatically (disable with VIBGRATE_NO_KERNEL=1)
 ```
 
-The success line prints a `sha256:` fingerprint, not the token.
+The build still finishes. Role and purpose lines are omitted. `--offline` skips the fetch and does not print this line.
+
+`vg module install <name>` (names: `relevance`, `hcs`, `arch`):
+
+```text
+install failed: <detail> — check network access to the registry, or retry later
+```
+
+Exit code 1. `<detail>` is one of `registry <status>` (for example `registry 401` or `registry 403`), `tarball <status>`, `no published version`, or an integrity message (`integrity mismatch (sha512)`, `integrity mismatch (shasum)`, `malformed integrity metadata`, `registry provided no integrity metadata`). HTTP 401 or 403 means the registry refused the request. A thrown fetch error is `<detail>` as well, cut at 200 characters, with credentials removed.
+
+`vg update`, after the CLI itself is current, prints a module line when a refresh fails:
+
+```text
+  <package> module could not be updated — registry unreachable or no published version
+```
+
+`registry <status>` or `tarball <status>` appears in that same position when the registry answered. The CLI update itself still succeeds. Next step: restore registry access, then `vg update` or `vg module install <name>`.
+
+`vg install --login` with `--offline` or `--local` exits 5:
+
+```text
+--login needs the network; it cannot run under --local/--offline
+```
+
+Next step: run `vg install` without `--login` while you are offline, or drop `--offline` / `--local` when you want the device login.
 
 ---
 
@@ -3968,8 +3908,7 @@ forcing on-device inference is a choice you may want on a fully connected
 machine — for privacy, cost, or latency — and `--offline` would not say it.
 
 `vg scan --offline` and `vg evidence --offline` mean the same thing they always
-have. For a scan, registries, OSV, and upload are all skipped; latest versions
-and advisories come from [`--package-manifest`](#offline-package-manifest).
+have.
 
 ---
 

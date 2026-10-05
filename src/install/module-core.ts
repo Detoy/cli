@@ -15,6 +15,7 @@
  * haile-module.ts) — this file is mechanism only.
  */
 import * as fs from 'node:fs';
+import { redactForDisplay } from '../core-open/utils/redact.js';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as zlib from 'node:zlib';
@@ -287,7 +288,7 @@ export async function installModule(mod: ModuleDescriptor, opts: InstallOptions 
     mod.onChanged?.();
     return { status: 'installed', version };
   } catch (e) {
-    return { status: 'unavailable', detail: String((e as Error).message ?? e).slice(0, 200) };
+    return { status: 'unavailable', detail: redactForDisplay(String((e as Error).message ?? e)).slice(0, 200) };
   }
 }
 
