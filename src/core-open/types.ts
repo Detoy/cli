@@ -531,6 +531,23 @@ export interface VulnerabilityAdvisory {
   withdrawn: string | null;
   /** Advisory reference URLs. */
   references: string[];
+  /**
+   * FIRST EPSS probability of exploitation within 30 days (0–1). Present only
+   * when the advisory data used for the scan already carried it. Omitted when
+   * absent — never `0` as a stand-in for missing.
+   */
+  epss?: number;
+  /**
+   * EPSS percentile (0–1) for {@link epss}. Present only when the advisory data
+   * already carried it. Omitted when absent.
+   */
+  epssPercentile?: number;
+  /**
+   * Whether the advisory data marks this CVE in the CISA Known Exploited
+   * Vulnerabilities catalog. Omitted when the source did not say. `false` is
+   * emitted only when the data explicitly says it is not listed.
+   */
+  kev?: boolean;
   /** Affected version ranges for this package (used to attribute exposure over git history). */
   affectedRanges?: AffectedRange[];
   /** Explicit affected versions for this package, complementing ranges. */

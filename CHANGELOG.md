@@ -14,6 +14,8 @@ backward compatible.
 
 ### Added
 
+- **`vg scan --vulns` JSON includes EPSS and KEV when the advisory data already has them.** An advisory in `extended.vulnerabilities` carries `epss`, `epssPercentile`, and `kev` when the OSV document or the `--package-manifest` bundle already carried them. A missing score is omitted, never written as `0` or `false`; a real `0` is kept. Offline and manifest scans do not contact an EPSS service. Text and SARIF findings are unchanged.
+
 - **`vg scan --junit <file>` writes a deterministic JUnit XML report.**
   CI test reporters (GitLab, Azure DevOps, Jenkins) can publish it beside
   JSON or SARIF. One testcase per drift finding, plus architecture, security,

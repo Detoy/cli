@@ -169,7 +169,7 @@ written to disk, and never phones home. `vg serve config` lists every knob and
 - **guide_node** — cited standards and practices for a node (OWASP/CWE).
 - **check_drift** — offline dependency inventory with optional git who-added attribution.
 - **vuln_attribution** — who introduced each open vulnerability, exposure windows, CRA remediation metrics.
-- **list_vulnerabilities** — known vulnerabilities from the last `vg scan --vulns`: CVE, severity, CVSS, fixed version.
+- **list_vulnerabilities** — known vulnerabilities from the last `vg scan --vulns`: CVE, severity, CVSS, fixed version, and EPSS or known-exploited fields when that scan recorded them.
 - **upgrade_impact** — what breaks if you upgrade a package: major distance, import blast radius, vulns fixed.
 - **list_models** — local models on disk (Ollama / LM Studio / gguf).
 - **resolve_library** — resolve a library to its canonical id and the version your project uses.
@@ -413,13 +413,13 @@ One scan gives you:
 - **Per-project detail** across Node.js/TypeScript, .NET, Python, and Java
 - **Actionable findings** ranked by likely impact
 - **[SBOM](https://vibgrate.com/glossary/sbom) export** (CycloneDX / SPDX)
-- **Known vulnerabilities** (opt in with `--vulns`) — severity, CVSS, the fixing version, and, in a git repo, who introduced them
+- **Known vulnerabilities** (opt in with `--vulns`) — severity, CVSS, the fixing version, EPSS when the advisory data already has it, and, in a git repo, who introduced them
 
 ---
 
 ## Find known vulnerabilities and who introduced them
 
-`vg scan --vulns` checks your installed dependencies against the public [OSV](https://vibgrate.com/glossary/osv) database and reports each known vulnerability with its severity, CVSS score, and the version that fixes it — as text, JSON, or SARIF. `--offline` with `--package-manifest` runs the same check from a local package-version manifest: no registry call, no OSV call, and no upload. The file shape, the exit code when the file is missing, and what offline mode skips are in [DOCS.md](./DOCS.md#offline-package-manifest).
+`vg scan --vulns` checks your installed dependencies against the public [OSV](https://vibgrate.com/glossary/osv) database and reports each known vulnerability with its severity, CVSS score, and the version that fixes it — as text, JSON, or SARIF. JSON also includes `epss`, `epssPercentile`, and `kev` when the advisory data already carried them; a missing score is omitted, never written as `0`. Offline and manifest scans do not contact an EPSS service. `--offline` with `--package-manifest` runs the same check from a local package-version manifest: no registry call, no OSV call, and no upload. The file shape, the exit code when the file is missing, and what offline mode skips are in [DOCS.md](./DOCS.md#offline-package-manifest).
 
 ```bash
 vg scan --vulns                 # drift score + known vulnerabilities

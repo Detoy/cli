@@ -1251,6 +1251,30 @@ Expected results:
 
 `vg scan --vulns` matches your installed dependencies against the public OSV database and records each known vulnerability — advisory id and CVE, severity, CVSS, and the fixing version — in the scan artifact, as findings, and in SARIF. With `--offline`, the same check uses advisories carried in a [`--package-manifest`](#offline-package-manifest) file and does not call OSV.
 
+Machine-readable JSON (`vg scan --format json`, and the `.vibgrate/scan_result.json` artifact) lists each advisory under `extended.vulnerabilities.packages[].advisories`. When the advisory data used for that scan already carries exploitability, the same object includes these optional fields:
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `epss` | number, 0–1 | [FIRST EPSS](https://www.first.org/epss/) probability that the CVE is exploited in the wild within 30 days |
+| `epssPercentile` | number, 0–1 | EPSS percentile for that probability |
+| `kev` | boolean | Whether that advisory data marks the CVE in the CISA Known Exploited Vulnerabilities catalog |
+
+A value that is not in the source is omitted. It is never written as `0` or `false` to mean "unknown". A present `0` is a real EPSS score, and a present `false` means the data explicitly says the CVE is not in the catalog. Text and SARIF findings are unchanged.
+
+`vg scan --vulns --offline` and `--package-manifest` read these fields from the local bundle only. They do not contact an EPSS or KEV service. An online scan reads them from the OSV advisory document when that document already includes them, and does not make a separate exploitability request.
+
+A package-manifest `vulns` entry accepts the same optional fields:
+
+```json
+{
+  "id": "GHSA-example",
+  "severity": "high",
+  "ranges": [{ "introduced": "0", "fixed": "1.3.1" }],
+  "epss": 0.42,
+  "epssPercentile": 0.91,
+  "kev": false
+}
+```
 In a git repository the scan also attributes each finding: the commit, author, and date that introduced the vulnerable version, and how long you have been exposed. These exposure windows aggregate into remediation metrics framed around the [EU Cyber Resilience Act (CRA)](https://vibgrate.com/compliance/cra): open counts by severity, mean and maximum time exposed, and per-severity SLA breaches (defaults: critical 7 days, high 30, moderate 90, low 180). The metrics are descriptive — they show whether remediation keeps pace; they are not a compliance certification.
 
 The scan also reconstructs **closed** exposure windows from history — a vulnerable version that was later bumped out of the affected range or removed from the lockfile entirely — and reports real remediation time (MTTR) from them: measured, not estimated. Offline, a package-version manifest extends this to advisories that are fully fixed today, so a dependency that is clean now but was once vulnerable still counts toward your remediation record.
