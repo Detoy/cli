@@ -419,10 +419,11 @@ One scan gives you:
 
 ## Find known vulnerabilities and who introduced them
 
-`vg scan --vulns` checks your installed dependencies against the public [OSV](https://vibgrate.com/glossary/osv) database and reports each known vulnerability with its severity, CVSS score, and the version that fixes it — as text, JSON, or SARIF. Add `--package-manifest` to run it fully offline from a local advisory bundle.
+`vg scan --vulns` checks your installed dependencies against the public [OSV](https://vibgrate.com/glossary/osv) database and reports each known vulnerability with its severity, CVSS score, and the version that fixes it — as text, JSON, or SARIF. `--offline` with `--package-manifest` runs the same check from a local package-version manifest: no registry call, no OSV call, and no upload. The file shape, the exit code when the file is missing, and what offline mode skips are in [DOCS.md](./DOCS.md#offline-package-manifest).
 
 ```bash
 vg scan --vulns                 # drift score + known vulnerabilities
+vg scan --vulns --offline --package-manifest ./package-versions.json --format json --out scan.json
 vg scan --full                  # drift + vulnerabilities + a banned-dependency report
 ```
 
@@ -557,6 +558,11 @@ vg scan --baseline .vibgrate/baseline.json --drift-budget 40 --drift-worsening 5
 
 - `--drift-budget <score>` fails the build if drift exceeds your budget.
 - `--drift-worsening <percent>` fails the build if drift worsens by more than X% vs baseline.
+- `--junit <file>` writes a deterministic JUnit XML summary of findings and those gates, next to `--format` (JSON or SARIF). The exit code is unchanged; see [DOCS.md](./DOCS.md#junit).
+
+```bash
+vg scan --format sarif --out vibgrate.sarif --junit vibgrate.junit.xml --fail-on error --drift-budget 40
+```
 
 Copy-paste CI templates live in `examples/github-actions/`. Azure DevOps and GitLab CI snippets are in [DOCS.md](./DOCS.md#ci-integration).
 
@@ -590,6 +596,8 @@ vg sbom export --format spdx     --out sbom.spdx.json
 vg sbom delta  --from .vibgrate/baseline.json --to .vibgrate/scan_result.json --out delta.txt
 vg vex                          # generate an OpenVEX document for attestation
 ```
+
+Several versions of one package are separate components (`pkg:npm/left-pad@1.3.0` and `pkg:npm/left-pad@1.2.0`). The same name and version is one component. Ordering, `vibgrate:scope`, and the limits of the dependency graph are in [Multiple versions of the same package](./DOCS.md#multiple-versions-of-the-same-package).
 
 ## Review a change
 
@@ -626,7 +634,7 @@ when you want that change set explicitly. It writes nothing unless you pass
 - No data leaves your machine unless you run `--push` / `vg push` / `vg share`.
 - Drift scoring reads manifests and configs only. The code graph (`vg build`/`vg map`) and a few extended scanners (code quality, database schema, UI text) read your source **locally** to compute structural facts and metrics — never a raw source line, and never uploaded as-is; see [DOCS.md](./DOCS.md#extended-scanners) for exactly what each one reads.
 - Works without login and without any SaaS dependency.
-- `--offline` disables registry/network lookups; `--package-manifest <file>` feeds drift scoring a local version bundle.
+- `--offline` skips registry and OSV lookups and skips upload. `--package-manifest <file>` supplies latest versions for drift and, with `--vulns`, the advisories to match. A missing or invalid manifest exits 1. See [DOCS.md](./DOCS.md#offline-package-manifest).
 - `--max-privacy` suppresses local artifact writes and high-context scanners; `--no-local-artifacts` skips writing `.vibgrate/*.json` to disk.
 - `vg code --local` keeps model inference on-device: a local model, the local graph, no hosted call and no model-catalog fetch. The agent's own web tools stay available and, like every network step, are approved by you before they run.
 - `vg code` never reads a secrets file into a prompt, and redacts credential shapes from files it does read.
@@ -634,6 +642,7 @@ when you want that change set explicitly. It writes nothing unless you pass
 
 ```bash
 vg scan --offline --package-manifest ./package-versions.zip --max-privacy --format json --out scan.json
+vg scan --vulns --offline --package-manifest ./package-versions.zip --format json --out scan.json
 ```
 
 Add `.vibgrate/` to your `.gitignore` — those are regenerated local outputs.
@@ -768,7 +777,7 @@ All HCS computation runs in an optional, separately-licensed engine module that 
 | `vg scan [path]` | Scan for upgrade drift |
 | `vg scan --full` | Comprehensive scan: drift + vulnerabilities + a banned-dependency report |
 | `vg scan --push` | Scan and push results to Vibgrate Cloud |
-| `vg scan --vulns` | Also detect known vulnerabilities (OSV; offline via `--package-manifest`) |
+| `vg scan --vulns` | Also detect known vulnerabilities (OSV online; offline from `--package-manifest`) |
 | `vg update` | Check for and install updates |
 | `vg why <package>` | Who introduced a dependency, its version history, and any open vulnerabilities |
 | `vg why <file:line>` | The commit that last changed a line, and the VG Code session that wrote it (opt in with `vg review trailer on`) |
@@ -819,7 +828,7 @@ Recommended rollout: `vg build` + `vg install` now, add `vg scan` to CI this wee
 - **The map is the ceiling.** Anything the resolver could not tie to a definition is invisible to `search_code` and `graph_impact`. Run `vg unknowns` to see what the graph is missing, ranked by blast radius.
 - **`--auto` is a denylist, not a sandbox.** It blocks known-catastrophic commands; it does not confine the agent. Run untrusted instructions in a container, or under `--worktree` with `--security-tier L1`.
 - **`--verify` re-runs your tests; it does not prove correctness.** Failures are fed back for a repair attempt. Passing tests mean passing tests.
-- **Vulnerability data is only as current as its source.** `--vulns` reports what OSV knows at scan time; offline runs report what is in the bundle you supplied.
+- **Vulnerability data is only as current as its source.** `--vulns` reports what OSV knows at scan time. With `--offline`, it reports the advisories in the `--package-manifest` file.
 - **SARIF keeps every alias of one advisory on a single result.** `properties.advisoryId` is that record's own id; the other ids (CVE, GHSA, OSV) are `properties.aliases`. A second advisory record stays a second result, including when the two ids alias each other, so a code-scanning upload can show a near-duplicate. See [Advisory aliases](./DOCS.md#advisory-aliases).
 - **Vibgrate Evidence produces evidence, not a compliance determination.** It supports your obligations under a regime; it does not decide that you meet them, does not certify anything, and is not legal advice. The filing is yours.
 - **Evidence cannot look backwards.** Exposure is answered from manifests frozen at ship time. A release you never froze stays `undetermined` — there is no way to reconstruct it after the fact.

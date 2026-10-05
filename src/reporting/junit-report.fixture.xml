@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="vg scan" tests="4" failures="2" errors="0" skipped="2" time="0">
+  <testsuite name="findings" tests="3" failures="1" errors="0" skipped="2" time="0">
+    <testcase classname="vg.findings" name="vibgrate/dependency-rot package.json" time="0">
+      <skipped message="below the --fail-on error gate"/>
+    </testcase>
+    <testcase classname="vg.findings" name="vibgrate/runtime-eol .nvmrc" time="0">
+      <failure message="Node.js 16 is past end-of-life &amp; &lt;EOL&gt;" type="error">Node.js 16 is past end-of-life &amp; &lt;EOL&gt;
+rule: vibgrate/runtime-eol
+location: .nvmrc
+level: error</failure>
+    </testcase>
+    <testcase classname="vg.findings" name="vibgrate/runtime-lag package.json" time="0">
+      <skipped message="notes do not fail a gate"/>
+    </testcase>
+  </testsuite>
+  <testsuite name="gates" tests="1" failures="1" errors="0" skipped="0" time="0">
+    <testcase classname="vg.gates" name="drift-budget" time="0">
+      <failure message="Failing fitness function: DriftScore 55/100 exceeds budget 40." type="gate">Failing fitness function: DriftScore 55/100 exceeds budget 40.</failure>
+    </testcase>
+  </testsuite>
+</testsuites>
