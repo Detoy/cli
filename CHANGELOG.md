@@ -14,6 +14,12 @@ backward compatible.
 
 ### Added
 
+- **`vg scan --junit <file>` writes a deterministic JUnit XML report.**
+  CI test reporters (GitLab, Azure DevOps, Jenkins) can publish it beside
+  JSON or SARIF. One testcase per drift finding, plus architecture, security,
+  and drift-budget gates when those gates ran. Names and order are stable,
+  and the file has no wall-clock timestamp. The process exit code is unchanged.
+
 - **`vg sbom export` now reports the full resolved dependency tree, not just
   direct manifest deps.** SBOM export previously flattened only the packages
   a project's manifest scan sees — the names typed into `package.json` (or

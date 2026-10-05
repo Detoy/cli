@@ -20,8 +20,10 @@ For a quick overview, see the [README](./README.md). This document covers everyt
   - [vg report](#vg-report)
   - [vg review](#vg-review)
   - [vg sbom](#vg-sbom)
+    - [Multiple versions of the same package](#multiple-versions-of-the-same-package)
   - [vg scan](#vg-scan)
     - [Vulnerabilities and exposure attribution](#vulnerabilities-and-exposure-attribution)
+      - [Offline package manifest](#offline-package-manifest)
   - [vg update](#vg-update)
   - [vg why](#vg-why)
 - [Workspace auth & cloud upload](#workspace-auth--cloud-upload)
@@ -86,6 +88,7 @@ For a quick overview, see the [README](./README.md). This document covers everyt
   - [JSON Artifact](#json-artifact)
   - [SARIF](#sarif)
   - [Markdown](#markdown)
+  - [JUnit](#junit)
 - [Configuration](#configuration)
   - [vibgrate.config.ts](#vibgrateconfigts)
   - [Thresholds](#thresholds)
@@ -1071,6 +1074,107 @@ array, or SPDX `DEPENDS_ON` relationships. Where edges aren't resolvable, that s
 is left out entirely rather than shipping a graph that claims "no dependencies" when
 the truth is "not tracked".
 
+#### Multiple versions of the same package
+
+A component's identity is the package **name** plus the exact **version string**.
+Two versions of one package are two components. The same name and version string is
+one component: several scanned projects, a manifest plus a lockfile, or several
+install paths all collapse onto that single row. Project name and install path are
+metadata on the row. Package URL shape, including when a purl is omitted, is
+described [above](#vg-sbom); which versions are present is a separate question
+([#167](https://github.com/vibgrate/cli/issues/167)).
+
+The version string is the concrete version on the scan row (`resolvedVersion`, or
+the declared spec when that spec is already one version). A range, dist-tag, or
+protocol spec (`^1.2.3`, `latest`, `workspace:*`) is recorded as `unknown`, and
+every unresolved row for that name collapses to that one component. Go rows use
+the declared spec so the version matches `go.sum`.
+
+CycloneDX `bom-ref` is the purl when one can be built, and
+`vibgrate:<ecosystem>:<name>@<version>` otherwise. Each emitted component has its
+own `bom-ref`, because rows that share a name and version have already been
+collapsed. SPDX `SPDXID` is `SPDXRef-Package-N` for the Nth row, starting at 1.
+The purl is also the SPDX `externalRefs` PACKAGE-MANAGER locator. Match on the
+purl: it carries the version, so `pkg:npm/left-pad@1.3.0` and
+`pkg:npm/left-pad@1.2.0` stay distinct.
+
+`vibgrate:scope` is `direct` when a scanned manifest declares that name and
+version, and `transitive` when the row comes only from a lockfile. SPDX stores
+the same value as `scope=` on the package annotation. Direct rows are written
+first, so a lockfile copy of the same name and version stays `direct` and does
+not add a second component. A different version that appears only in the lockfile
+is its own row with `scope` `transitive`. On a lockfile-only row,
+`vibgrate:project` is the scan root recorded on the artifact; on a direct row it
+is the manifest project that supplied the row.
+
+`pnpm-lock.yaml`, `yarn.lock`, `Cargo.lock`, and `go.sum` use this same
+name-and-version component key, so two versions are two components there as
+well. The dependency-graph section is still only filled for npm
+`package-lock.json` v2/v3, as described above.
+
+Row order, for a given scan artifact and the lockfiles on disk:
+
+1. Direct rows, in scan-artifact order. `vg scan` sorts each project's
+   dependencies by drift severity (`major-behind`, `minor-behind`, `current`,
+   `unknown`), then by package name. The projects themselves follow discovery
+   order.
+2. Lockfile-only rows that are not already present, sorted by package name and
+   then by version string. That version sort is lexicographic, so `10.0.0`
+   comes before `2.0.0`.
+
+That order assigns SPDX IDs. CycloneDX `dependencies` lists the root
+(`bom-ref` `vibgrate-root`) and then each component in the same order. Each
+`dependsOn` list is sorted. A second `vg sbom export` of the same artifact and
+the same lockfiles repeats this order, these purls, and these SPDX IDs.
+
+`--no-transitive` skips lockfiles. The document is manifest rows only, still
+collapsed by name and version across projects, and it has no dependency graph.
+A version that exists only in a lockfile is left out.
+
+Example: an npm package whose `package.json` depends on `left-pad@^1.3.0` and
+`nested-holder@1.0.0`, with a v3 `package-lock.json` that resolves
+`node_modules/left-pad` to `1.3.0` and
+`node_modules/nested-holder/node_modules/left-pad` to `1.2.0`:
+
+```bash
+vg scan --offline --no-graph
+vg sbom export --format cyclonedx
+vg sbom export --format spdx
+```
+
+The export contains `pkg:npm/left-pad@1.3.0` (`vibgrate:scope` `direct`) and
+`pkg:npm/left-pad@1.2.0` (`transitive`). `--no-transitive` leaves only the
+`1.3.0` row. When `packages/a` and `packages/b` both declare `ms@2.1.3`, the
+export contains one `pkg:npm/ms@2.1.3` component. `vibgrate:project`, the drift
+fields, and `vibgrate:currentSpec` come from whichever of those projects appears
+first in the scan artifact. When they declare different versions (`2.1.3` and
+`2.1.2`), both versions are emitted and both are `direct`.
+
+Three limits of the current exporter are worth knowing before you match a
+graph against an install tree:
+
+- **Same version, several install paths.** npm can list one `name@version` at
+  more than one `packages` path — for example `node_modules/once` and
+  `node_modules/nested-holder/node_modules/once`, both `once@1.4.0`, depending
+  on different `wrappy` versions. The component is emitted once. The dependency
+  edges kept are those of the last `packages` entry for that key, in lockfile
+  order. A later entry replaces an earlier one. The other parent's dependency
+  stays in the component list with no `dependsOn` entry pointing at it.
+- **One dependency graph.** CycloneDX `dependencies` and SPDX `DEPENDS_ON`
+  describe a single lockfile: the root project's when that path has a lockfile,
+  otherwise the first project path in sorted order that has one. Components are
+  the union of every scanned project's lockfile, so a version that only a
+  sub-project resolves is still listed. Edges from a sub-project lockfile
+  appear when that lockfile is the one chosen for the graph.
+- **Project order across a scan.** Sub-project order in the scan artifact
+  follows directory discovery and can differ between two scans of the same
+  tree. That changes which project's metadata is kept for a shared name and
+  version, and it can swap the order of direct rows (and therefore SPDX IDs)
+  when projects declare different packages or different versions. The purl and
+  the CycloneDX `bom-ref` for a given name and version stay the same.
+  Lockfile-only ordering follows the lockfile. The chosen dependency graph
+  follows the sorted project paths.
+
 `vg sbom vex` is input-agnostic: it assembles a complete OpenVEX document from the statements you supply (`--from <file>` and/or repeatable `--statement`), so it works regardless of which scanner flagged the components. A zero-statement document is valid and honest — it asserts no known affected components.
 
 ---
@@ -1081,15 +1185,16 @@ the truth is "not tracked".
 The primary command. Scans your project for upgrade drift.
 
 ```bash
-vg scan [path] [--vulns] [--full] [--format text|json|sarif|md] [--out <file>] [--fail-on warn|error|architecture-finding|architecture-warning] [--offline] [--package-manifest <file>] [--no-local-artifacts] [--max-privacy] [--baseline <file>] [--drift-budget <score>] [--drift-worsening <percent>] [--changed-only] [--concurrency <n>]
+vg scan [path] [--vulns] [--full] [--format text|json|sarif|md] [--out <file>] [--junit <file>] [--fail-on warn|error|architecture-finding|architecture-warning] [--offline] [--package-manifest <file>] [--no-local-artifacts] [--max-privacy] [--baseline <file>] [--drift-budget <score>] [--drift-worsening <percent>] [--changed-only] [--concurrency <n>]
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--vulns` | — | Also detect known vulnerabilities (OSV online; offline via `--package-manifest` advisories) |
+| `--vulns` | — | Also detect known vulnerabilities. Online, this queries OSV. With `--offline`, it matches only the advisories in [`--package-manifest`](#offline-package-manifest) |
 | `--full` | — | Comprehensive scan: enables `--vulns` and reports banned dependencies when a standards policy exists |
 | `--format` | `text` | Output format: `text`, `json`, `sarif`, or `md` |
 | `--out <file>` | — | Write output to a file |
+| `--junit <file>` | — | Also write a deterministic JUnit XML report of findings and gates. See [JUnit](#junit). Does not replace `--format` |
 | `--fail-on <level>` | — | Exit with code 2 if findings at this level exist. `warn` / `error` gate on drift findings. `architecture-finding` (hard boundary violations) and `architecture-warning` (violations and warnings) gate on the architecture module's boundary findings, judged under the policy pack in force — `hexagonal-v1` unless `.vibgrate/architecture.toml`, `VIBGRATE_ARCHITECTURE_POLICY` or `vg build --policy` says `layered-v1`. The output names the pack whether the gate passes or fails; each failing row is `file:line  symbol  violation: … (rule)`. Pick the pack before turning this on: see [Architecture policy packs](./docs/architecture-policies.md) |
 | `--baseline <file>` | — | Compare against a previous baseline |
 | `--changed-only` | — | Only scan changed files |
@@ -1101,8 +1206,8 @@ vg scan [path] [--vulns] [--full] [--format text|json|sarif|md] [--out <file>] [
 | `--region <region>` | — | Override data residency (`us`, `eu`) during push |
 | `--strict` | — | Fail scan command if push fails |
 | `--ui-purpose` | — | Enable optional UI-purpose evidence extraction |
-| `--offline` | — | Disable network calls and disable upload/push behavior |
-| `--package-manifest <file>` | — | JSON or ZIP package-version manifest used for offline/latest lookups (latest bundle: `https://github.com/vibgrate/manifests/latest-packages.zip`) |
+| `--offline` | — | No registry calls, no OSV calls, and no upload. `--push` is ignored. Latest versions and advisories come from `--package-manifest` |
+| `--package-manifest <file>` | — | JSON or ZIP package-version manifest for offline latest-version and advisory lookups. See [Offline package manifest](#offline-package-manifest). A published version bundle: `https://github.com/vibgrate/manifests/latest-packages.zip` |
 | `--no-local-artifacts` | — | Do not write `.vibgrate/*.json` scan artifacts to disk |
 | `--max-privacy` | — | Hardened privacy mode with minimal scanners and no local artifacts |
 | `--no-graph` | — | Skip building the local code map that scan produces after scoring drift |
@@ -1113,7 +1218,7 @@ vg scan [path] [--vulns] [--full] [--format text|json|sarif|md] [--out <file>] [
 
 By default, the scan writes `.vibgrate/scan_result.json`. Use `--no-local-artifacts` or `--max-privacy` to suppress local JSON artifact files.
 
-For offline drift scoring, pass `--package-manifest <file>` with a downloaded manifest bundle such as `https://github.com/vibgrate/manifests/latest-packages.zip`.
+For offline drift scoring and offline vulnerability checks, pass `--package-manifest <file>` (a JSON file, or a ZIP such as `https://github.com/vibgrate/manifests/latest-packages.zip`). The file shape, the exit code when it is missing, and what `--offline` skips are under [Offline package manifest](#offline-package-manifest).
 
 Examples:
 
@@ -1123,6 +1228,9 @@ vg scan
 
 # JSON output for automation
 vg scan --format json --out scan.json
+
+# JUnit XML for a CI test reporter, beside the SARIF upload
+vg scan --format sarif --out vibgrate.sarif --junit vibgrate.junit.xml --fail-on error --drift-budget 40
 
 # CI gate with baseline regression protection
 vg scan --baseline .vibgrate/baseline.json --drift-budget 40 --drift-worsening 5 --fail-on error
@@ -1143,7 +1251,7 @@ Expected results:
 
 ### Vulnerabilities and exposure attribution
 
-`vg scan --vulns` matches your installed dependencies against the public OSV database and records each known vulnerability — advisory id and CVE, severity, CVSS, and the fixing version — in the scan artifact, as findings, and in SARIF. Supply advisories in a `--package-manifest` bundle to run it offline. The default text output follows a finding with `fix available: …` when that fixing version (or a remediation string) is already on the finding, and omits the line when it is not.
+`vg scan --vulns` matches your installed dependencies against the public OSV database and records each known vulnerability — advisory id and CVE, severity, CVSS, and the fixing version — in the scan artifact, as findings, and in SARIF. With `--offline`, the same check uses advisories carried in a [`--package-manifest`](#offline-package-manifest) file and does not call OSV. The default text output follows a finding with `fix available: …` when that fixing version (or a remediation string) is already on the finding, and omits the line when it is not.
 
 In a git repository the scan also attributes each finding: the commit, author, and date that introduced the vulnerable version, and how long you have been exposed. These exposure windows aggregate into remediation metrics framed around the [EU Cyber Resilience Act (CRA)](https://vibgrate.com/compliance/cra): open counts by severity, mean and maximum time exposed, and per-severity SLA breaches (defaults: critical 7 days, high 30, moderate 90, low 180). The metrics are descriptive — they show whether remediation keeps pace; they are not a compliance certification.
 
@@ -1155,12 +1263,127 @@ Detection and attribution read each project's lockfile, so they cover npm / pnpm
 # Online detection against OSV
 vg scan --vulns
 
-# Air-gapped: advisories supplied in the manifest bundle
-vg scan --vulns --offline --package-manifest ./package-versions.zip
+# Air-gapped: versions and advisories from a local package-version manifest
+vg scan --vulns --offline --package-manifest ./package-versions.json --format json --out scan.json
 
 # Everything in one run: drift + vulnerabilities + a banned-dependency report
 vg scan --full
 ```
+
+#### Offline package manifest
+
+`vg scan --offline --package-manifest <file>` is the local path for drift scoring and, with `--vulns`, known-vulnerability checks. The file supplies latest versions and advisories. The scan makes no registry call, no OSV call, and no upload. `--push` is ignored for that run, including when `VIBGRATE_DSN` or `--dsn` is set.
+
+`vg scan` has no separate advisory-file flag. Advisories are the `vulns` arrays inside the package-version manifest. `vg evidence --advisory` is a different command: it loads one advisory to ask which frozen releases contain it.
+
+**Input shape.** The file is a JSON object, or a ZIP whose root contains `package-versions.json`, `manifest.json`, or `index.json`. A ZIP is extracted with the `unzip` command. Those three names are tried in that order, and the first one that parses as a package-version manifest is used. A file in a subdirectory of the ZIP is ignored. A `package.json` is not a package-version manifest.
+
+Top-level keys are ecosystem names:
+
+`npm`, `nuget`, `pypi`, `maven`, `rubygems`, `swift`, `go`, `cargo`, `composer`, `pub`, `hex`, `docker`, `helm`, `terraform`
+
+An optional `runtimes` object carries runtime-currency data. It is not an advisory source.
+
+Each ecosystem value maps a package name to an entry:
+
+| Field | Meaning |
+| --- | --- |
+| `latest` | Newest version, used for drift |
+| `versions` | Known versions of that package |
+| `license` | Optional SPDX id or expression |
+| `releaseDates` | Optional map of version → ISO-8601 publish date, for offline age scoring |
+| `vulns` | Optional advisories. This is what `--vulns` matches |
+
+NuGet names are matched case-insensitively. Every other ecosystem matches the package name as written.
+
+Each object in `vulns`:
+
+| Field | Meaning |
+| --- | --- |
+| `id` | Advisory id. This is the finding id |
+| `aliases` | Optional other ids, such as a CVE |
+| `summary` | Optional one-line description |
+| `severity` | `low`, `moderate`, `high`, `critical`, or `unknown`. `medium` is accepted and stored as `moderate` |
+| `cvss` | Optional numeric score |
+| `cvssVector` | Optional CVSS vector |
+| `ranges` | Affected ranges. Each entry is `{ "introduced": "<version>", "fixed": "<version>" }`. The installed version matches when it is greater than or equal to `introduced` and less than `fixed`. Omit `introduced`, or set it to `"0"`, for "from the beginning". Omit `fixed` for "still affected" |
+| `versions` | Optional explicit affected versions. A version that is not valid semver matches only this list |
+| `published` | Optional ISO-8601 date |
+| `withdrawn` | Optional. A withdrawn advisory is skipped |
+| `references` | Optional URLs |
+
+`--vulns` compares installed versions from each project's lockfile with `vulns` on npm, PyPI, Maven, NuGet, Go, Cargo, Composer, RubyGems, pub, and Hex. Swift, Docker, Helm, and Terraform entries still supply `latest` for drift. Their `vulns` arrays are not matched.
+
+A published version bundle such as <https://github.com/vibgrate/manifests/latest-packages.zip> uses this same shape. Offline `--vulns` reports the advisories that file carries under `vulns`. A manifest that only lists versions is valid, and the vulnerability step then reports none.
+
+Minimal `package-versions.json` (the advisory id below is an example, not a real advisory):
+
+```json
+{
+  "npm": {
+    "left-pad": {
+      "latest": "1.3.0",
+      "versions": ["1.2.0", "1.3.0"],
+      "vulns": [
+        {
+          "id": "GHSA-example-0000-0000",
+          "aliases": ["CVE-2024-00000"],
+          "severity": "high",
+          "summary": "Example advisory — replace with a real one.",
+          "ranges": [{ "introduced": "0", "fixed": "1.3.0" }]
+        }
+      ]
+    }
+  }
+}
+```
+
+Installed `left-pad@1.2.0` matches that range. `1.3.0` is the fix (`fixed` is exclusive), so it does not match.
+
+```bash
+vg scan --vulns --offline --package-manifest ./package-versions.json --format json --out scan.json
+```
+
+The same command accepts a ZIP:
+
+```bash
+vg scan --vulns --offline --package-manifest ./package-versions.zip --format json --out scan.json
+```
+
+**Missing or invalid manifest.** A `--package-manifest` path that is missing, unreadable, or not a package-version manifest stops the command before a scan starts. The process exits `1` (`ERROR`). Stderr is a single `error:` line, with no stack trace. `.vibgrate/scan_result.json` is not written. An empty success report is not produced.
+
+```bash
+vg scan --offline --package-manifest ./missing.zip
+```
+
+```text
+error: Package manifest not found: /absolute/path/to/missing.zip. Pass a readable JSON or ZIP package-version manifest to --package-manifest.
+```
+
+The path in the message is the absolute path of the argument.
+
+| What went wrong | Exit | Stderr (after `error: `) |
+| --- | --- | --- |
+| File does not exist | `1` | `Package manifest not found: <path>. Pass a readable JSON or ZIP package-version manifest to --package-manifest.` |
+| File is not readable | `1` | `Package manifest is not readable: <path>. Check permissions and pass a readable JSON or ZIP package-version manifest to --package-manifest.` |
+| ZIP, and `unzip` is not installed | `1` | `Package manifest is not readable: <path>. Reading a ZIP manifest needs the unzip command. Pass a JSON package-version manifest to --package-manifest, or install unzip.` |
+| Path is a directory | `1` | `Package manifest is not a file: <path>. Pass a JSON or ZIP package-version manifest to --package-manifest.` |
+| Not JSON, or JSON that is not a package-version manifest (a `package.json` fails this way) | `1` | `Package manifest is not usable: <path>. Expected a JSON object of package versions, or a ZIP containing package-versions.json, manifest.json, or index.json.` |
+| ZIP whose root has none of those three names | `1` | `Package manifest is not usable: <path>. The ZIP must contain package-versions.json, manifest.json, or index.json.` |
+
+Omitting `--package-manifest` leaves the command running. `vg scan --vulns --offline` with no manifest skips OSV and the vulnerability step reports `none found`. When the rest of the scan succeeds, the exit code is `0`. That line means no advisory source was provided. A path that was passed and cannot be read exits `1`.
+
+A manifest that loads and contains no advisory for the installed versions also finishes successfully. The vulnerability step reports none, because nothing in the file applied.
+
+**What `--offline` skips.** No request is sent to a package registry — npm, NuGet, PyPI, Maven Central, RubyGems, `proxy.golang.org`, crates.io, Packagist, pub.dev, hex.pm, Docker Hub, Artifact Hub, the Terraform Registry, or the GitHub API Swift uses for package tags — or to OSV (`https://api.osv.dev`). No scan result is uploaded.
+
+A package named in the manifest is resolved from that entry. A package the manifest does not name is not fetched. Drift scoring can still reuse a fresh entry in the local registry cache left by an earlier online scan on this machine; otherwise that package's currency stays unknown. Vulnerability matching ignores that cache and uses `vulns` only.
+
+Online, `--vulns` queries OSV. Passing `--package-manifest` as well adds manifest advisories whose ids OSV did not return. When OSV cannot be reached, the vulnerability step reports `OSV unreachable — not checked`. `--offline` stays on the manifest and never reports that OSV line.
+
+**Determinism.** The same tree and the same manifest produce the same vulnerability findings: the same advisory ids, in the same order. Packages are ordered by ecosystem, then package name, then installed version. Advisories on one package are ordered by severity (critical, then high, moderate, low, unknown), then by advisory id. The id is the advisory's `id`. JSON reports it as `findings[].details.advisoryId`. SARIF reports it as `properties.advisoryId` on the `vibgrate/vulnerability` result. Order and ids come from the tree and the manifest.
+
+In a git repository the finding also names who introduced the vulnerable version, and how many days the exposure has been open, measured to the time of that scan. The day count follows the calendar. The advisory id and the order stay the same.
 
 ---
 
@@ -2912,9 +3135,50 @@ The full scan artifact in JSON format. Contains all raw data, scores, findings, 
 
 [Static Analysis Results Interchange Format](https://sarifweb.azurewebsites.net/) — compatible with GitHub Code Scanning and Azure DevOps. Contains findings only (not all metrics). Ideal for integrating drift findings directly into your PR review workflow.
 
+Test reporters that ingest JUnit can take a companion file from the same scan. See [JUnit](#junit). The process exit code is unchanged either way; see [Exit Codes](#exit-codes).
+
 ### Markdown
 
 A clean Markdown report suitable for PRs, wikis, or documentation.
+
+### JUnit
+
+`--junit <file>` writes a JUnit XML report next to whatever `--format` you selected (`text`, `json`, `sarif`, or `md`). GitLab (`artifacts:reports:junit`), Azure DevOps, and Jenkins can publish it without a second scan. The file is local: rule ids, locations, messages, and gate results only — no DSN, repository URL, or scan clock.
+
+The same findings and gates always produce the same bytes. Case order is fixed, `time` is `0`, and the optional JUnit `timestamp` attribute is omitted.
+
+| Suite | When | Test cases |
+| ----- | ---- | ---------- |
+| `findings` | Always | One case per drift finding. `classname` is `vg.findings`. `name` is `{ruleId} {location}` (` #2`, ` #3`, … on ties). No findings → one passing case, `no findings`. |
+| `architecture` | `--fail-on architecture-finding` or `architecture-warning` | One failure per boundary row (`classname` `vg.architecture`), a passing `architecture` case when the gate is clean, or one failure when the gate could not run. |
+| `security` | `--fail-on iac-finding` or `security-finding` | One case per security finding when the packs ran (`classname` `vg.security`). Findings below the severity are `<skipped>`. A passing `security` case when there are none. One failure when the gate could not run. |
+| `gates` | A drift budget was judged | `drift-budget` / `drift-worsening` for the flags, or `drift-budget maxScore` and `drift-budget maxWorseningPercent` for [`driftBudget`](#drift-budget) in project config. |
+
+A finding is a `<failure>` only when its level fails the drift gate you set. Anything else is `<skipped>` (present, not gating):
+
+| Finding | `--fail-on error` | `--fail-on warn` | no `warn` / `error` gate |
+| ------- | ----------------- | ---------------- | ------------------------ |
+| `error` | failure | failure | skipped (`drift gate not set`) |
+| `warning` | skipped | failure | skipped |
+| `note` | skipped | skipped | skipped |
+
+Budget cases follow the same exit rules as the CLI. `--drift-budget` / an enforced `driftBudget` breach is a `<failure>`. A score that was not measured, a worsening limit with no `--baseline`, and a warn-mode or shadow breach are `<skipped>` — they do not fail the scan. Every requested gate is included, including gates after the one that stopped the process. The confirmation line goes to stderr, so `--format json` on stdout stays intact. See [Exit Codes](#exit-codes): the XML is written, then the process exits `2` when a gate fails. SARIF stays the code-scanning artifact; see [SARIF](#sarif).
+
+```bash
+vg scan --format sarif --out vibgrate.sarif --junit vibgrate.junit.xml --fail-on error --drift-budget 40
+```
+
+```yaml
+# GitLab CI — SARIF for SAST, JUnit for the test report
+vibgrate:
+  script:
+    - npx @vibgrate/cli scan --format sarif --out vibgrate.sarif --junit vibgrate.junit.xml --fail-on error
+  artifacts:
+    when: always
+    reports:
+      junit: vibgrate.junit.xml
+      sast: vibgrate.sarif
+```
 
 ---
 
@@ -3401,7 +3665,8 @@ forcing on-device inference is a choice you may want on a fully connected
 machine — for privacy, cost, or latency — and `--offline` would not say it.
 
 `vg scan --offline` and `vg evidence --offline` mean the same thing they always
-have.
+have. For a scan, registries, OSV, and upload are all skipped; latest versions
+and advisories come from [`--package-manifest`](#offline-package-manifest).
 
 ---
 
@@ -3418,6 +3683,8 @@ CI and agents branch on these, so they are a stable contract.
 | `4`  | `NON_DETERMINISTIC`   | A verification found output that is not reproducible                                       |
 | `5`  | `USAGE_ERROR`         | Bad invocation: unknown command, invalid flag value, missing argument                      |
 | `6`  | `ENGINE_UNAVAILABLE`  | A required optional module is not installed and could not be fetched (see [`vg module`](#vg-module)) |
+
+`vg scan --junit` writes that file before it exits, including when the code is `2`. See [JUnit](#junit).
 
 `6` is deliberately distinct from `2`: a CI gate must never read "engine missing" as a gate verdict.
 The same rule is why [`vg review`](#vg-review) exits `6` when there is no code map, and why `--explain`
