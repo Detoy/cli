@@ -139,6 +139,12 @@ backward compatible.
 
 ### Fixed
 
+- **A rejected `--ingest` URL no longer includes credentials.** `vg login`,
+  `vg dsn create`, `vg scan`, and `vg push` quote the value when it is not a
+  URL. Userinfo (`https://<user>:<token>@host`) and credential query
+  parameters are removed before that line is printed. A URL that does parse
+  still contributes only its host.
+
 - **`vg scan --package-manifest` stops when the manifest cannot be read.** A
   missing path, a file this process cannot read, or content that is not a
   package-version manifest (JSON, or a ZIP containing `package-versions.json`,

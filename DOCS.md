@@ -119,6 +119,7 @@ For a quick overview, see the [README](./README.md). This document covers everyt
 - [Vibgrate Cloud Upload](#vibgrate-cloud-upload)
   - [DSN Tokens](#dsn-tokens)
   - [Data Residency](#data-residency)
+- [Registry, auth, and network failures](#registry-auth-and-network-failures)
 - [Privacy & Security](#privacy--security)
 - [Exit Codes](#exit-codes)
 - [Programmatic API](#programmatic-api)
@@ -1217,7 +1218,7 @@ vg scan [path] [--vulns] [--full] [--format text|json|sarif|md] [--out <file>] [
 
 By default, the scan writes `.vibgrate/scan_result.json`. Use `--no-local-artifacts` or `--max-privacy` to suppress local JSON artifact files.
 
-For offline drift scoring and offline vulnerability checks, pass `--package-manifest <file>` (a JSON file, or a ZIP such as `https://github.com/vibgrate/manifests/latest-packages.zip`). The file shape, the exit code when it is missing, and what `--offline` skips are under [Offline package manifest](#offline-package-manifest).
+For offline drift scoring and offline vulnerability checks, pass `--package-manifest <file>` (a JSON file, or a ZIP such as `https://github.com/vibgrate/manifests/latest-packages.zip`). The file shape, the exit code when it is missing, and what `--offline` skips are under [Offline package manifest](#offline-package-manifest). When a registry, advisory source, or upload fails, the messages and the next step are in [Registry, auth, and network failures](#registry-auth-and-network-failures).
 
 Examples:
 
@@ -3681,6 +3682,213 @@ Vibgrate supports region-specific ingest endpoints:
 | EU           | `eu.ingest.vibgrate.com` |
 
 Use `--region eu` on `push` or `dsn create` to route data to the EU endpoint.
+
+---
+
+## Registry, auth, and network failures
+
+`vg scan` can contact the public npm registry, and with `--vulns` the OSV advisory API. `vg scan --push` and `vg push` can contact a Vibgrate ingest host. `vg update` and `vg module install` contact a package registry to install or refresh the CLI and its optional modules. `vg build` does not contact a package registry. This section lists the messages those paths print and the next step for each one.
+
+Secrets must not appear in `vg` output or in CI logs. The examples below use placeholders (`<token>`, `<key_id>`, `<secret>`, `<status>`, `<path>`). Do not paste a DSN, an `Authorization` header, a `.npmrc` line, or a registry URL that contains a username or token into an issue, a chat, or a log you share. Quote the status code and the message text around it.
+
+`vg dsn create` prints the new DSN once so you can store it as the `VIBGRATE_DSN` secret. That line is a credential. Prefer `vg dsn create --write <path>` (the CLI gitignores the file when it lives in the repo) or your CI secret store, and do not copy the DSN line into a job log.
+
+A value passed to `--ingest` that is not a URL is printed with userinfo and credential query parameters removed (`Invalid ingest URL: …`). A value that does parse contributes only its host. The host is what later messages name (`Could not reach <host>: …`).
+
+### The network is down, or the public npm registry is blocked
+
+Unless you pass `--offline`, `vg scan` sends `HEAD https://registry.npmjs.org/npm/latest` before it scores drift. A thrown request (no route, timeout, DNS) falls back to `npm view`. A non-2xx response does not. If the check fails, the scan stops. The process prints:
+
+```text
+error:
+  ✖ Vibgrate cannot connect to the npm registry to check package versions.
+
+    Possible causes:
+    • No internet connection
+    • Corporate proxy/firewall blocking registry.npmjs.org
+    • npm is not installed or not in PATH
+
+    Try running: npm view npm dist-tags.latest
+  (ref <id>) — re-run with --json for detail, or report at https://vibgrate.com/help
+```
+
+`<id>` is a local reference for that process. It is not a credential. npm's own stderr is not included.
+
+Next step: run `npm view npm dist-tags.latest` as the same user, with the same `PATH`, that the scan uses. When the registry must stay unreachable, skip it and score from a local bundle:
+
+```bash
+vg scan --offline --package-manifest ./package-versions.zip
+```
+
+`--offline` skips the connectivity check, does not upload, and does not query OSV. A lookup already in the on-disk registry cache is still used. Entries live for four hours under `registry/<ecosystem>` inside `VIBGRATE_CACHE_DIR`, or in the user cache directory when that variable is unset. A cache miss leaves that package's latest version unknown, so drift for it is partial until you pass `--package-manifest`.
+
+PyPI, Maven Central, NuGet, RubyGems, crates.io, Go, Packagist, pub.dev, Hex, Docker Hub, Helm, and the Terraform Registry do not abort the scan. A failed or non-2xx lookup becomes empty metadata and is not printed as its own error. Those clients do not send an `Authorization` header and do not read `.npmrc`. After the npm preflight has passed, a later per-package npm failure does the same: it tries `npm view` (which honours `.npmrc`) and, if that fails, records empty metadata without copying npm's stderr.
+
+`vg drift` stays on the local inventory unless you pass `--online`. A registry miss then marks that dependency unknown and prints no extra line. `--online` together with `--offline` or `--local` stops first with:
+
+```text
+error: --online conflicts with --local (no network in local mode)
+```
+
+A code-map failure during `vg scan` does not fail the scan. The progress line reads `skipped (map build failed)`.
+
+`vg update` checks the public npm registry for the CLI:
+
+```text
+Could not reach the npm registry. Check your network connection.
+```
+
+The command exits 1. It does not print a registry URL or a token. A local module that cannot be refreshed warns, and the CLI update itself still succeeds when the CLI package was reachable:
+
+```text
+  <package> module could not be updated — registry unreachable or no published version
+```
+
+### The registry is misconfigured or refused the request
+
+There is no separate sentence for "the registry returned 401". A non-2xx answer from `registry.npmjs.org` during the scan preflight uses the "cannot connect" message above. Per-package npm lookups that get a non-2xx answer fall through to `npm view` and stay silent when that also fails. Fix registry access in the environment npm already uses (proxy, `.npmrc` registry host). Do not put a token on the `vg` command line.
+
+`vg module install <name>` reports the HTTP status only:
+
+```text
+error: install failed: registry <status> — check network access to the registry, or retry later
+```
+
+`<status>` is the number (`registry 401`, `registry 403`, `tarball 404`). `VIBGRATE_MODULE_REGISTRY`, when set, must be a registry base URL without userinfo. The installer does not add an `Authorization` header. The same status text can show up from `vg update` as `<package> module could not be updated — registry <status>`.
+
+### `--package-manifest` is missing or unusable
+
+These stop `vg scan` before any registry call (exit code 1). The path is included. The file contents are not.
+
+```text
+error: Package manifest not found: <path>. Pass a readable JSON or ZIP package-version manifest to --package-manifest.
+error: Package manifest is not readable: <path>. Check permissions and pass a readable JSON or ZIP package-version manifest to --package-manifest.
+error: Package manifest is not readable: <path>. Reading a ZIP manifest needs the unzip command. Pass a JSON package-version manifest to --package-manifest, or install unzip.
+error: Package manifest is not a file: <path>. Pass a JSON or ZIP package-version manifest to --package-manifest.
+error: Package manifest is not usable: <path>. Expected a JSON object of package versions, or a ZIP containing package-versions.json, manifest.json, or index.json.
+error: Package manifest is not usable: <path>. The ZIP must contain package-versions.json, manifest.json, or index.json.
+```
+
+Pass a readable JSON object of package versions, or a ZIP that contains `package-versions.json`, `manifest.json`, or `index.json`.
+
+### The advisory source could not be asked
+
+`vg scan --vulns` queries OSV. When a batch cannot be answered, the vulnerability progress line completes with:
+
+```text
+OSV unreachable — not checked
+```
+
+Treat that run as unchecked. To score advisories without OSV, put them in the manifest bundle and run:
+
+```bash
+vg scan --vulns --offline --package-manifest ./package-versions.zip
+```
+
+`vg evidence`, when it has to fetch one advisory, prints one of:
+
+```text
+error: cannot fetch advisory <id> in --offline mode — supply it with --advisory <file> (OSV or Vibgrate-shaped)
+error: could not reach OSV to resolve <id> — supply it with --advisory <file>, or retry online
+error: OSV returned <status> for <id> — check the id, or supply the advisory with --advisory <file>
+error: network fetch is unavailable in this runtime — supply the advisory with --advisory <file>
+error: advisory file not found: <path>
+error: advisory file is not a valid Vibgrate or OSV advisory: <path>
+```
+
+Supply the advisory with `--advisory <file>`, or retry when the network is available. The advisory id is not a secret. The file messages name the path.
+
+### Upload authentication failed, or the DSN is missing
+
+DSN resolution order for `vg scan --push`, `vg push`, `vg fix`, and `vg lib publish` is: `--dsn`, then `VIBGRATE_DSN`, then the stored login. The store is `~/.vibgrate/credentials.json`, or `<project>/.vibgrate/credentials.json` when that file exists or you passed `vg login --local`. An explicit `VIBGRATE_CREDENTIALS` path wins over both. None of these commands print the DSN they resolved.
+
+`--offline` disables upload even when a DSN is set.
+
+No credential, `vg scan --push`:
+
+```text
+No DSN provided for push.
+Run "vibgrate login", set VIBGRATE_DSN, or use the --dsn flag.
+No account yet? Claim this run: https://dash.vibgrate.com/claim?vid=<install-id>&job=scan_drift&channel=cli
+```
+
+`vg push` prints `No DSN provided.` and the same following lines. The claim URL's `vid` is this machine's install id, not a DSN. Next step: `vg login`, or set `VIBGRATE_DSN` in the CI secret store (never as a plain workflow variable that is echoed). `--strict` turns the missing DSN into exit code 1. Without `--strict` the local scan result is kept and the upload is skipped.
+
+A DSN that does not match `vibgrate+https://<key_id>:<secret>@<host>/<workspace_id>`:
+
+```text
+Invalid DSN format.
+```
+
+`vg push` adds a second line, `Expected: vibgrate+https://<key_id>:<secret>@<host>/<workspace_id>`. Those angle brackets are the placeholders the CLI prints. They are not your key. `vg fix` says `Invalid DSN format. Re-run "vg login" or check VIBGRATE_DSN.` When nothing is stored it prints `vg fix needs a Vibgrate login.` and `Run "vg login" (or set VIBGRATE_DSN / pass --dsn) to analyse upgrades with the hosted planner.` (`vg` is `npx @vibgrate/cli` when you invoked the CLI that way).
+
+`vg lib publish` with no usable DSN:
+
+```text
+error: publishing a private library requires a DSN — run `vibgrate login` or set VIBGRATE_DSN
+```
+
+Under `--offline` or `--local` it stops earlier:
+
+```text
+error: vg lib publish uploads to the hosted catalog — it needs network (remove --offline/--local)
+```
+
+When the upload endpoint answers with a non-2xx status, `vg scan --push` and `vg push` print the status and the response body. They do not print the DSN or the `Authorization` header:
+
+```text
+Upload failed: HTTP <status>: <body>
+```
+
+Pushing a `vg review` receipt prints `Upload failed (<status>): <detail>` (the server `error` string when the body is JSON, otherwise the body, cut to 200 characters). If `<body>` or `<detail>` looks like it contains a secret, do not paste it into a ticket. Quote the status code. Then run `vg login` again, or replace `VIBGRATE_DSN` with a DSN for this workspace. Check `--region us` or `--region eu`. A workspace pinned to another region is retried on its own; the CLI prints `↻ Workspace is pinned to a different region — retrying upload to <host>...`.
+
+Before the scan, when a push will be attempted, a failed preflight prints:
+
+```text
+Preflight check failed: <message>
+```
+
+`<message>` is `HTTP <status>: <json body>` when the server answers, or the transport error when it does not. The local scan continues unless you passed `--strict`. A plan limit (repository cap, scan credits, VM minutes) is a separate warning and still runs the local scan; see the plan-limit note under [`vg scan`](#vg-scan).
+
+`vg login` transport failures:
+
+```text
+Failed to start login (HTTP <status>).
+Could not reach <host>: <message>
+```
+
+`<host>` is the ingest hostname. Browser outcomes: `✖ Login was denied in the browser.`, `✖ Login request expired. Run "vibgrate login" again.`, `✖ Timed out waiting for approval. Run "vibgrate login" again.` After a successful sign-in, workspace setup can still fail: `✖ Signed in, but workspace setup failed: Failed to provision workspace: <error>`, then `Finish setup with "vibgrate dsn create --workspace new".` `vg dsn create --workspace new` prints `Failed to provision DSN: <error>` on the same provision failure. The provision error is the server's `error` string or the transport message. It does not include the new key.
+
+Unknown or unavailable region, and a bad `--ingest` (from `vg login`, `vg dsn create`, `vg scan --region`, or `vg push --region`):
+
+```text
+Unknown region "<id>". Supported: us, eu
+Region "apac" (Asia-Pacific (coming soon)) is not yet available. Supported: us, eu
+Invalid ingest URL: <url>
+```
+
+`vg doctor` reports where the credential came from and never the secret:
+
+```text
+  auth       anonymous — fine for everything local; `vg login` enables push/publish
+  auth       <env|project|home> <path> · workspace <workspace-id> · <host>
+```
+
+`<path>` is empty when the DSN comes from `VIBGRATE_DSN`. The source is `env` (the `VIBGRATE_DSN` or `VIBGRATE_CREDENTIALS` environment), `project` (`.vibgrate/credentials.json` in the repo), or `home` (`~/.vibgrate/credentials.json`). Hosted reachability, when checked, is `hosted <base> · unreachable — local answers still work`. `--local` skips that probe: `hosted skipped under --local (<base>)`.
+
+`vg install <assistant> --login` under `--offline` or `--local`:
+
+```text
+error: --login needs the network; it cannot run under --local/--offline
+```
+
+A Copilot token exchange failure names the HTTP status and does not print the token:
+
+```text
+error: Copilot token exchange failed (<status>); run `vg install copilot-cli --compress --login` to sign in again.
+```
+
+The success line prints a `sha256:` fingerprint, not the token.
 
 ---
 
