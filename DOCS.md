@@ -3563,6 +3563,7 @@ Maps security findings into OWASP Top 10 categories for security triage inside e
 Use the maintained templates in this package for copy-paste setup:
 
 - `examples/github-actions/driftscore-ci.yml` (JSON artifact + drift gate)
+- `examples/github-actions/README.md` (when that gate fails versus warns, release pins, DriftScore badges)
 - `examples/github-actions/driftscore-sarif.yml` (SARIF upload to code scanning)
 - `examples/github-actions/vulnerabilities-sarif.yml` (vulnerability gate + SARIF upload)
 - `docs/ci/github-actions.md` (integration notes)

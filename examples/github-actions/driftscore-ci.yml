@@ -1,5 +1,9 @@
 name: DriftScore CI
 
+# Credential-free drift gate. Copy to `.github/workflows/driftscore-ci.yml`.
+# Exit 2 fails the job. Warn-mode budgets, pins, and badges:
+# examples/github-actions/README.md
+
 on:
   pull_request:
   push:
@@ -15,15 +19,26 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # Pin the release you tested. `npx @vibgrate/cli` with no version
+      # installs npm latest on every run, so the scanner itself drifts.
+      - name: Install Vibgrate
+        run: npm install -g @vibgrate/cli@2026.1005.1
+
       - name: Run Vibgrate drift gate
         run: |
-          npx @vibgrate/cli scan \
+          vg scan \
             --format json \
             --out vibgrate-report.json \
             --fail-on error \
             --drift-budget 40
 
+      # The JSON is written before the gate exits, including on exit 2.
       - name: Upload report artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: vibgrate-report

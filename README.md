@@ -566,7 +566,7 @@ vg scan --format sarif --out vibgrate.sarif --junit vibgrate.junit.xml --fail-on
 ```
 - A scan with `--baseline` also records findings that already appear in the snapshot (rule, location, and id). The text report prints the count, SARIF lists the same ids as suppressions, and those findings stay in the report.
 
-Copy-paste CI templates live in `examples/github-actions/`. Azure DevOps and GitLab CI snippets are in [DOCS.md](./DOCS.md#ci-integration).
+Copy-paste CI templates live in `examples/github-actions/`. That folder's README is the drift-gate walkthrough: exit `2` versus warn mode, which release to pin, and the DriftScore badge. Azure DevOps and GitLab CI snippets are in [DOCS.md](./DOCS.md#ci-integration).
 
 ---
 

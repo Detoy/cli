@@ -5,10 +5,11 @@ Vibgrate already supports CI gating and SARIF export through the core `scan` com
 ## Copy-paste workflows
 
 - CI drift gate template: `examples/github-actions/driftscore-ci.yml`
+- Failure versus warn, release pins, and DriftScore badges: `examples/github-actions/README.md`
 - SARIF upload template: `examples/github-actions/driftscore-sarif.yml`
 - Vulnerability gate + SARIF template: `examples/github-actions/vulnerabilities-sarif.yml`
 
-Copy any template into your repository under `.github/workflows/`.
+Copy any template into your repository under `.github/workflows/`. The drift-gate README is enough to add the basic gate to an empty repository.
 
 ## Vulnerability gate (`--vulns`)
 
@@ -80,8 +81,10 @@ The CI template uses existing scan-time gates:
 Example gate command:
 
 ```bash
-npx @vibgrate/cli scan --format json --out vibgrate-report.json --fail-on error --drift-budget 40
+vg scan --format json --out vibgrate-report.json --fail-on error --drift-budget 40
 ```
+
+A tripped gate exits `2` (`GATE_FAILED`) and the job fails. `driftBudget.mode: warn` (the default) and `shadow` print the breach and exit `0`, so the job stays green. `--fail-on warn` is the other way around: it exits `2` when a warning finding exists. Passing `--drift-budget` or `--drift-worsening` skips `driftBudget` in the project config. An unpinned `npx @vibgrate/cli` installs npm `latest` on every run. The pinned workflow, the full exit table, and the DriftScore badge URL are in [`examples/github-actions/README.md`](../../examples/github-actions/README.md).
 
 ## SARIF upload behavior
 
