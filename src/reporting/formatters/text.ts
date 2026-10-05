@@ -2,6 +2,7 @@ import chalk from 'chalk';
 import type { ScanArtifact, ExtendedScanResults, InventoryItem, ServiceDependencyItem, ArchitectureResult, Finding } from '../types.js';
 import { baselineSuppressionSummary, baselinedIdSet, driftFindingId } from '../../core-open/baseline-comparison.js';
 import { VERSION } from '../version.js';
+import { humanFindingText } from '../../core-open/formatters/fix-hint.js';
 import { driftBar } from '../../core-open/ui/bar.js';
 import { titleBox } from '../../core-open/ui/box.js';
 
@@ -98,8 +99,10 @@ export function formatText(artifact: ScanArtifact): string {
     lines.push(chalk.bold.underline(`  Findings`) + chalk.dim(` (${summary})`));
     for (const f of artifact.findings) {
       const icon = f.level === 'error' ? chalk.red('✖') : f.level === 'warning' ? chalk.yellow('⚠') : chalk.blue('ℹ');
-      lines.push(`    ${icon} ${f.message}`);
+      const shown = humanFindingText(f);
+      lines.push(`    ${icon} ${shown.message}`);
       lines.push(chalk.dim(`      ${f.ruleId} in ${locationOf(f)}`));
+      if (shown.hint) lines.push(chalk.dim(`      ${shown.hint}`));
     }
     lines.push('');
   }

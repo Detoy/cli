@@ -95,7 +95,7 @@ describe('SARIF advisory aliases', () => {
       ruleId: 'vibgrate/vulnerability',
       level: 'error',
       message: {
-        text: 'widget@1.2.0: GHSA-widg-et00-0001 (CVE-2099-9999) (high 7.5) — fixed in 1.2.1',
+        text: 'widget@1.2.0: GHSA-widg-et00-0001 (CVE-2099-9999) (high 7.5) — fix available (1.2.1)',
       },
       locations: [
         {
@@ -215,35 +215,35 @@ describe('SARIF advisory aliases', () => {
         level: 'note',
         advisoryId: 'RUSTSEC-2099-0001',
         aliases: ['CVE-2099-4242'],
-        message: 'zzz-crate@0.1.0: RUSTSEC-2099-0001 (CVE-2099-4242) (low) — fixed in 0.2.0',
+        message: 'zzz-crate@0.1.0: RUSTSEC-2099-0001 (CVE-2099-4242) (low) — fix available (0.2.0)',
       },
       {
         uri: 'alpha',
         level: 'warning',
         advisoryId: 'GHSA-aaaa-0000-0001',
         aliases: [],
-        message: 'alpha@2.0.0: GHSA-aaaa-0000-0001 (moderate) — no fix available',
+        message: 'alpha@2.0.0: GHSA-aaaa-0000-0001 (moderate)',
       },
       {
         uri: 'alpha',
         level: 'warning',
         advisoryId: 'GHSA-bbbb-0000-0002',
         aliases: ['CVE-2099-0002'],
-        message: 'alpha@2.0.0: GHSA-bbbb-0000-0002 (CVE-2099-0002) (moderate 5) — fixed in 2.1.0',
+        message: 'alpha@2.0.0: GHSA-bbbb-0000-0002 (CVE-2099-0002) (moderate 5) — fix available (2.1.0)',
       },
       {
         uri: 'zeta',
         level: 'error',
         advisoryId: 'GHSA-aaaa-bbbb-cccc',
         aliases: ['CVE-2099-0001', 'OSV-2099-1'],
-        message: 'zeta@1.0.0: GHSA-aaaa-bbbb-cccc (CVE-2099-0001) (high 7.5) — fixed in 1.2.0',
+        message: 'zeta@1.0.0: GHSA-aaaa-bbbb-cccc (CVE-2099-0001) (high 7.5) — fix available (1.2.0)',
       },
       {
         uri: 'zeta',
         level: 'warning',
         advisoryId: 'CVE-2099-0001',
         aliases: ['GHSA-aaaa-bbbb-cccc'],
-        message: 'zeta@1.0.0: CVE-2099-0001 (moderate 5.3) — fixed in 1.2.0',
+        message: 'zeta@1.0.0: CVE-2099-0001 (moderate 5.3) — fix available (1.2.0)',
       },
     ]);
   });

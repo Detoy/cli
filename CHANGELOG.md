@@ -12,6 +12,14 @@ backward compatible.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Vulnerability lines in `vg scan` and `vg report` text name a fix only when
+  the scan result already has one.** A finding with published fixed versions
+  now shows `fix available` (and those versions). A finding with no fix
+  metadata omits that clause. The report no longer says "no fix available"
+  just because the list was empty.
+
 ### Added
 
 - **`vg scan --vulns` JSON includes EPSS and KEV when the advisory data already has them.** An advisory in `extended.vulnerabilities` carries `epss`, `epssPercentile`, and `kev` when the OSV document or the `--package-manifest` bundle already carried them. A missing score is omitted, never written as `0` or `false`; a real `0` is kept. Offline and manifest scans do not contact an EPSS service. Text and SARIF findings are unchanged.

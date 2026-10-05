@@ -6,6 +6,7 @@ import { lineProvenance, sessionTitle, TRAILER, turnsTouching } from '../review/
 import { lookupProvenance, repoIdentity, type CloudLookup } from '../review/provenance-cloud.js';
 import { cloudDsn } from '../review/doc-comments.js';
 import { buildVersionTimelines, findPackageAnyEcosystem, gitHistoryAvailable } from '../core-open/index.js';
+import { fixAvailableHint } from '../core-open/formatters/fix-hint.js';
 import { readScanArtifact } from '../mcp/vuln-data.js';
 import { applyGlobalOptions, readGlobal } from '../cli-options.js';
 import { rootOf } from './util.js';
@@ -76,8 +77,9 @@ export function registerWhy(program: Command): void {
           const cve = adv.aliases.find((a) => a.startsWith('CVE-'));
           const idLabel = cve && cve !== adv.id ? `${adv.id} (${cve})` : adv.id;
           const cvss = adv.cvss != null ? ` cvss ${adv.cvss}` : '';
-          const fixed = adv.fixedVersions.length ? ` — fixed in ${adv.fixedVersions.join(', ')}` : ' — no fix available';
-          info(`    ${severityTag(adv.severity)} ${idLabel}${c.dim(cvss)}${c.dim(fixed)}`);
+          const hint = fixAvailableHint(adv.fixedVersions);
+          const fixed = hint ? c.dim(` — ${hint}`) : '';
+          info(`    ${severityTag(adv.severity)} ${idLabel}${c.dim(cvss)}${fixed}`);
           if (adv.cvssDiagnostic) info(c.dim(`        ${adv.cvssDiagnostic.message}`));
           if (adv.introduced) {
             const exposure = adv.exposureDays != null ? `, ${adv.exposureDays}d exposed` : '';

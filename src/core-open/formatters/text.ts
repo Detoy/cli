@@ -4,6 +4,7 @@
 import chalk from 'chalk';
 import type { ScanArtifact, BillingSummary, ExtendedScanResults, InventoryItem, ServiceDependencyItem, ArchitectureResult, SecurityFinding, SecuritySection, Finding } from '../types.js';
 import { baselineSuppressionSummary, baselinedIdSet, driftFindingId } from '../baseline-comparison.js';
+import { humanFindingText } from './fix-hint.js';
 import { driftBar } from '../ui/bar.js';
 import { titleBox, panelBox } from '../ui/box.js';
 
@@ -127,8 +128,10 @@ export function formatText(artifact: ScanArtifact, opts: FormatTextOptions = {})
     lines.push(chalk.bold.underline(`  Findings`) + chalk.dim(` (${summary})`));
     for (const f of artifact.findings) {
       const icon = f.level === 'error' ? chalk.red('✖') : f.level === 'warning' ? chalk.yellow('⚠') : chalk.blue('ℹ');
-      lines.push(`    ${icon} ${f.message}`);
+      const shown = humanFindingText(f);
+      lines.push(`    ${icon} ${shown.message}`);
       lines.push(chalk.dim(`      ${f.ruleId} in ${locationOf(f)}`));
+      if (shown.hint) lines.push(chalk.dim(`      ${shown.hint}`));
     }
     lines.push('');
   }

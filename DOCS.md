@@ -3180,7 +3180,7 @@ The default output. A coloured, human-readable report showing:
 - Overall drift score and risk level
 - Score component breakdown with visual bars
 - Per-project details: runtime lag, framework versions, dependency distribution
-- Findings with severity icons
+- Findings with severity icons. A vulnerability finding whose advisory lists fixed versions shows `fix available (<versions>)`; the clause is omitted when no fixed version is recorded.
 - When a baseline was compared: the drift delta, `Baseline suppressions: N`, and `(baselined)` on matched rows
 
 ### JSON Artifact
@@ -3209,10 +3209,10 @@ Each installed package produces one result per advisory record that affects the 
 The result `ruleId` is `vibgrate/vulnerability`. The location `uri` is the package name. `critical` and `high` map to SARIF level `error`, `moderate` to `warning`, and `low` or `unknown` to `note`. The message text looks like:
 
 ```text
-widget@1.2.0: GHSA-widg-et00-0001 (CVE-2099-9999) (high 7.5) — fixed in 1.2.1
+widget@1.2.0: GHSA-widg-et00-0001 (CVE-2099-9999) (high 7.5) — fix available (1.2.1)
 ```
 
-The id in front is `properties.advisoryId`. The parenthetical CVE is the first alias that starts with `CVE-`, and only when that CVE is not already the primary id. Any other alias — including a GHSA id when the primary id is the CVE — stays in `properties.aliases` and is left out of the message. The message ends with `— fixed in <versions>` when a fix is listed, and `— no fix available` when it is not. The CVSS score is left out of the severity parentheses when the advisory has no score (`(low)` rather than `(low 2.1)`).
+The id in front is `properties.advisoryId`. The parenthetical CVE is the first alias that starts with `CVE-`, and only when that CVE is not already the primary id. Any other alias — including a GHSA id when the primary id is the CVE — stays in `properties.aliases` and is left out of the message. The message ends with `— fix available (<versions>)` when the advisory lists fixed versions. When it lists none, that clause is omitted; the scan does not claim there is no fix. The CVSS score is left out of the severity parentheses when the advisory has no score (`(low)` rather than `(low 2.1)`).
 
 **Two records stay two results.** `aliases` is not a grouping key. If OSV or your manifest returns a GHSA record and a separate CVE record for the same issue, and each names the other in `aliases`, the SARIF output contains both results. A code-scanning upload can show those as near-duplicate alerts. `vg scan` does not collapse them.
 
