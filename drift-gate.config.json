@@ -8,11 +8,14 @@
   },
   "worseningPercent": 0,
   "baseline": "gate/drift-baseline.json",
+  "//scanExclude": "Sample trees are scored as this package's own projects. examples/go-pseudo-versions pins Go 1.22, which is past end of life, and that alone lifts the blended DriftScore over the budget. Fixtures were already listed; examples use the same exclude. These globs are passed to vg scan --exclude. They are not a threshold change.",
   "scanExclude": [
     "**/test-solutions/**",
     "**/test/**",
     "**/fixtures/**",
     "**/__fixtures__/**",
+    "**/examples/**",
+    "**/example/**",
     "**/scenarios/**",
     "**/demo/**"
   ]

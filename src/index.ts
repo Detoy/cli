@@ -12,6 +12,8 @@ export { buildGraph } from './engine/build.js';
 export type { BuildOptions, BuildResult } from './engine/build.js';
 export { resolveLimits, ResourceLimitError } from './engine/limits.js';
 export type { ResourceLimits } from './engine/limits.js';
+export { UnsafeRootError, assertSafeScanRoot } from './engine/root-safety.js';
+export type { RootSafetyOptions, UnsafeRootReason } from './engine/root-safety.js';
 
 export { loadGraph } from './engine/load.js';
 export { serializeGraph, parseGraph, stableStringify, GraphLoadError } from './engine/serialize.js';
