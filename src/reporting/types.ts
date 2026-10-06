@@ -1,3 +1,5 @@
+import type { DependencyLicense } from '../core-open/types.js';
+
 // ── Core types for Vibgrate CLI ──
 
 export type DepSection = 'dependencies' | 'devDependencies' | 'peerDependencies' | 'optionalDependencies';
@@ -76,6 +78,8 @@ export interface DependencyRow {
   latestStable: string | null;
   majorsBehind: number | null;
   drift: 'current' | 'minor-behind' | 'major-behind' | 'unknown';
+  /** Declared license evidence from the scan, when the scanner recorded one. */
+  license?: DependencyLicense;
 }
 
 // ── Detected framework ──

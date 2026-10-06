@@ -437,7 +437,7 @@ vg why lodash                   # who added a dependency, every version since, a
 vg bisect lodash 4.17.21        # the commit where lodash crossed a version line (e.g. reached the fix)
 ```
 
-Detection and attribution span the whole npm ecosystem (npm, pnpm, yarn) plus pip/poetry, cargo, composer, bundler, go, pub, hex, NuGet, and Maven/Gradle — read from each project's lockfile, so it works whatever you build in.
+Detection and attribution span the whole npm ecosystem (npm, pnpm, yarn) plus pip/poetry, cargo, composer, bundler, pub, hex, NuGet, and Maven/Gradle — read from each project's lockfile, so it works whatever you build in. Go is matched from direct `require` lines in `go.mod`. Pseudo-versions and `+incompatible` tags are compared as described in [DOCS.md](./DOCS.md#go-modules-pseudo-versions-and-incompatible).
 
 Your AI assistant sees this too: `vg serve` exposes `list_vulnerabilities`, `vuln_attribution`, and an `upgrade_impact` tool that tells an agent what an upgrade will cost — version distance, how many files import the package, the vulnerabilities it fixes, and (online, opt in) the breaking-change notes between your version and the latest.
 
@@ -534,6 +534,22 @@ Upload is opt-in — nothing leaves your machine until you run `--push`. Store t
 </p>
 <p align="center"><sub><code>java-spring/budget</code> — <code>vg scan --drift-budget 60</code> as a CI gate (this recording exits 0). <a href="https://vibgrate.com/cli">Live simulator</a>.</sub></p>
 
+The fastest start on GitHub is one command. It writes `.github/workflows/vibgrate.yml`, which scans every pull request with the `vibgrate/cli` Action and uploads SARIF to GitHub Security. No Vibgrate account is needed:
+
+```bash
+vg init --ci github
+```
+
+Prefer to write it yourself? The same workflow is one step with the `vibgrate/cli` Action:
+
+```yaml
+- uses: actions/checkout@v4
+- uses: vibgrate/cli@v1
+  with:
+    upload-sarif: true
+    max-score: 40 # optional: fail the job when DriftScore is above 40
+```
+
 Drop `vg` into any pipeline to turn drift scoring into a quality gate:
 
 ```yaml
@@ -566,7 +582,7 @@ vg scan --format sarif --out vibgrate.sarif --junit vibgrate.junit.xml --fail-on
 ```
 - A scan with `--baseline` also records findings that already appear in the snapshot (rule, location, and id). The text report prints the count, SARIF lists the same ids as suppressions, and those findings stay in the report.
 
-Copy-paste CI templates live in `examples/github-actions/`. Azure DevOps and GitLab CI snippets are in [DOCS.md](./DOCS.md#ci-integration).
+Copy-paste CI templates live in `examples/github-actions/`. When the job fails, when warn mode stays green, which release to pin, and how a DriftScore badge is filled in: [`examples/github-actions/README.md`](./examples/github-actions/README.md). Azure DevOps and GitLab CI snippets are in [DOCS.md](./DOCS.md#ci-integration).
 
 ---
 
@@ -599,6 +615,10 @@ vg sbom delta  --from .vibgrate/baseline.json --to .vibgrate/scan_result.json --
 vg vex                          # generate an OpenVEX document for attestation
 ```
 
+`vg sbom export` writes an inventory, not a compliance determination. CycloneDX component `type` is `application` on the metadata component and `library` on every dependency row, including a container image. SPDX `primaryPackagePurpose` is omitted. The mapping, the gaps (OS packages, image contents, Terraform resources), and short fixture examples are in [DOCS.md](./DOCS.md#cyclonedx-type-and-spdx-primarypackagepurpose).
+
+`vibgrate:scope` on each component is `direct` or `transitive`. How production, development, and optional dependencies are written in CycloneDX and SPDX, including fields the export omits, is in [Dependency scope](./docs/sbom-dependency-scope.md).
+
 Component identity in the SBOM is the Package URL on each component (CycloneDX `purl` and `bom-ref`, SPDX purl `externalRef`). `vg scan --format json` records the same package as ecosystem, name, and installed version. Neither output includes a CPE. The fields to key on, including a local advisory match, are in [DOCS.md](./DOCS.md#component-identity).
 
 ## Review a change
@@ -622,6 +642,8 @@ vg review propose arch:<rule>:<path> --model forge --json --findings findings.js
 `vg review findings-from-diff` prints the deterministic `vg.review.findings.v1`
 document (blast-radius and architecture-policy `correctness` rows plus security
 scanners) and writes `.vibgrate/review-propose-handoff.json`.
+The JSON field list, every `kind`, the sort order, a captured example, and the
+failure exits are in [DOCS.md](./DOCS.md#findings-json-contract).
 `vg review propose <id>` attaches a PatchIR dry-run — `--model` is
 `relay:<slug>` (hosted Review) or `spark` | `flow` | `forge` (local Code Mode).
 Lookup is the current change set, then `--findings` JSON, then that last-run

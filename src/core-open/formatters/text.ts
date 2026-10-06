@@ -42,6 +42,12 @@ export interface FormatTextOptions {
    * the public dashboard host.
    */
   upgradeUrl?: string;
+  /**
+   * Show the "keep your DriftScore from getting worse" panel pointing at
+   * `init --ci github`. Callers set this only for an interactive, non-CI run
+   * in a repo with no Vibgrate workflow yet. Defaults to false.
+   */
+  ciHint?: boolean;
 }
 
 export function formatText(artifact: ScanArtifact, opts: FormatTextOptions = {}): string {
@@ -247,6 +253,11 @@ export function formatText(artifact: ScanArtifact, opts: FormatTextOptions = {})
   lines.push(chalk.dim(`  ${scannedParts.join(' · ')}`));
   lines.push('');
 
+  if (opts.ciHint && artifact.drift.score !== null) {
+    lines.push(...renderCiPanel(artifact.drift.components, opts.invocation ?? 'vg'));
+    lines.push('');
+  }
+
   // Free-plan upsell: only when the user has no workspace DSN (they scanned
   // locally) and this scan produced a billing roll-up to price against.
   if (opts.free && artifact.billing) {
@@ -259,6 +270,44 @@ export function formatText(artifact: ScanArtifact, opts: FormatTextOptions = {})
   }
 
   return lines.join('\n');
+}
+
+// ── "Keep it from getting worse" CI hint ──
+
+/** The component contributing the most drift, from measured components only. */
+function biggestDriver(c: ScanArtifact['drift']['components']): { label: string; score: number } | null {
+  const candidates: Array<{ label: string; score: number | null }> = [
+    { label: 'Runtime', score: c.runtimeScore },
+    { label: 'Frameworks', score: c.frameworkScore },
+    { label: 'Dependencies', score: c.dependencyScore },
+    { label: 'EOL risk', score: c.eolScore },
+  ];
+  let best: { label: string; score: number } | null = null;
+  for (const cand of candidates) {
+    if (cand.score !== null && cand.score > 0 && (best === null || cand.score > best.score)) {
+      best = { label: cand.label, score: cand.score };
+    }
+  }
+  return best;
+}
+
+/**
+ * Free, account-less call to action shown after an interactive scan: put the
+ * scan on every pull request so the score can't quietly get worse. The driver
+ * line comes only from measured components — nothing is shown when none drift.
+ */
+function renderCiPanel(components: ScanArtifact['drift']['components'], invocation: string): string[] {
+  const driver = biggestDriver(components);
+  const body = [
+    ...(driver ? [`Biggest driver: ${chalk.bold(driver.label)} (${driver.score}/100)`, ``] : []),
+    `Run this scan on every pull request so it can't quietly`,
+    `get worse:`,
+    `  ${chalk.cyan(`${invocation} init --ci github`)}`,
+    ``,
+    chalk.dim(`Adds a GitHub Actions workflow. SARIF goes to GitHub`),
+    chalk.dim(`Security. No Vibgrate account needed.`),
+  ];
+  return panelBox('KEEP YOUR DRIFTSCORE FROM GETTING WORSE', body, chalk.hex('#3FB0A4'), 60);
 }
 
 // ── Free-plan upsell ("Keep tracking your DriftScore") ──

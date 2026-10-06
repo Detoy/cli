@@ -12,7 +12,9 @@
  * manifest-relative path.
  *
  * An explicit unknown (`NOASSERTION`, `unknown`, `none`, `n/a`, or empty)
- * is not a failure. A fuzzy family match is not a failure either.
+ * is not a failure. A fuzzy family match is not a failure either. A valid
+ * custom LicenseRef (`LicenseRef-` plus letters, digits, `.`, and `-`) is
+ * an exact id, not a failure. An invalid reference still is.
  */
 
 import { isExplicitUnknownLicense, normalizeLicense } from './normalize.js';
@@ -66,6 +68,14 @@ function redactLicenseText(value: string): string {
 function truncateLicense(value: string): string {
   if (value.length <= LICENSE_RAW_LIMIT) return value;
   return `${value.slice(0, LICENSE_RAW_LIMIT - 1)}…`;
+}
+
+/**
+ * Declared license text safe to repeat in a warning: trimmed, credential-redacted,
+ * and truncated. Same rules as a parse diagnostic.
+ */
+export function declaredLicenseSnippet(raw: string): string {
+  return truncateLicense(redactLicenseText(raw.trim()));
 }
 
 function expressionHasUnresolvedId(input: string): boolean {
