@@ -37,7 +37,9 @@ import { formatSarif } from './formatters/sarif.js';
 import { formatMarkdown } from './formatters/markdown.js';
 import { loadConfig, appendExcludePatterns } from './config.js';
 import { pathExists, readJsonFile, writeJsonFile, writeTextFile, ensureDir, FileCache, quickTreeCount } from './utils/fs.js';
+import { assertSafeScanRoot, type RootSafetyOptions } from '../engine/root-safety.js';
 import { detectVcs } from './utils/vcs.js';
+import { isCiEnvironment, hasVibgrateWorkflow } from './utils/ci-env.js';
 import { resolveRepositoryName } from './utils/repository-name.js';
 import { ScanProgress } from './ui/progress.js';
 import { loadScanHistory, saveScanHistory, estimateTotalDuration, estimateStepDurations } from './ui/scan-history.js';
@@ -152,6 +154,13 @@ export async function runCoreScan(
   opts: ScanOptions,
   advanced?: AdvancedScanHook,
 ): Promise<ScanArtifact> {
+  const rootSafety: RootSafetyOptions = {
+    allowUnsafeRoot: opts.allowUnsafeRoot,
+    maxWalkEntries: opts.maxWalkEntries,
+  };
+  // Before config load (a `.ts` config can execute) and before any walk.
+  assertSafeScanRoot(rootDir, rootSafety);
+
   const vibgrateVersion = opts.vibgrateVersion ?? 'unknown';
   const scanStart = Date.now();
   const config = await loadConfig(rootDir);
@@ -170,6 +179,7 @@ export async function runCoreScan(
   const composerCache = new ComposerCache(sem, packageManifest, offlineMode);
   const pubCache = new PubCache(sem, packageManifest, offlineMode);
   const fileCache = new FileCache();
+  fileCache.setRootSafety(rootSafety);
   // Merge config-file excludes with any patterns passed on the command line
   // (--exclude). CLI patterns are additive and de-duplicated.
   const excludePatterns = [...new Set([...(config.exclude ?? []), ...(opts.exclude ?? [])])];
@@ -228,7 +238,7 @@ export async function runCoreScan(
   const runtimeCatalog = resolvedRuntimeCatalog.catalog;
 
   // Kick off fast tree counting early so ETA can be initialized before indexing.
-  const treeCountPromise = quickTreeCount(rootDir, excludePatterns);
+  const treeCountPromise = quickTreeCount(rootDir, excludePatterns, rootSafety);
 
   // ── Step: Discovery — fast file & folder count ──
   progress.startStep('discovery');
@@ -940,7 +950,17 @@ export async function runCoreScan(
     const authenticated = opts.authenticated ?? !!parsedDsn;
     const freePlan = opts.planTier === 'free';
     const showUpsell = !opts.quiet && (!authenticated || freePlan);
+    // CI hint: interactive terminal only. Never in CI, never when the text is
+    // also written to a file (--out), never with --quiet, and not once the repo
+    // already has a Vibgrate workflow.
+    const showCiHint =
+      !opts.quiet &&
+      !opts.out &&
+      !!process.stdout.isTTY &&
+      !isCiEnvironment() &&
+      !(await hasVibgrateWorkflow(rootDir));
     const text = formatText(artifact, {
+      ciHint: showCiHint,
       free: showUpsell,
       authenticated,
       invocation: opts.invocation,

@@ -1,3 +1,10 @@
+# SARIF for GitHub code scanning.
+#
+# --fail-on error exits 2 on an error-level finding, which skips later steps
+# unless they set if: always(). The upload below does. Pins, warn versus fail,
+# and the DriftScore badge: examples/github-actions/README.md.
+# npx @vibgrate/cli is the same binary as vg.
+
 name: DriftScore SARIF
 
 on:
@@ -24,6 +31,7 @@ jobs:
             --fail-on error
 
       - name: Upload SARIF to GitHub code scanning
+        if: always()
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: vibgrate-results.sarif

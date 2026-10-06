@@ -210,6 +210,12 @@ export {
   type DirEntry,
 } from './utils/fs.js';
 export { Semaphore } from './utils/semaphore.js';
+export {
+  assertSafeWalkRoot,
+  UnsafeRootError,
+  DEFAULT_WALK_ENTRY_BUDGET,
+} from './utils/root-safety.js';
+export type { UnsafeRootReason } from './utils/root-safety.js';
 export { parseExcludePatterns, compileGlobs } from './utils/glob.js';
 export { detectVcs } from './utils/vcs.js';
 export {

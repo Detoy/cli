@@ -1,0 +1,5 @@
+go 1.22
+
+use .
+
+replace example.com/not-scanned => ../not-scanned

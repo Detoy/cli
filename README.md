@@ -412,6 +412,8 @@ scanner reads `.tf` only; the `iac-cis-v1` findings path reads `.tf` and
 ids, and the current drift gap are in
 [docs/security-packs.md](./docs/security-packs.md#terraform-and-opentofu-files).
 
+`vg scan` and `vg build` exit 1 instead of walking a filesystem root, an operating-system image, or a tree over the walk budget. Pass a project subdirectory, narrow the walk with `--exclude` ignore patterns, or pass `--allow-unsafe-root`. Details: [DOCS.md](./DOCS.md#unsafe-roots).
+
 One scan gives you:
 
 - **Overall score** (0–100) and risk level (**Low / Moderate / High**)
@@ -425,7 +427,7 @@ One scan gives you:
 
 ## Find known vulnerabilities and who introduced them
 
-`vg scan --vulns` checks your installed dependencies against the public [OSV](https://vibgrate.com/glossary/osv) database and reports each known vulnerability with its severity, CVSS score, and the version that fixes it — as text, JSON, or SARIF. JSON also includes `epss`, `epssPercentile`, and `kev` when the advisory data already carried them; a missing score is omitted, never written as `0`. Add `--package-manifest` to run it fully offline from a local advisory bundle. Offline and manifest scans do not contact an EPSS service. A missing or invalid manifest exits `1` and does not scan. The manifest shape and the error text are in [DOCS.md](./DOCS.md#offline-scan-with-a-package-version-manifest).
+`vg scan --vulns` checks your installed dependencies against the public [OSV](https://vibgrate.com/glossary/osv) database and reports each known vulnerability with its severity, CVSS score, and the version that fixes it — as text, JSON, or SARIF. JSON also includes `epss`, `epssPercentile`, and `kev` when the advisory data already carried them; a missing score is omitted, never written as `0`. Add `--package-manifest` to run it fully offline from a local advisory bundle. Offline and manifest scans do not contact an EPSS service. A missing or invalid manifest exits `1` and does not scan. The manifest shape and the error text are in [DOCS.md](./DOCS.md#offline-scan-with-a-package-version-manifest). Go pseudo-versions and `+incompatible` tags are compared from the `require` line in `go.mod`; the local rules and a fixture are in [DOCS.md](./DOCS.md#go-pseudo-versions-and-incompatible).
 
 SARIF writes one result per package and advisory (`vg scan --vulns --format sarif`). The advisory's own id is the primary id. CVE and other aliases stay on that result. A second code-scanning alert is expected when the scan kept two advisory ids, including when those ids list each other as aliases. Field layout and result order: [DOCS.md](./DOCS.md#advisories-with-several-ids).
 
@@ -443,7 +445,7 @@ vg why lodash                   # who added a dependency, every version since, a
 vg bisect lodash 4.17.21        # the commit where lodash crossed a version line (e.g. reached the fix)
 ```
 
-Detection and attribution span the whole npm ecosystem (npm, pnpm, yarn) plus pip/poetry, cargo, composer, bundler, go, pub, hex, NuGet, and Maven/Gradle — read from each project's lockfile, so it works whatever you build in.
+Detection and attribution span the whole npm ecosystem (npm, pnpm, yarn) plus pip/poetry, cargo, composer, bundler, pub, hex, NuGet, and Maven/Gradle — read from each project's lockfile, so it works whatever you build in. Go is matched from direct `require` lines in `go.mod`. Pseudo-versions and `+incompatible` tags are compared as described in [DOCS.md](./DOCS.md#go-pseudo-versions-and-incompatible).
 
 Your AI assistant sees this too: `vg serve` exposes `list_vulnerabilities`, `vuln_attribution`, and an `upgrade_impact` tool that tells an agent what an upgrade will cost — version distance, how many files import the package, the vulnerabilities it fixes, and (online, opt in) the breaking-change notes between your version and the latest.
 
@@ -540,6 +542,22 @@ Upload is opt-in — nothing leaves your machine until you run `--push`. Store t
 </p>
 <p align="center"><sub><code>java-spring/budget</code> — <code>vg scan --drift-budget 60</code> as a CI gate (this recording exits 0). <a href="https://vibgrate.com/cli">Live simulator</a>.</sub></p>
 
+The fastest start on GitHub is one command. It writes `.github/workflows/vibgrate.yml`, which scans every pull request with the `vibgrate/cli` Action and uploads SARIF to GitHub Security. No Vibgrate account is needed:
+
+```bash
+vg init --ci github
+```
+
+Prefer to write it yourself? The same workflow is one step with the `vibgrate/cli` Action:
+
+```yaml
+- uses: actions/checkout@v4
+- uses: vibgrate/cli@v1
+  with:
+    upload-sarif: true
+    max-score: 40 # optional: fail the job when DriftScore is above 40
+```
+
 Drop `vg` into any pipeline to turn drift scoring into a quality gate:
 
 ```yaml
@@ -572,7 +590,7 @@ vg scan --format sarif --out vibgrate.sarif --junit vibgrate.junit.xml --fail-on
 ```
 - A scan with `--baseline` also records findings that already appear in the snapshot (rule, location, and id). The text report prints the count, SARIF lists the same ids as suppressions, and those findings stay in the report.
 
-Copy-paste CI templates live in `examples/github-actions/`. Azure DevOps and GitLab CI snippets are in [DOCS.md](./DOCS.md#ci-integration).
+Copy-paste CI templates live in `examples/github-actions/`. When the job fails, when warn mode stays green, which release to pin, and how a DriftScore badge is filled in: [`examples/github-actions/README.md`](./examples/github-actions/README.md). Azure DevOps and GitLab CI snippets are in [DOCS.md](./DOCS.md#ci-integration).
 
 ---
 
@@ -605,6 +623,12 @@ vg sbom delta  --from .vibgrate/baseline.json --to .vibgrate/scan_result.json --
 vg vex                          # generate an OpenVEX document for attestation
 ```
 
+`vg sbom export` writes an inventory, not a compliance determination. CycloneDX component `type` is `application` on the metadata component and `library` on every dependency row, including a container image. SPDX `primaryPackagePurpose` is omitted. The mapping, the gaps (OS packages, image contents, Terraform resources), and short fixture examples are in [DOCS.md](./DOCS.md#cyclonedx-type-and-spdx-primarypackagepurpose).
+
+Each exported component is labeled `direct` or `transitive` (CycloneDX property `vibgrate:scope`, SPDX annotation `scope=`). Production, development, and optional manifest sections are not copied into those fields. The mapping, a fixture, and the ecosystems where that scope is omitted: [Production, development, and optional scope](./DOCS.md#production-development-and-optional-scope). How those dependencies are written in CycloneDX and SPDX, including fields the export omits, is also in [Dependency scope](./docs/sbom-dependency-scope.md).
+
+Component identity in the SBOM is the Package URL on each component (CycloneDX `purl` and `bom-ref`, SPDX purl `externalRef`). `vg scan --format json` records the same package as ecosystem, name, and installed version. Neither output includes a CPE. The fields to key on, including a local advisory match, are in [DOCS.md](./DOCS.md#component-identity).
+
 ## Review a change
 
 **Vibgrate Review** reads the current change against the declared architecture and security-control policy. It reports change integrity, not a proof of security.
@@ -626,6 +650,8 @@ vg review propose arch:<rule>:<path> --model forge --json --findings findings.js
 `vg review findings-from-diff` prints the deterministic `vg.review.findings.v1`
 document (blast-radius and architecture-policy `correctness` rows plus security
 scanners) and writes `.vibgrate/review-propose-handoff.json`.
+The JSON field list, every `kind`, the sort order, a captured example, and the
+failure exits are in [DOCS.md](./DOCS.md#findings-json-contract).
 `vg review propose <id>` attaches a PatchIR dry-run — `--model` is
 `relay:<slug>` (hosted Review) or `spark` | `flow` | `forge` (local Code Mode).
 Lookup is the current change set, then `--findings` JSON, then that last-run
@@ -834,6 +860,7 @@ Recommended rollout: `vg build` + `vg install` now, add `vg scan` to CI this wee
 - **`--auto` is a denylist, not a sandbox.** It blocks known-catastrophic commands; it does not confine the agent. Run untrusted instructions in a container, or under `--worktree` with `--security-tier L1`.
 - **`--verify` re-runs your tests; it does not prove correctness.** Failures are fed back for a repair attempt. Passing tests mean passing tests.
 - **Vulnerability data is only as current as its source.** `--vulns` reports what OSV knows at scan time; offline runs report what is in the bundle you supplied.
+- **Go vulnerability matches use the cleaned `require` version.** Range checks reduce a pseudo-version to `major.minor.patch`, and `+incompatible` is dropped before the compare. `replace`, `exclude`, and `go.sum` leave that version unchanged. See [DOCS.md](./DOCS.md#go-pseudo-versions-and-incompatible).
 - **Vibgrate Evidence produces evidence, not a compliance determination.** It supports your obligations under a regime; it does not decide that you meet them, does not certify anything, and is not legal advice. The filing is yours.
 - **Evidence cannot look backwards.** Exposure is answered from manifests frozen at ship time. A release you never froze stays `undetermined` — there is no way to reconstruct it after the fact.
 - **`vg evidence watch` surfaces a KEV listing, not a determination.** Whether a vulnerability is "actively exploited" for the purposes of a filing is your call, not the tool's.

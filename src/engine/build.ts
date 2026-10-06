@@ -24,6 +24,7 @@ import {
   ResourceLimitError,
   type ResourceLimits,
 } from './limits.js';
+import { assertSafeScanRoot, type RootSafetyOptions } from './root-safety.js';
 import { hashString, hashBytes, canonicalize, shortId } from './hash.js';
 import { grammarSetVersion } from './grammars.js';
 import { classifyEpistemic } from './epistemic.js';
@@ -100,6 +101,10 @@ export interface BuildOptions {
   /** Resource-safeguard overrides (else VG_MAX_FILE_BYTES / VG_MAX_FILES /
    * VG_TSC_MAX_FILES / VG_MEMORY_BUDGET_MB env vars, else defaults). */
   limits?: Partial<ResourceLimits>;
+  /** Skip filesystem-root, OS-image, and walk-budget checks (`--allow-unsafe-root`). */
+  allowUnsafeRoot?: boolean;
+  /** Walk-entry ceiling (else `VG_MAX_WALK_ENTRIES`). 0 disables the budget only. */
+  maxWalkEntries?: number;
 }
 
 /** Stat + content hash of one corpus file at build time. */
@@ -152,19 +157,31 @@ export async function buildGraph(options: BuildOptions): Promise<BuildResult> {
   const timer = new StageTimer();
   timer.start('total');
   const root = path.resolve(options.root);
+  const safety: RootSafetyOptions = {
+    allowUnsafeRoot: options.allowUnsafeRoot,
+    maxWalkEntries: options.maxWalkEntries,
+  };
+  // Before config reads and discovery. Scoped paths are checked instead of an
+  // ancestor that will not be walked (`vg build ./app` from a wide cwd).
+  const scopes = options.paths?.length ? options.paths.map((p) => path.resolve(root, p)) : [root];
+  for (const scope of scopes) assertSafeScanRoot(scope, safety);
   const exclude = mergeExcludes(root, options.exclude);
+  // Corpus cap is applied to the file list below. The walk's own ceiling is
+  // VG_MAX_WALK_ENTRIES (see root-safety.ts), not VG_MAX_FILES.
+  const limits = resolveLimits(options.limits);
   timer.start('discover');
   const files = discover({
     root,
     only: options.only,
     exclude,
     paths: options.paths,
+    allowUnsafeRoot: options.allowUnsafeRoot,
+    maxWalkEntries: options.maxWalkEntries,
   });
   timer.end('discover');
 
   // Resource safeguards (see limits.ts): stop a pathological corpus before it
   // OOM-kills the process. Skips are deterministic functions of the input.
-  const limits = resolveLimits(options.limits);
   if (limits.maxFiles > 0 && files.length > limits.maxFiles) {
     throw new ResourceLimitError(
       `graph build stopped: ${files.length.toLocaleString()} files exceed the ` +
@@ -501,6 +518,8 @@ export async function buildGraph(options: BuildOptions): Promise<BuildResult> {
     root,
     exclude,
     paths: options.paths,
+    allowUnsafeRoot: options.allowUnsafeRoot,
+    maxWalkEntries: options.maxWalkEntries,
   });
   for (const d of docs) {
     try {
