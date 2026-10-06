@@ -2,6 +2,8 @@
 
 Vibgrate already supports CI gating and SARIF export through the core `scan` command.
 
+How `vg build` records a step `uses:` pin is in [Action references in the code map](#action-references-in-the-code-map).
+
 ## Quick start
 
 ```bash
@@ -151,6 +153,137 @@ The gate workflow does not publish a badge and does not take a credential. Embed
 ```
 
 A public GitHub repository Vibgrate has not scanned shows `scanning…` on the first DriftScore request, then the score on a later request. No account is required for that badge. A repository already scanned in Vibgrate Cloud shows its score after the public badge is turned on. Colour is the score band (0–30 green, 31–60 amber, 61–100 red; lower is better), not a CI result. Details: [`examples/github-actions/README.md`](../../examples/github-actions/README.md) and [vibgrate.com/badges](https://vibgrate.com/badges).
+
+## Action references in the code map
+
+`vg build` reads each workflow file directly under `.github/workflows/`
+(`*.yml` and `*.yaml`) and records every step `uses:` value as written. The
+map stores that string. It has no field that classifies the pin as a commit
+SHA, a tag, a branch, a local path, or a container image.
+
+Each step `uses:` adds three things:
+
+- A `step` node. `qualifiedName` is `job:<job id>#<index>` (the index starts
+  at 0). `signature` is `gha.step.uses`. `doc` is `uses <value>`. With no
+  `name:` on the step, `name` is the `uses` value, cut at 80 characters. A
+  `name:` key replaces that label; the `uses` value stays in `doc` and on the
+  external node.
+- An `external` node. `signature` is `gha.action`. `qualifiedName` is
+  `action:<value>` with the value unchanged. `name` is the text before the
+  first `@`, or the whole value when there is no `@`.
+- A `depends_on` edge from the step to that external node.
+
+The same `uses` text twice in one file is one external node and two edges. A
+different ref is a different external node, including the same action once at
+a SHA and once at a tag.
+
+The step `doc`, and the workflow file's `document` node (the body `vg ask`
+reads), go through the same credential scrub as the rest of the map. A run of
+40 or more letters, digits, `+`, or `/` is stored as `[REDACTED]` in those
+`doc` fields. A full 40-character commit SHA matches that rule. A tag such as
+`v4`, a branch such as `main`, and a `./path` stay intact. A `docker://` image
+stays intact unless its digest is itself a run that long; that digest is
+scrubbed in `doc` and kept on `qualifiedName`, the same way a commit SHA is.
+`qualifiedName` and `name` are left as written, so the SHA remains on the
+external node.
+
+### SHA and tag
+
+The hex string below is an example ref written in the file. `vg` does not
+look it up.
+
+```yaml
+name: CI
+on: push
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@0123456789abcdef0123456789abcdef01234567
+      - uses: actions/setup-node@v4
+```
+
+| | SHA step | Tag step |
+| --- | --- | --- |
+| step `qualifiedName` | `job:build#0` | `job:build#1` |
+| step `name` | `actions/checkout@0123456789abcdef0123456789abcdef01234567` | `actions/setup-node@v4` |
+| step `doc` | `uses actions/checkout@[REDACTED]` | `uses actions/setup-node@v4` |
+| external `name` | `actions/checkout` | `actions/setup-node` |
+| external `qualifiedName` | `action:actions/checkout@0123456789abcdef0123456789abcdef01234567` | `action:actions/setup-node@v4` |
+| external `signature` | `gha.action` | `gha.action` |
+
+`vg show` prints the external node's qualified name. These are the lines that
+identify the pin (importance and area follow the rest of the map):
+
+```text
+vg show 'action:actions/checkout@0123456789abcdef0123456789abcdef01234567'
+
+action:actions/checkout@0123456789abcdef0123456789abcdef01234567  (external)
+  .github/workflows/ci.yml:7
+  gha.action
+```
+
+```text
+vg show 'action:actions/setup-node@v4'
+
+action:actions/setup-node@v4  (external)
+  .github/workflows/ci.yml:8
+  gha.action
+```
+
+`vg show` lists `call` and `references` neighbours, so the `calls` line is
+empty for both. The pin link is the `depends_on` edge in the map, from
+`job:build#0` or `job:build#1` to the external node. `vg show job:build#0`
+prints the step's qualified name and `gha.step.uses`; the `uses` text for
+that step is its `name` and `doc` in the map, above.
+
+Other forms use the same fields:
+
+- `actions/checkout@main` — external `name` `actions/checkout`, qualified name
+  `action:actions/checkout@main`, `doc` `uses actions/checkout@main`.
+- `owner/repo/path@v1` — external `name` `owner/repo/path` (everything before
+  the first `@`).
+- `./.github/actions/build` — no `@`, so `name` and the text after `action:`
+  are the whole path, and `doc` is `uses ./.github/actions/build`. A step
+  `name:` such as `Local composite` is the step node's `name`; the path stays
+  on the external node.
+- `docker://alpine:3.20` — same shape as a local path: `name` is
+  `docker://alpine:3.20`, `doc` is `uses docker://alpine:3.20`.
+
+### Offline
+
+The workflow file on disk is the only input. Building the map does not call
+the GitHub API and does not read a token. `--offline` leaves this recording
+unchanged, because there is no request to skip.
+
+A tag, a branch, or a SHA that cannot be resolved — nothing upstream matches
+it — is stored as the characters in the file. The build writes no resolved
+commit in its place, and it emits no warning that the ref could not be
+resolved. That ref is not a finding.
+
+### Outside this recording
+
+- **`actions.lock`.** The build does not read that file. It is not a workflow,
+  and it is not a lockfile the dependency scanners parse, so nothing from it
+  enters the map.
+- **`vg scan --iac`.** The `iac-cis-v1` pack evaluates Terraform, Kubernetes,
+  Helm, and Dockerfiles
+  ([rules](../security-packs.md#rules-in-iac-cis-v1-version-1)). A workflow
+  step is not a fact in that scan, and the pack has no rule for a mutable tag.
+- **Reusable workflows.** A job-level `uses:`
+  (`jobs.<id>.uses: owner/repo/.github/workflows/called.yml@ref`) becomes a
+  job node only. It does not add an `action:` node.
+- **Composite action files.** Only a workflow directly inside
+  `.github/workflows/` contributes step `uses:` nodes. An `action.yml` under
+  `.github/actions/` can still be a `document` node for `vg ask`. Its inner
+  steps are not `gha.action` nodes.
+- **`vg build --attest`.** That flag signs the code graph
+  ([Signing and verifying the graph](../../DOCS.md#signing-and-verifying-the-graph)).
+  Action nodes are part of the signed map when the workflow was built. The
+  statement is the code graph; it carries no separate claim about pin form.
+
+Which release to pin when you copy a Vibgrate workflow:
+[Pins](../../examples/github-actions/README.md#pins).
 
 ## Related
 

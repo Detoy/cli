@@ -21,6 +21,7 @@ For a quick overview, see the [README](./README.md). This document covers everyt
   - [vg review](#vg-review)
     - [Findings JSON contract](#findings-json-contract)
   - [vg sbom](#vg-sbom)
+    - [Choosing CycloneDX or SPDX](#choosing-cyclonedx-or-spdx)
     - [Component identity](#component-identity)
     - [Package digests](#package-digests)
     - [CycloneDX type and SPDX primaryPackagePurpose](#cyclonedx-type-and-spdx-primarypackagepurpose)
@@ -321,6 +322,14 @@ vg evidence export [--out <dir>] [--regime <id>]
 `watch` joins the CISA **Known Exploited Vulnerabilities (KEV)** catalog to the components in your frozen manifests (via OSV) and reports any KEV-listed vulnerability that affects a shipped release — alerting via stdout or `--webhook`. It **surfaces the KEV listing**; whether a vulnerability is "actively exploited" for a filing is your determination, not the tool's.
 
 **Exit codes** (CI-usable): `0` no exposure · `2` exposure found · `3` undetermined (manual review) · `1` operational error.
+
+Exit `1` is also what you get when a subcommand cannot serialize or write its output (the pack `--out` file, an export directory, a `--bundle` directory, a drill record, or state under `.vibgrate/evidence/`). Stderr is a single `error:` line that names the path and the reason — permission denied, the path is a directory, no space left on the device, a parent directory is missing, a parent path is not a directory, a parent path exists and is not a directory, or the value is not valid JSON (a cycle, a BigInt, or another non-JSON value) — then a next step. A pack or export says to check the path and permissions or pass a different `--out`. A bundle says to pass a different `--bundle`. State under `.vibgrate/evidence/` says to check that directory is writable. There is no stack trace, and the line does not include a signing key, a token, or a DSN. When `vg evidence export --out` points at a directory whose `org.json` entry is itself a directory, the line is:
+
+```text
+error: could not write /work/outdir/org.json (the path is a directory). Check the path and permissions, or pass a different --out.
+```
+
+The path in that sample is a stand-in for the resolved output file.
 
 No language model touches any figure in the evidence path, and every determination carries an evidence-not-compliance disclaimer. Vibgrate Evidence produces evidence to support your obligations under a regime; it does not determine compliance and is not legal advice.
 
@@ -1379,14 +1388,206 @@ vg sbom vex [--from <file>] [--statement <json>...] [--product <ref>] [--out <fi
 
 | Command | Description |
 |---------|-------------|
-| `vg sbom export` | Emit CycloneDX or SPDX JSON from a scan artifact |
+| `vg sbom export` | Emit CycloneDX (the default) or SPDX JSON from a scan artifact |
 | `vg sbom delta` | Compare dependencies between two artifacts (added/removed/changed + drift delta) |
 | `vg sbom vex` | Emit a spec-compliant OpenVEX document (exploitability statements) for attestation |
 
 Use this to treat SBOMs as operational intelligence instead of static compliance output.
+`--format` is `cyclonedx` or `spdx`; omitting it writes CycloneDX. Where the two
+documents put the same facts is [Choosing CycloneDX or SPDX](#choosing-cyclonedx-or-spdx).
 How CycloneDX `type` is set, and when SPDX `primaryPackagePurpose` is omitted,
 is [Component type](#component-type). The export is an inventory, not a
 compliance determination.
+
+#### Choosing CycloneDX or SPDX
+
+`vg sbom export --format` accepts `cyclonedx` and `spdx`. Omitting `--format`
+writes the same JSON as `--format cyclonedx`. The value is lowercased, so
+`CycloneDX` and `SPDX` are accepted. Any other value prints
+`Invalid SBOM format. Use cyclonedx or spdx.` on stderr and exits `1`.
+`vg sbom export --help` lists those two values and the default. Both values
+write JSON.
+
+Both formats read one scan artifact (`--in`, default
+`.vibgrate/scan_result.json`) and the lockfiles under `--root` (default `.`).
+They list the same components. `--no-transitive` applies to both: lockfile-only
+rows are dropped, and the dependency graph is omitted. CycloneDX output is
+[CycloneDX 1.5](https://cyclonedx.org/docs/1.5/json/) JSON. SPDX output is
+[SPDX 2.3](https://spdx.github.io/spdx-spec/v2.3/) JSON. The file is an
+inventory, not a compliance determination.
+
+| Fact | CycloneDX 1.5 | SPDX 2.3 |
+| --- | --- | --- |
+| Document id | `serialNumber` is `urn:uuid:` plus a version-8 UUID. Document `version` is `1`. `bomFormat` is `CycloneDX`. `specVersion` is `1.5`. | `documentNamespace` is `https://vibgrate.com/spdx/<rootPath>/<uuid>`. `SPDXID` is `SPDXRef-DOCUMENT`. `name` is `<rootPath>-sbom`. `spdxVersion` is `SPDX-2.3`. `dataLicense` is `CC0-1.0` (the SPDX data license on the document). |
+| Tool and time | `metadata.timestamp` is the scan artifact's `timestamp`. `metadata.tools` is one object: `vendor` `Vibgrate`, `name` `@vibgrate/cli`, `version` the artifact's `vibgrateVersion`. | `creationInfo.created` is that same timestamp. `creationInfo.creators` is one string, `Tool: @vibgrate/cli-<vibgrateVersion>`. SPDX has no `metadata` object. |
+| Root | `metadata.component`: `type` `application`, `bom-ref` `vibgrate-root`, `name` the artifact's `rootPath`. No `version` and no `purl` on that object. | No package for the root. `primaryPackagePurpose` is omitted on every package. |
+| Package identity | `components[].purl`. `bom-ref` is that same purl. `name` and `version` are the package name and installed version. | The purl is `packages[].externalRefs[]` with `referenceCategory` `PACKAGE-MANAGER`, `referenceType` `purl`, and `referenceLocator` set to the purl. The id inside this file is `SPDXID` `SPDXRef-Package-N` (1-based position in `packages`). `name` and `versionInfo` are the package name and installed version. |
+| Dependency graph | Top-level `dependencies`: objects `{ "ref", "dependsOn" }`. `ref` and each `dependsOn` entry are that component's `bom-ref` (the purl when one was built). The root `ref` is `vibgrate-root`. Every component is an entry. A component with no children has `dependsOn` `[]`. The member is omitted when the lockfile has no resolved edges. | `relationships`: objects `{ "spdxElementId", "relatedSpdxElementId", "relationshipType" }` with `relationshipType` `DEPENDS_ON`. An edge from the root uses `spdxElementId` `SPDXRef-DOCUMENT` and points at `SPDXRef-Package-N`. A component with no children is never `spdxElementId`. The member is omitted when the lockfile has no resolved edges. |
+| Licenses | `components[].licenses` when the scan row's declared license is representable. Otherwise `licenses` is omitted. | `licenseDeclared` on every package. `licenseConcluded` is `NOASSERTION` on every package. `downloadLocation` is `NOASSERTION` and `filesAnalyzed` is `false`. `hasExtractedLicensingInfos` is written when a `LicenseRef-` id is used. |
+| Scan facts on each component | `properties` entries `vibgrate:project`, `vibgrate:projects`, `vibgrate:currentSpec`, `vibgrate:drift`, `vibgrate:majorsBehind`, and `vibgrate:scope` (`direct` or `transitive`). | One annotation: `annotationType` `OTHER`, `annotator` `Tool: @vibgrate/cli`, `annotationDate` the scan timestamp, `comment` `project=…; projects=…; drift=…; majorsBehind=…; scope=…`. |
+
+`<rootPath>` is the scan artifact's `rootPath`, the basename of the directory
+passed to `vg scan`. The UUID in `serialNumber` and the UUID in
+`documentNamespace` are each a hash of that artifact (timestamp included) and
+of the ordered component list, declared licenses, license-parse notes, and
+edges. The format name is part of the hash input, so the two files from one
+artifact carry different UUIDs. Exporting again from the same artifact and the
+same lockfiles repeats that format's id. A later scan records a new timestamp,
+and both ids change. Purls and CycloneDX `bom-ref` values stay. The stability
+rule is **Same inputs, same document**, later in this section.
+
+These rows name the field. The rules for what goes in it are already written:
+
+- Package URL placement, `bom-ref` when the purl is omitted, and scan JSON
+  identity: [Component identity](#component-identity).
+- CycloneDX `type` and the omitted SPDX `primaryPackagePurpose`:
+  [Component type](#component-type) and
+  [CycloneDX type and SPDX primaryPackagePurpose](#cyclonedx-type-and-spdx-primarypackagepurpose).
+- `vibgrate:scope`, which edges exist, and the relationship types this export
+  leaves out: [Production, development, and optional scope](#production-development-and-optional-scope)
+  and [Dependency scope](./docs/sbom-dependency-scope.md).
+- Declared-license values, `vibgrate:licenseStatus`, and `LicenseRef-` text:
+  [Declared licenses](#declared-licenses).
+
+A scan finding whose rule is `vibgrate/license-parse-failed` is repeated on
+CycloneDX `metadata.properties` and as a top-level SPDX `annotations` entry.
+Both are absent when the scan has no such finding.
+
+**Example.** Directory `format-fixture`. The package names are local
+placeholders, so `vg scan --offline` does not contact a registry. `package.json`:
+
+```json
+{
+  "name": "format-fixture",
+  "version": "1.0.0",
+  "dependencies": { "left-pad": "1.3.0" }
+}
+```
+
+`package-lock.json` (lockfileVersion 3):
+
+```json
+{
+  "name": "format-fixture",
+  "lockfileVersion": 3,
+  "requires": true,
+  "packages": {
+    "": {
+      "name": "format-fixture",
+      "version": "1.0.0",
+      "dependencies": { "left-pad": "1.3.0" }
+    },
+    "node_modules/left-pad": {
+      "version": "1.3.0",
+      "dependencies": { "once": "1.4.0" }
+    },
+    "node_modules/once": { "version": "1.4.0" }
+  }
+}
+```
+
+```bash
+vg scan ./format-fixture --offline --no-graph
+vg sbom export --in ./format-fixture/.vibgrate/scan_result.json \
+  --root ./format-fixture --format cyclonedx --out sbom.cdx.json
+vg sbom export --in ./format-fixture/.vibgrate/scan_result.json \
+  --root ./format-fixture --format spdx --out sbom.spdx.json
+```
+
+The same `vg sbom export` command with `--format` omitted writes the same JSON
+as `--format cyclonedx`. Each command prints `✔ SBOM written to <file>`. The
+JSON is the file. Warnings, when there are any, go to stderr.
+
+The scan row for `left-pad` carried no declared license, so CycloneDX omits
+`licenses` and SPDX sets `licenseDeclared` to `NOASSERTION`.
+An offline scan leaves `vibgrate:drift` and `vibgrate:majorsBehind` as
+`unknown`. `metadata.tools[0].version` and the SPDX creator string use the
+scan artifact's `vibgrateVersion`. `metadata.timestamp` and
+`creationInfo.created` are the artifact's `timestamp`.
+
+CycloneDX document fields from that export:
+
+```json
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "version": 1,
+  "metadata": {
+    "tools": [{ "vendor": "Vibgrate", "name": "@vibgrate/cli" }],
+    "component": { "type": "application", "bom-ref": "vibgrate-root", "name": "format-fixture" }
+  }
+}
+```
+
+`metadata.timestamp` and `metadata.tools[0].version` are present on that
+object. They are the scan timestamp and `vibgrateVersion`, and are left out of
+the excerpt above.
+
+`serialNumber` on that file was `urn:uuid:` plus the CycloneDX hash described
+above. `left-pad` is the direct component (`bom-ref` and `purl`
+`pkg:npm/left-pad@1.3.0`). `once` is the lockfile-only component (`purl`
+`pkg:npm/once@1.4.0`, `vibgrate:scope` `transitive`). The resolved edges:
+
+```json
+[
+  { "ref": "vibgrate-root", "dependsOn": ["pkg:npm/left-pad@1.3.0"] },
+  { "ref": "pkg:npm/left-pad@1.3.0", "dependsOn": ["pkg:npm/once@1.4.0"] },
+  { "ref": "pkg:npm/once@1.4.0", "dependsOn": [] }
+]
+```
+
+SPDX document fields from the same artifact:
+
+```json
+{
+  "spdxVersion": "SPDX-2.3",
+  "dataLicense": "CC0-1.0",
+  "SPDXID": "SPDXRef-DOCUMENT",
+  "name": "format-fixture-sbom"
+}
+```
+
+`documentNamespace` was `https://vibgrate.com/spdx/format-fixture/` plus the
+SPDX hash. That UUID differed from `serialNumber`. The `left-pad` package:
+
+```json
+{
+  "name": "left-pad",
+  "SPDXID": "SPDXRef-Package-1",
+  "versionInfo": "1.3.0",
+  "downloadLocation": "NOASSERTION",
+  "filesAnalyzed": false,
+  "licenseConcluded": "NOASSERTION",
+  "licenseDeclared": "NOASSERTION",
+  "externalRefs": [
+    {
+      "referenceCategory": "PACKAGE-MANAGER",
+      "referenceType": "purl",
+      "referenceLocator": "pkg:npm/left-pad@1.3.0"
+    }
+  ]
+}
+```
+
+Its annotation comment was
+`project=format-fixture; projects=format-fixture; drift=unknown; majorsBehind=unknown; scope=direct`.
+`once` was `SPDXRef-Package-2` with `scope=transitive`. The same edges. `once`
+is `relatedSpdxElementId` on the second row, and it is not an `spdxElementId`:
+
+```json
+[
+  {
+    "spdxElementId": "SPDXRef-DOCUMENT",
+    "relatedSpdxElementId": "SPDXRef-Package-1",
+    "relationshipType": "DEPENDS_ON"
+  },
+  {
+    "spdxElementId": "SPDXRef-Package-1",
+    "relatedSpdxElementId": "SPDXRef-Package-2",
+    "relationshipType": "DEPENDS_ON"
+  }
+]
+```
 
 `vg sbom export` reports the full resolved dependency tree, not just what's declared
 in the manifest: it reads each scanned project's lockfile (`package-lock.json` /
@@ -1999,8 +2200,10 @@ CycloneDX `serialNumber` and the SPDX `documentNamespace`. Those values are
 document identifiers, derived from that artifact — timestamp included — and
 from the ordered component list, declared licenses, license-parse notes, and
 edges. They are not package content digests. [Package digests](#package-digests)
-describes both fields. A later scan of the same tree records a new timestamp,
-so the document id changes. Purls and CycloneDX `bom-ref` values do not.
+describes both fields. The format name is part of that derivation, so the two
+files do not share a UUID. A later scan of the same tree records a new timestamp,
+so the document id changes. Purls and CycloneDX `bom-ref` values do not. Field
+placement is [Choosing CycloneDX or SPDX](#choosing-cyclonedx-or-spdx).
 
 **Known limitations:**
 
@@ -3107,6 +3310,8 @@ That generated ignore file does not list the signing key or `attestation.intoto.
 
 `vg build --attest` signs the graph that build just produced. `vg build --verify` checks an attestation file against the map already on disk, and it re-checks that rebuilding this tree is deterministic. Pass one of those flags. When both are set, `--verify` runs and the build that would sign does not.
 
+The signed subject is that code map. A GitHub Actions `uses:` string is an ordinary node in the map when a workflow was built; the attestation does not classify the pin. How SHA, tag, branch, local path, `docker://`, and `actions.lock` are recorded: [Action references in the code map](./docs/ci/github-actions.md#action-references-in-the-code-map).
+
 `attest-actions` is not a command. The older verbs are usage errors (exit 5), and they name the flag to run instead:
 
 ```text
@@ -3251,6 +3456,22 @@ error: could not read an Ed25519 private key from bad.pem
 ```
 
 Replace it with an Ed25519 PEM. The same relative-versus-absolute path rule as the type error applies.
+
+**Attestation file cannot be written** — exit 1. `--attestation` (or the default `.vibgrate/attestation.intoto.jsonl`) could not be serialized or written. The reason is one of: the path is a directory, a parent path is not a directory, a parent path exists and is not a directory, permission denied, the filesystem is read-only, no space left on the device, a parent directory is missing, or the value is not valid JSON. There is no second `ref` line. For a path that is a directory:
+
+```text
+error: could not write attest-out (the path is a directory). Check the path and permissions, or pass a different --attestation.
+```
+
+Check the path and permissions, or pass `--attestation` pointing at a writable file. The signing key is not printed.
+
+**Signing key cannot be written** — exit 1, when the default key path cannot be created. A path inside the project is shown relative to it. When `.vibgrate` exists as a file rather than a directory:
+
+```text
+error: could not write .vibgrate/attest-key.pem (a parent path exists and is not a directory). Check the path and permissions for the signing key.
+```
+
+Permission denied, a full disk, and a read-only filesystem use that same sentence with the matching reason. No PEM material is included. Fix the directory, or point `--attest-key` / `VG_ATTEST_KEY` at a key file this process can write.
 
 **Named attestation is missing** — exit 3. This is the failure in the try-it above. `--pub` with no attestation file uses the same sentence and the default path:
 
@@ -5321,7 +5542,7 @@ Use the maintained templates in this package for copy-paste setup:
 - `examples/github-actions/driftscore-ci.yml` (JSON artifact + drift gate)
 - `examples/github-actions/driftscore-sarif.yml` (SARIF upload to code scanning)
 - `examples/github-actions/vulnerabilities-sarif.yml` (vulnerability gate + SARIF upload)
-- `docs/ci/github-actions.md` (integration notes)
+- `docs/ci/github-actions.md` (integration notes, and [how a step `uses:` pin is recorded](./docs/ci/github-actions.md#action-references-in-the-code-map))
 
 ```yaml
 steps:
