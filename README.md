@@ -221,7 +221,7 @@ vg insights                     # overview: hubs, hotspots, untested paths
 </p>
 <p align="center"><sub><code>node-turborepo/impact</code> — blast radius of changing a hub before you edit.</sub></p>
 
-The graph is byte-deterministic and reproducible — the same repo always produces the same graph on every machine.
+The graph is byte-deterministic and reproducible — the same repo always produces the same graph on every machine. A `pom.xml` contributes `import` edges for its top-level dependencies; a Gradle build script does not. See [Maven and Gradle manifests](./DOCS.md#maven-and-gradle-manifests).
 
 ```bash
 vg share                        # make the graph committable + auto-updating for the team
@@ -418,7 +418,7 @@ One scan gives you:
 
 - **Overall score** (0–100) and risk level (**Low / Moderate / High**)
 - **Score breakdown** — runtime, frameworks, dependencies, EOL
-- **Per-project detail** across Node.js/TypeScript, .NET, Python, and Java
+- **Per-project detail** across Node.js/TypeScript, .NET, Python, and Java. Maven profiles, Maven scopes, and Gradle configurations are only partly visible — the included and omitted sets for `vg scan` rows and `vg build` edges are in [Maven and Gradle manifests](./DOCS.md#maven-and-gradle-manifests).
 - **Actionable findings** ranked by likely impact
 - **[SBOM](https://vibgrate.com/glossary/sbom) export** (CycloneDX / SPDX)
 - **Known vulnerabilities** (opt in with `--vulns`) — severity, CVSS, the fixing version, EPSS when the advisory data already has it, and, in a git repo, who introduced them
@@ -857,6 +857,7 @@ Recommended rollout: `vg build` + `vg install` now, add `vg scan` to CI this wee
 - **VG Code quality tracks the model you choose.** No model ships with the CLI. A small local model handles mechanical edits well and struggles with cross-cutting design changes; `vg models` tells you what fits this machine, not what will do the job. Reach for Relay or another hosted model when the task is bigger than the machine.
 - **Guided `vg code` needs a terminal.** In CI, pass an instruction plus `--auto` (or `--mock`) — the interactive picker never appears, and the agent refuses to run unattended without it.
 - **The map is the ceiling.** Anything the resolver could not tie to a definition is invisible to `search_code` and `graph_impact`. Run `vg unknowns` to see what the graph is missing, ranked by blast radius.
+- **Maven profiles and custom Gradle configurations stay out of the map and the scan.** Active and inactive profiles are both omitted, a Gradle configuration outside the built-in set is omitted, and Maven `<scope>` is not stored on the scan row. [Maven and Gradle manifests](./DOCS.md#maven-and-gradle-manifests).
 - **`--auto` is a denylist, not a sandbox.** It blocks known-catastrophic commands; it does not confine the agent. Run untrusted instructions in a container, or under `--worktree` with `--security-tier L1`.
 - **`--verify` re-runs your tests; it does not prove correctness.** Failures are fed back for a repair attempt. Passing tests mean passing tests.
 - **Vulnerability data is only as current as its source.** `--vulns` reports what OSV knows at scan time; offline runs report what is in the bundle you supplied.

@@ -28,10 +28,10 @@ For a quick overview, see the [README](./README.md). This document covers everyt
     - [Dependency scope](./docs/sbom-dependency-scope.md)
   - [vg scan](#vg-scan)
     - [Offline scan with a package-version manifest](#offline-scan-with-a-package-version-manifest)
+    - [Maven and Gradle manifests](#maven-and-gradle-manifests)
     - [Terraform and OpenTofu files](#terraform-and-opentofu-files)
     - [Vulnerabilities and exposure attribution](#vulnerabilities-and-exposure-attribution)
       - [Go pseudo-versions and +incompatible](#go-pseudo-versions-and-incompatible)
-    - [Maven and Gradle manifests](#maven-and-gradle-manifests)
   - [vg update](#vg-update)
   - [vg why](#vg-why)
 - [Workspace auth & cloud upload](#workspace-auth--cloud-upload)
@@ -176,7 +176,7 @@ Vibgrate evaluates **upgrade drift** in depth for:
 - **Node.js / TypeScript** (`package.json`, lockfiles)
 - **.NET** (`.sln`, `.csproj`)
 - **Python** (`requirements.txt`, `pyproject.toml`-style manifests)
-- **Java** (`pom.xml`, Gradle-style manifests). Which Maven profiles, scopes, and Gradle configurations become a `vg scan` row or a `vg build` edge is in [Maven and Gradle manifests](#maven-and-gradle-manifests).
+- **Java** (`pom.xml`, Gradle-style manifests). Which profiles, scopes, and Gradle configurations become code-map edges or scan rows is in [Maven and Gradle manifests](#maven-and-gradle-manifests).
 
 **Known-vulnerability detection** (`--vulns`) and **dependency attribution** (`vg why`, exposure windows) additionally cover npm / pnpm / yarn, pip / poetry / pipenv, cargo, composer, bundler, go, pub, hex, NuGet, and Maven/Gradle — read from each project's lockfile. For Go, that file is `go.mod`: direct `require` versions, including pseudo-versions and `+incompatible` tags. The match rules are in [Go pseudo-versions and +incompatible](#go-pseudo-versions-and-incompatible).
 
@@ -2344,6 +2344,240 @@ Expected results:
 
 **Plan limits never block the scan.** If your workspace is at a plan limit that gates ingestion — repository cap, scan credits, VM minutes — the CLI warns with the reason (and the upgrade link), disables the upload, and runs the **full local scan** anyway, repeating the warning after the results so it isn't lost in the output. Local scoring never depended on the cloud, and now neither does it depend on your plan. Pass `--strict` to keep the old behaviour and fail the command instead, which is usually what you want in CI.
 
+### Maven and Gradle manifests
+
+`vg build` and `vg scan` both read Java build files, and they keep different subsets. This section is those two commands. [vg why](#vg-why) is a third reader (a `gradle.lockfile`, or a pinned direct `<dependency>` version).
+
+The tables record what the current CLI emits. The [worked example](#worked-example) below is a fixture that was run with `vg scan --offline` and `vg build --offline`, so the commands do not contact a registry.
+
+#### Code map (`vg build`)
+
+Each `pom.xml` becomes a `package` node plus one `import` edge per top-level `<dependency>` that has both a `groupId` and an `artifactId`. The edge runs from that package node to an `external` node whose name is `groupId:artifactId`. The edge is `kind: import`, `resolution: heuristic`, `epistemic: declared`. The version and the `<scope>` are not stored on the edge. A repeated coordinate is one edge.
+
+The package node's `name` is the POM `<name>` when that element is present, otherwise the `<artifactId>`. `qualifiedName` is `groupId:artifactId` when `<project>` itself has a `<groupId>`. A child POM that only names its group through `<parent>` keeps the child's `<artifactId>` as `qualifiedName`.
+
+`build.gradle` and `build.gradle.kts` do not add package nodes or dependency edges. `build.gradle` is indexed as a `document` node (`lang: manifest`) so the file text is on the map. `build.gradle.kts` is that document and, because `.kts` is a Kotlin extension, a Kotlin source file: symbols the grammar extracts are source symbols. `gradle.lockfile` is not indexed.
+
+#### Drift scan (`vg scan`)
+
+Scan inputs in a directory are `pom.xml`, `build.gradle`, and `build.gradle.kts`. One directory is one Java project. The Maven project `name` is the `<artifactId>`. The Gradle project `name` is the directory's basename.
+
+A kept coordinate is one object in `projects[].dependencies`:
+
+| Field | Value |
+| --- | --- |
+| `package` | `groupId:artifactId` |
+| `section` | `dependencies` for every Java row |
+| `currentSpec` | The declared version text |
+| `resolvedVersion` | The `gradle.lockfile` version in the same directory when that coordinate is present there, otherwise `currentSpec`, when the text is semver-compatible. Otherwise `null`. |
+
+Rows in one project are ordered by `drift`, then by `package`. With `--offline` and no `--package-manifest`, `latestStable` is null, `majorsBehind` is null, and `drift` is `unknown`, so the order is the package name.
+
+A trailing `.RELEASE`, `.Final`, or `.GA` is removed from `resolvedVersion` only (`1.5.5.Final` is stored as `1.5.5`; `currentSpec` stays `1.5.5.Final`).
+
+`${property}` on a Maven version is replaced from `<properties>` in that same POM. `${project.version}` is not a property unless the POM also defines it. An unresolved `${...}` drops the scan row. The code-map edge for that dependency is still emitted.
+
+`gradle.lockfile` lines look like `group:artifact:version=compileClasspath,runtimeClasspath`. Lines starting with `#` and lines starting with `empty=` are ignored. The lock version becomes `resolvedVersion`. `currentSpec` stays the text from the build script. A lock line does not create a row for a coordinate the build script did not declare with a version, and it does not add transitive coordinates that appear only in the lockfile. `vg` reads the file; it does not run Gradle.
+
+#### Included and omitted
+
+| What is in the file | `vg build` import edge | `vg scan` dependency row |
+| --- | --- | --- |
+| Top-level `<dependency>` with `groupId`, `artifactId`, and a concrete `<version>` | Included. The external name is `groupId:artifactId`. | Included. `currentSpec` is that version. `resolvedVersion` is its semver-compatible form. |
+| Top-level `<dependency>` with `<scope>` `compile`, `provided`, `runtime`, `test`, or `system` | Included. Scope is not on the edge. | Included. `section` is `dependencies`. Scope is not a field. |
+| Top-level `<dependency>` with no `<version>`, same coordinate versioned in that POM's `<dependencyManagement>` (a literal or a `${property}` defined in that POM's `<properties>`) | Included. | Included. `currentSpec` is the managed version. |
+| Top-level `<dependency>` whose `<version>` is an unresolved `${property}`, including `${project.version}` | Included. | Omitted. |
+| Top-level `<dependency>` with no `<version>` anywhere in that POM | Included. | Omitted. |
+| Versioned `<dependency>` that appears only under `<dependencyManagement>` | Omitted. | Included, including when no `<dependency>` uses it. |
+| `<dependencyManagement>` entry with no `<version>` | Omitted. | Omitted. |
+| Imported BOM in `<dependencyManagement>` (`<scope>import</scope>`, `<type>pom</type>`, with a `<version>`) | Omitted. | The BOM's own coordinate is a row. Dependencies managed inside the BOM are omitted. |
+| `<dependency>` inside `<profiles>`, including a profile with `<activeByDefault>true</activeByDefault>` and a profile with no activation | Omitted. `vg` does not evaluate profile activation. | Omitted. The same for both profiles. |
+| `<dependency>` nested on a plugin under `<build><plugins>` | Omitted. | Omitted. |
+| Child POM `<dependency>` with no `<version>`, version present only on the parent POM | Included on the child when the child element has `groupId` and `artifactId`. | Omitted. The parent file is not merged. |
+| `<dependency>` that exists only on the parent POM | Omitted from the child. | Omitted from the child. |
+| The same coordinate twice, with two versions | One edge. | One row. The first concrete version in the file is kept. A direct `<dependency>` is read before `<dependencyManagement>`. |
+| `implementation`, `api`, `compileOnly`, `runtimeOnly`, `testImplementation`, `testRuntimeOnly`, `annotationProcessor`, or `kapt` with a quoted `group:artifact:version` in `build.gradle` or `build.gradle.kts` | Omitted. | Included. Quotes may be single or double, with or without parentheses (`implementation 'g:a:1.2.3'`, `implementation("g:a:1.2.3")`). `section` is `dependencies`. The configuration name is not a field. |
+| `implementation platform('g:a:v')` or `implementation(platform("g:a:v"))` (`api` is read the same way) | Omitted. | Included as that platform coordinate. |
+| Any other configuration name, including `myFeature`, `developmentOnly`, `testCompileOnly`, legacy `compile`, and `add("myFeature", "g:a:v")` | Omitted. | Omitted. |
+| Map notation (`group: '…', name: '…', version: '…'`) or a version-catalog alias (`implementation(libs.something)`) | Omitted. | Omitted. `libs.versions.toml` is not read. |
+| Gradle coordinate with no version in the string, including when `gradle.lockfile` pins that coordinate | Omitted. | Omitted. |
+| Gradle coordinate with a dynamic version (`4.+`) and a same-directory `gradle.lockfile` line for that coordinate | Omitted. | Included. `currentSpec` is `4.+`. `resolvedVersion` is the lockfile version. |
+| A `gradle.lockfile` coordinate that the build script does not declare with a version | Omitted. | Omitted. |
+
+A directory that contains both `pom.xml` and `build.gradle` or `build.gradle.kts` is one scan project. Both files are parsed. When both supply a concrete version for one coordinate, the kept version is the one from the manifest file that the directory listing returns first. The scanner leaves that listing order as it is.
+
+#### When a version is missing
+
+Pin the version in the file `vg` reads. That is local text. `vg` does not run Maven or Gradle, and it does not contact a repository to fill the gap.
+
+**Maven, for a scan row.** Put a concrete `<version>` on the top-level `<dependency>`, or define the `${property}` in `<properties>` in that same POM. A version that lives in a profile, a parent POM, or an imported BOM is invisible until you copy the pin into this POM's top-level `<dependencies>` or `<dependencyManagement>`. Copying a profile dependency into top-level `<dependencies>` is also what creates the code-map edge.
+
+**Gradle, for a scan row.** Write `group:artifact:version` on one of the configurations in the table (`implementation`, `api`, `compileOnly`, `runtimeOnly`, `testImplementation`, `testRuntimeOnly`, `annotationProcessor`, `kapt`) or on `platform(...)`. A custom configuration, a version-catalog alias, or map notation stays omitted until the coordinate is also written in that string form.
+
+For a declaration that already has a version string but the string is dynamic (`4.+`), commit a `gradle.lockfile` beside the build file. Gradle dependency locking is what writes that file; `vg` only reads it. The line format is `group:artifact:version=configurations`. The coordinate still needs a version string on the declaration. A lockfile cannot add a version-less `implementation 'g:a'`, and it cannot add a coordinate that is only in the lockfile.
+
+There is no equivalent lockfile for Maven. A `gradle.lockfile` sitting next to a `pom.xml` is consulted for `resolvedVersion` of coordinates the POM already contributed. It does not pull in coordinates that the POM omitted.
+
+The code map has no version to recover. A top-level Maven dependency is an edge with or without a version. A Gradle dependency is never an edge, lockfile or not.
+
+#### Worked example
+
+Two directories:
+
+`maven/pom.xml`
+
+```xml
+<?xml version="1.0"?>
+<project>
+  <groupId>com.example</groupId>
+  <artifactId>demo</artifactId>
+  <version>1.0.0</version>
+  <name>Demo</name>
+  <properties>
+    <guava.version>32.1.3-jre</guava.version>
+  </properties>
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>com.google.guava</groupId>
+        <artifactId>guava</artifactId>
+        <version>${guava.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.slf4j</groupId>
+        <artifactId>slf4j-api</artifactId>
+        <version>2.0.9</version>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+  <dependencies>
+    <dependency>
+      <groupId>com.google.guava</groupId>
+      <artifactId>guava</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+      <version>2.16.1</version>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <version>5.10.2</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.postgresql</groupId>
+      <artifactId>postgresql</artifactId>
+      <version>${missing.version}</version>
+    </dependency>
+  </dependencies>
+  <profiles>
+    <profile>
+      <id>active-one</id>
+      <activation><activeByDefault>true</activeByDefault></activation>
+      <dependencies>
+        <dependency>
+          <groupId>com.squareup.okhttp3</groupId>
+          <artifactId>okhttp</artifactId>
+          <version>4.12.0</version>
+        </dependency>
+      </dependencies>
+    </profile>
+    <profile>
+      <id>inactive-one</id>
+      <dependencies>
+        <dependency>
+          <groupId>com.rabbitmq</groupId>
+          <artifactId>amqp-client</artifactId>
+          <version>5.20.0</version>
+        </dependency>
+      </dependencies>
+    </profile>
+  </profiles>
+</project>
+```
+
+`gradle/build.gradle`
+
+```groovy
+dependencies {
+  implementation 'com.google.guava:guava:32.1.3-jre'
+  testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
+  implementation 'com.squareup.okhttp3:okhttp:4.+'
+  implementation 'com.fasterxml.jackson.core:jackson-databind'
+  myFeature 'com.example:custom-conf:1.2.0'
+  implementation platform('org.springframework.boot:spring-boot-dependencies:3.2.5')
+}
+```
+
+`gradle/gradle.lockfile`
+
+```text
+# Gradle dependency lock
+com.squareup.okhttp3:okhttp:4.12.0=compileClasspath,runtimeClasspath
+com.fasterxml.jackson.core:jackson-databind:2.16.1=compileClasspath
+empty=
+```
+
+```bash
+vg scan maven --offline --no-graph --no-local-artifacts --format json --out maven-scan.json
+vg build maven --offline --no-html --no-report --no-warm --no-publish --no-index -o maven-graph.json
+
+vg scan gradle --offline --no-graph --no-local-artifacts --format json --out gradle-scan.json
+vg build gradle --offline --no-html --no-report --no-warm --no-publish --no-index -o gradle-graph.json
+```
+
+`--offline` leaves `latestStable` null and `drift` at `unknown`. The dependency objects in `maven-scan.json` (project `name` `demo`) are:
+
+```json
+[
+  { "package": "com.fasterxml.jackson.core:jackson-databind", "section": "dependencies", "currentSpec": "2.16.1", "resolvedVersion": "2.16.1" },
+  { "package": "com.google.guava:guava", "section": "dependencies", "currentSpec": "32.1.3-jre", "resolvedVersion": "32.1.3-jre" },
+  { "package": "org.junit.jupiter:junit-jupiter", "section": "dependencies", "currentSpec": "5.10.2", "resolvedVersion": "5.10.2" },
+  { "package": "org.slf4j:slf4j-api", "section": "dependencies", "currentSpec": "2.0.9", "resolvedVersion": "2.0.9" }
+]
+```
+
+`org.junit.jupiter:junit-jupiter` was declared `<scope>test</scope>` and the row still says `dependencies`. `org.slf4j:slf4j-api` is only in `<dependencyManagement>`. `org.postgresql:postgresql` (`${missing.version}`), `com.squareup.okhttp3:okhttp` (active profile), and `com.rabbitmq:amqp-client` (inactive profile) are absent.
+
+`maven-graph.json` has a package node `name` `Demo`, `qualifiedName` `com.example:demo`, and four `import` edges, to:
+
+- `com.fasterxml.jackson.core:jackson-databind`
+- `com.google.guava:guava`
+- `org.junit.jupiter:junit-jupiter`
+- `org.postgresql:postgresql`
+
+`org.slf4j:slf4j-api` has a scan row and no edge. `org.postgresql:postgresql` has an edge and no scan row. Neither profile dependency is an edge. `generatedAt` on the graph changes between runs; the external names above do not.
+
+`gradle-scan.json` (project `name` `gradle`) is:
+
+```json
+[
+  { "package": "com.google.guava:guava", "section": "dependencies", "currentSpec": "32.1.3-jre", "resolvedVersion": "32.1.3-jre" },
+  { "package": "com.squareup.okhttp3:okhttp", "section": "dependencies", "currentSpec": "4.+", "resolvedVersion": "4.12.0" },
+  { "package": "org.junit.jupiter:junit-jupiter", "section": "dependencies", "currentSpec": "5.10.2", "resolvedVersion": "5.10.2" },
+  { "package": "org.springframework.boot:spring-boot-dependencies", "section": "dependencies", "currentSpec": "3.2.5", "resolvedVersion": "3.2.5" }
+]
+```
+
+`testImplementation` is still `section` `dependencies`. The lockfile supplies okhttp's `resolvedVersion` and leaves `currentSpec` as `4.+`. `com.fasterxml.jackson.core:jackson-databind` is version-less in the build script, so the lockfile line for it does not create a row. `com.example:custom-conf` is a custom configuration and is absent. `gradle-graph.json` has a `document` node for `build.gradle` and no `import` edges.
+
+#### Known gaps
+
+The scanners are unchanged. These are the current limits:
+
+- Active and inactive Maven profiles are both omitted. There is no flag that selects a profile.
+- Maven `<scope>` and the Gradle configuration are dropped on the way out. Every Java row has `section` `dependencies`, so a `test` dependency and a `testImplementation` dependency look like a compile dependency. Drift scoring treats `section` `dependencies` as a production dependency.
+- A versioned `<dependencyManagement>` entry is counted even when the project does not depend on it. An imported BOM adds the BOM coordinate and does not expand the BOM.
+- A parent POM is not merged into the child. Inherited group ids and inherited versions stay absent.
+- `gradle.lockfile` fills `resolvedVersion` for a declaration that already has a version string. It does not recover a missing version, and it does not list transitive lock lines as rows.
+- In a directory that has both a POM and a Gradle build file, the kept version follows directory listing order.
+- Gradle dependency declarations never become code-map edges.
+- A second version of the same `groupId:artifactId` in one file is one edge and one scan row.
+
+[Several versions of one package](#several-versions-of-one-package) describes how `vg sbom` keeps more than one version of a component, and the `vibgrate:scope` value `direct` or `transitive`. That field is direct-versus-transitive. Production, development, and optional dependency scope in `vg sbom` exports is [Production, development, and optional scope](#production-development-and-optional-scope). These Java rows do not carry Maven scope or a Gradle configuration, so a scan artifact cannot label them that way.
+
 ### Terraform and OpenTofu files
 
 `vg scan --iac` (and `vg scan --full`, which includes `--iac`) reads Terraform
@@ -2725,276 +2959,7 @@ Maps source code into a graph artifact, enabling all downstream queries (`vg sho
 
 **Local by default — no git churn.** The first time vg writes into `.vibgrate/` it also creates `.vibgrate/.gitignore`, keeping the graph artifacts (`graph.json`, `graph.html`, `GRAPH_REPORT.md`, `facts.jsonl`, `mcp-navigation.json`) and the cache out of git — so builds, auto-refreshes, and MCP use never leave your branch dirty. Run `vg share` when you want the map committed for your team (it rewrites that ignore file). vg never touches an existing `.vibgrate/.gitignore`, so edit it (or leave it empty) to manage the ignores yourself.
 
-Maven `import` edges, and the Gradle files that stay document nodes, are in [Maven and Gradle manifests](#maven-and-gradle-manifests).
-
----
-
-### Maven and Gradle manifests
-
-`vg scan` and `vg build` read Java build files as text and XML. They do not run Maven or Gradle, and they do not decide which Maven profile is active. A profile that is `activeByDefault`, and a profile that is not, are treated the same: the dependencies inside `<profiles>` are left out of both outputs.
-
-`vg scan` writes one dependency row per coordinate it keeps. The rows are `projects[].dependencies` in `vg scan --format json` and in `.vibgrate/scan_result.json`. `vg build` writes `import` edges in the code map (`graph.json`, or the file you pass to `vg build -o`). `vg show` lists call edges. On a POM-only tree its `calls` list stays empty even when `import` edges exist. Read the map file for those edges.
-
-`vg drift` is a third reader. It is not this table. On a POM it records every `<dependency>` element it finds as text, including blocks inside profiles, and it stores an unresolved `${property}` as `*`. On Gradle it does not read `gradle.lockfile`.
-
-#### What each output carries
-
-A code-map `import` edge runs from the POM's `package` node to an `external` node. The external name is `groupId:artifactId`. The edge fields are `kind: "import"`, `epistemic: "declared"`, `resolution: "heuristic"`, `confidence: 1`, `count: 1`. There is no version field and no scope field. The package node's qualified name is `groupId:artifactId` when the POM has its own `<groupId>`. When `<groupId>` is only on a parent POM, the qualified name is the `<artifactId>` alone.
-
-A scan row has `package` (`groupId:artifactId`), `section`, `currentSpec`, `resolvedVersion`, `latestStable`, `majorsBehind`, and `drift`. `section` is `dependencies` for every Java row, including `<scope>test</scope>` and `testImplementation`. Scope and the Gradle configuration name are not fields. A missing resolved version is `null`, and a missing major lag is `null`.
-
-`resolvedVersion` is the declared version when that string converts to a semantic version, with a missing patch padded (`1.2` becomes `1.2.0`). `32.1.3-jre` is kept. `1.2.3-SNAPSHOT` and a Maven range such as `[1.0,2.0)` stay in `currentSpec` and set `resolvedVersion` to `null`. With `--offline`, `latestStable` is `null` and `drift` is `unknown`. A run that can reach Maven Central fills `latestStable` and `drift` from that registry.
-
-#### Maven
-
-| Declaration in the POM | `vg build` import edge | `vg scan` row |
-| --- | --- | --- |
-| Top-level `<dependencies>` entry with a literal `<version>`, any `<scope>` (`compile`, `test`, `provided`, `runtime`) | Included. Scope is dropped. | Included. `currentSpec` is the version. `section` is `dependencies`. |
-| Top-level entry with no `<version>` | Included. The edge still has no version. | Omitted. |
-| Top-level `<version>${name}</version>` and `<properties><name>…</name></properties>` in the same file | Included. The edge name is still `groupId:artifactId`. | Included. `currentSpec` is the property value. |
-| `${…}` that is not a `<properties>` entry in the same file, including `${project.version}` | Included. | Omitted. The unsubstituted text contains `${`. |
-| `<dependencyManagement>` entry in the same file with `groupId`, `artifactId`, and `<version>` (a BOM `<scope>import</scope>` included) | Omitted. | Included, even when `<dependencies>` never names that coordinate. |
-| `<dependencyManagement>` entry with no `<version>` | Omitted. | Omitted. |
-| `<dependencies>` or `<dependencyManagement>` inside `<profiles>`, whether or not the profile is `activeByDefault` | Omitted. | Omitted. |
-| Version that exists only on a parent POM's `<dependencyManagement>` | Edge from the child POM when the child lists the coordinate under its own top-level `<dependencies>`. The parent's management block is not an edge. | Omitted on the child. The parent file can still have its own row for a versioned management entry in that parent file. |
-| `<dependencies>` nested under a `<plugin>` | Omitted. | Omitted. |
-
-A direct dependency and a `<dependencyManagement>` entry for the same coordinate in one file: the direct entry is first. A direct entry that has a version keeps that version. A direct entry with no version is skipped, and the versioned management entry can still supply the row.
-
-#### Gradle
-
-`vg scan` reads `build.gradle` and `build.gradle.kts`. The match is a text search over the whole file for these configuration names: `implementation`, `api`, `compileOnly`, `runtimeOnly`, `testImplementation`, `testRuntimeOnly`, `annotationProcessor`, `kapt`. The coordinate has to be a quoted `group:artifact:version` (`implementation 'g:a:v'` or `implementation("g:a:v")`). `implementation platform('g:a:v')` and `api(platform("g:a:v"))` are included too. The configuration name is not stored.
-
-| Declaration | `vg build` import edge | `vg scan` row |
-| --- | --- | --- |
-| Quoted `group:artifact:version` on a configuration in the list above | Omitted. The file is a `document` node (`build.gradle.kts` is also a Kotlin `file` node). | Included. `currentSpec` is the third colon field. |
-| `implementation platform('g:a:v')` or `api(platform("g:a:v"))` | Omitted. | Included. |
-| Same configurations with no version (`implementation 'g:a'`) | Omitted. | Omitted. A `gradle.lockfile` line for that coordinate does not add the row. |
-| Dynamic version such as `1.+`, with `gradle.lockfile` beside the build file containing `group:artifact:1.4.2=runtimeClasspath` | Omitted. The lockfile is not a map input. | Included. `currentSpec` stays `1.+`. `resolvedVersion` is `1.4.2`. |
-| Custom configuration (`integrationTestImplementation`, `smoke`), legacy `compile`, Spring `developmentOnly` | Omitted. | Omitted. |
-| Version catalog (`implementation(libs.guava)`), map notation (`group:`, `name:`, `version:`), `project(':core')` | Omitted. | Omitted. |
-| A matching configuration string in a comment, or inside `constraints { }` | Omitted. | Included. The search does not know comments or which block it is in. |
-
-`gradle.lockfile` lines look like `group:artifact:version=conf1,conf2`. Blank lines, `#` comments, and `empty=` are skipped. The first line for a coordinate wins. The configuration list on that line is not copied onto the row. The lockfile version is used for `resolvedVersion` only when the build file already contributed that coordinate with a non-empty version string. `currentSpec` stays the declared text.
-
-#### Same directory
-
-A directory that contains both `pom.xml` and `build.gradle` (or `build.gradle.kts`) is one scan project. Both files contribute coordinates. The version kept for a coordinate that appears in both is the one from whichever file the directory listing returns first. A later file does not replace it. The project name is whatever the last file sets (the POM's `<artifactId>`, or the directory name from the Gradle file). **Gap:** that order is not sorted, and there is no stable preference for the POM. On one check, `build.gradle` was first, so `com.example:shared` kept the Gradle version `9.9.9`, and `pom.xml` was second, so the project name was the POM artifact id. The code map for that tree had `import` edges only from the POM.
-
-#### Gaps
-
-- Profile activation is not evaluated. Active and inactive profile dependencies are both omitted from `vg scan` and from `vg build`.
-- `import` edges never carry a version or a scope, including when the POM has both.
-- Gradle dependencies never become `import` edges. `gradle.lockfile` is not read by `vg build`.
-- Scan rows do not record Maven scope or the Gradle configuration. Test-scoped and `testImplementation` coordinates are `section: "dependencies"`.
-- A versioned `<dependencyManagement>` entry becomes a scan row even when the POM does not depend on that artifact. A BOM import can show up as its own row.
-- Parent POMs, imported BOMs that this file does not restate, and `${project.version}` do not fill a missing child version.
-- A `gradle.lockfile` does not create a row for a coordinate the build file declared without a version.
-- The Gradle reader is a text search. Commented-out lines and `constraints` blocks that contain a recognized configuration become rows. Custom configurations, catalogs, map notation, and `project()` dependencies do not.
-- Two manifests in one directory do not have a defined winner.
-
-#### Recover a missing version
-
-**Maven, scan row missing.** Put a literal `<version>` on the `<dependency>` in that same `pom.xml`, or use `${name}` with `<name>` defined in that file's `<properties>`. A versioned `<dependencyManagement>` entry in that same file also creates the row. Move a profile coordinate you need scored into the top-level `<dependencies>` or into that file's `<dependencyManagement>`, with a version. Repeat a parent-managed or BOM-managed version in this file. Replace `${project.version}` with a literal or with a `<properties>` entry in this file.
-
-**Gradle, scan row missing.** Declare `group:artifact:version` on `implementation`, `api`, `compileOnly`, `runtimeOnly`, `testImplementation`, `testRuntimeOnly`, `annotationProcessor`, or `kapt`, or use `implementation platform('g:a:v')` / `api(platform("g:a:v"))`. A declaration with no version stays omitted; add the version on that line. `gradle.lockfile` then supplies `resolvedVersion` for a dynamic declared version (`1.+`) and leaves `currentSpec` as the text you wrote. Generate the lockfile with Gradle's dependency locking so the line is `group:artifact:version=configurations`, and keep it next to the build file. For a custom configuration or a version-catalog alias, declare the same coordinate again on one of the configurations above. Delete a commented-out coordinate if it should not be a row.
-
-**`resolvedVersion` is null.** The row is present and `currentSpec` holds the declared text, and the text is not a semantic version (`1.2.3-SNAPSHOT`, `[1.0,2.0)`, `1.+` with no lockfile pin). Pin a semantic version in the declaration, or add a `gradle.lockfile` pin for a dynamic Gradle version.
-
-**Code map.** Adding a `<version>` does not put a version on the `import` edge. **Gap:** there is no switch that adds versions to those edges. A missing Maven edge comes back when the coordinate is a direct child of the top-level `<dependencies>` in that POM. A missing version does not block the edge. **Gap:** `vg build` does not create Gradle dependency edges. `vg scan` is the command that lists those coordinates.
-
-#### Example: Maven
-
-`pom.xml`:
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<project>
-  <modelVersion>4.0.0</modelVersion>
-  <groupId>com.example</groupId>
-  <artifactId>demo</artifactId>
-  <version>1.0.0</version>
-  <properties>
-    <jackson.version>2.17.0</jackson.version>
-  </properties>
-  <dependencies>
-    <dependency>
-      <groupId>com.google.guava</groupId>
-      <artifactId>guava</artifactId>
-      <version>32.1.3-jre</version>
-      <scope>compile</scope>
-    </dependency>
-    <dependency>
-      <groupId>junit</groupId>
-      <artifactId>junit</artifactId>
-      <version>4.13.2</version>
-      <scope>test</scope>
-    </dependency>
-    <dependency>
-      <groupId>org.slf4j</groupId>
-      <artifactId>slf4j-api</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>com.fasterxml.jackson.core</groupId>
-      <artifactId>jackson-databind</artifactId>
-      <version>${jackson.version}</version>
-    </dependency>
-  </dependencies>
-  <dependencyManagement>
-    <dependencies>
-      <dependency>
-        <groupId>com.squareup.okhttp3</groupId>
-        <artifactId>okhttp</artifactId>
-        <version>4.12.0</version>
-      </dependency>
-    </dependencies>
-  </dependencyManagement>
-  <profiles>
-    <profile>
-      <id>extra</id>
-      <activation>
-        <activeByDefault>true</activeByDefault>
-      </activation>
-      <dependencies>
-        <dependency>
-          <groupId>com.google.code.gson</groupId>
-          <artifactId>gson</artifactId>
-          <version>2.10.1</version>
-        </dependency>
-      </dependencies>
-    </profile>
-  </profiles>
-</project>
-```
-
-From that directory:
-
-```bash
-vg build --no-html --no-report -o graph.json
-vg scan --offline --format json --out scan.json --no-graph
-```
-
-`vg build` on this file wrote 7 nodes and 5 edges, 4 of them `import` edges from `com.example:demo`:
-
-- `com.fasterxml.jackson.core:jackson-databind`
-- `com.google.guava:guava`
-- `junit:junit`
-- `org.slf4j:slf4j-api`
-
-`com.squareup.okhttp3:okhttp` and `com.google.code.gson:gson` were not edges. `vg show demo --json` reported `calls` and `calledBy` as empty arrays.
-
-`vg scan --offline` wrote these rows (`latestStable` and `majorsBehind` are `null`, `drift` is `unknown`, because the run did not ask Maven Central). `org.slf4j:slf4j-api` and `gson` are absent:
-
-```json
-[
-  {
-    "package": "com.fasterxml.jackson.core:jackson-databind",
-    "section": "dependencies",
-    "currentSpec": "2.17.0",
-    "resolvedVersion": "2.17.0",
-    "latestStable": null,
-    "majorsBehind": null,
-    "drift": "unknown"
-  },
-  {
-    "package": "com.google.guava:guava",
-    "section": "dependencies",
-    "currentSpec": "32.1.3-jre",
-    "resolvedVersion": "32.1.3-jre",
-    "latestStable": null,
-    "majorsBehind": null,
-    "drift": "unknown"
-  },
-  {
-    "package": "com.squareup.okhttp3:okhttp",
-    "section": "dependencies",
-    "currentSpec": "4.12.0",
-    "resolvedVersion": "4.12.0",
-    "latestStable": null,
-    "majorsBehind": null,
-    "drift": "unknown"
-  },
-  {
-    "package": "junit:junit",
-    "section": "dependencies",
-    "currentSpec": "4.13.2",
-    "resolvedVersion": "4.13.2",
-    "latestStable": null,
-    "majorsBehind": null,
-    "drift": "unknown"
-  }
-]
-```
-
-The test-scoped JUnit row uses `section: "dependencies"`. OkHttp is a row because `<dependencyManagement>` in this file carries a version. Gson stays out because it lives in a profile, including one marked `activeByDefault`.
-
-#### Example: Gradle
-
-`build.gradle`:
-
-```groovy
-dependencies {
-    implementation 'com.google.guava:guava:32.1.3-jre'
-    testImplementation 'junit:junit:4.13.2'
-    implementation 'com.example:dynamic:1.+'
-    implementation 'com.example:managed'
-    integrationTestImplementation 'com.example:it:2.0.0'
-}
-```
-
-`gradle.lockfile` in the same directory:
-
-```text
-# This is a Gradle generated file for dependency locking.
-com.example:dynamic:1.4.2=runtimeClasspath
-com.example:managed:4.5.6=runtimeClasspath
-empty=
-```
-
-From that directory, the same two commands:
-
-```bash
-vg build --no-html --no-report -o graph.json
-vg scan --offline --format json --out scan.json --no-graph
-```
-
-`vg build` wrote one `document` node, `build.gradle`, and zero edges. The lockfile was not a node.
-
-`vg scan --offline` named the project from the directory (`gradle` when the folder is `gradle`) and wrote:
-
-```json
-[
-  {
-    "package": "com.example:dynamic",
-    "section": "dependencies",
-    "currentSpec": "1.+",
-    "resolvedVersion": "1.4.2",
-    "latestStable": null,
-    "majorsBehind": null,
-    "drift": "unknown"
-  },
-  {
-    "package": "com.google.guava:guava",
-    "section": "dependencies",
-    "currentSpec": "32.1.3-jre",
-    "resolvedVersion": "32.1.3-jre",
-    "latestStable": null,
-    "majorsBehind": null,
-    "drift": "unknown"
-  },
-  {
-    "package": "junit:junit",
-    "section": "dependencies",
-    "currentSpec": "4.13.2",
-    "resolvedVersion": "4.13.2",
-    "latestStable": null,
-    "majorsBehind": null,
-    "drift": "unknown"
-  }
-]
-```
-
-`com.example:managed` is absent even though the lockfile pins `4.5.6`, because the build file has no version. `com.example:it` is absent because `integrationTestImplementation` is a custom configuration. JUnit's `testImplementation` row is still `section: "dependencies"`. `currentSpec` for the dynamic coordinate stays `1.+`; the lockfile supplies `resolvedVersion`.
+**Maven and Gradle.** A `pom.xml` becomes a `package` node, and each top-level `<dependency>` becomes an `import` edge to `groupId:artifactId`. Gradle build scripts do not add those edges. Profiles, scopes, and Gradle configurations are spelled out in [Maven and Gradle manifests](#maven-and-gradle-manifests).
 
 ---
 
