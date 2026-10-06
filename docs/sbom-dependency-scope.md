@@ -23,7 +23,7 @@ Every component carries the same property list. Dependency kind is not one of th
 | Relationship kind | `dependencies[].dependsOn` lists child `bom-ref` values, with no kind on the edge | `relationships[].relationshipType` is `DEPENDS_ON` when a graph is written |
 | Development / optional / build / test / runtime relationship | Not written | `DEV_DEPENDENCY_OF`, `OPTIONAL_DEPENDENCY_OF`, `BUILD_DEPENDENCY_OF`, `TEST_DEPENDENCY_OF`, and `RUNTIME_DEPENDENCY_OF` are omitted |
 
-The other properties on every CycloneDX component are `vibgrate:project`, `vibgrate:currentSpec`, `vibgrate:drift`, and `vibgrate:majorsBehind`. SPDX folds the same facts into that one annotation comment. None of them stores the manifest section.
+The other properties on every CycloneDX component are `vibgrate:project`, `vibgrate:projects`, `vibgrate:currentSpec`, `vibgrate:drift`, and `vibgrate:majorsBehind`. `vibgrate:projects` is every project that contributed that ecosystem, name, and version, sorted and joined with a comma and a space. SPDX folds the same facts into that one annotation comment (`project=` and `projects=`). A `vibgrate:mergeWarning` property is added only when the merge dropped a fact or assumed an ecosystem. None of them stores the manifest section.
 
 When the lockfile reader has no resolved edges, the CycloneDX `dependencies` member is omitted and the SPDX `relationships` member is omitted. An empty array is not written in their place.
 
@@ -91,7 +91,7 @@ Component order follows the scan's dependency array (drift, then package name) a
 
 A CycloneDX component for `typescript` has `type`, `bom-ref`, `name`, `version`, `purl`, and `properties`. The component `scope` member is absent. `properties` includes `vibgrate:scope` = `direct`. The root `dependencies` entry (`bom-ref` `vibgrate-root`) lists `fsevents` and `left-pad`. `typescript` has its own `dependsOn` entry pointing at `nested-dev`.
 
-On a direct row, `vibgrate:project` is the `package.json` name (`scope-fixture`). On a lockfile-only row it is the scan root's directory name. In this run that directory was `example`, so the transitive annotation reads `project=example`. That string is the folder that was scanned.
+On a direct row, `vibgrate:project` is the `package.json` name (`scope-fixture`). On a lockfile-only row it is the scanned project whose lockfile supplied the kept row. In a single-project scan that is the same package name. `vibgrate:projects` lists every contributing project. It is not the scan root's directory name.
 
 The same manifest with a `pnpm-lock.yaml` or a `yarn.lock` writes the same `direct` / `transitive` split for packages the manifest declared, and writes `nested-prod` as `transitive`. Both omit `dependencies` and `relationships`, so nothing records that `left-pad` depends on `nested-prod`, and nothing records that `typescript` is a development dependency.
 

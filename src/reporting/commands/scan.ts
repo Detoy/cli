@@ -18,6 +18,7 @@ import {
   loadConfig,
   findConfigFile,
 } from '../../core-open/index.js';
+import { writeScanSummary } from '../scan-summary.js';
 import { compareDriftBudget, evaluateConfigDriftBudget } from '../drift-budget-gate.js';
 import {
   ARCHITECTURE_NEEDS_GRAPH,
@@ -58,7 +59,7 @@ import { writeSnapshot } from '../../engine/freshness.js';
 import { detectAiAssistant, printAiContextPrompt } from '../ai-context-prompt.js';
 import { resolveCliInvocation } from '../../util/cli-invocation.js';
 import { CliError, ExitCode, usageError } from '../../util/exit.js';
-import { assertSafeScanRoot, UnsafeRootError } from '../../engine/root-safety.js';
+import { assertSafeWalkRoot, UnsafeRootError } from '../../core-open/utils/root-safety.js';
 import { loadPackageVersionManifest, PackageManifestError } from '../package-version-manifest.js';
 import { runSecurityPacks, type SecurityRunResult } from '../../security/run-packs.js';
 import { evaluateSecurityGate, lowestThreshold, parseFailOn } from '../../security/gate.js';
@@ -396,6 +397,7 @@ export const scanCommand = new Command('scan')
     '--fail-on <gates>',
     'Fail on warn or error. architecture-finding (hard boundary violations) or architecture-warning (violations and warnings) gate on the architecture module\'s boundary findings, judged under the policy pack in force: .vibgrate/architecture.toml (policy = "hexagonal-v1" | "layered-v1" | "vertical-v1", plus any [[overlay]] rules), VIBGRATE_ARCHITECTURE_POLICY, or vg build --policy; default hexagonal-v1. The pack is named in the output. See docs/architecture-policies.md. iac-finding[=<severity>] fails on infrastructure findings from the iac-cis-v1 pack at or above <severity> (critical|high|medium|low|info; default high) and needs --iac (or --full) plus the code map — it exits 2 when the Architecture module is missing rather than passing an unevaluated tree; security-finding[=<severity>] is the umbrella across every security pack that ran. Comma-separated: at most one of warn/error/architecture-* plus any security gates, e.g. --fail-on error,iac-finding=medium',
   )
+  .option('--summary-out <file>', 'Also write a small JSON summary (DriftScore, risk level, components, change since --baseline) for CI steps to read')
   .option('--baseline <file>', 'Compare against a baseline and record matching findings')
   .option('--changed-only', 'Only scan changed files')
   .option(
@@ -403,10 +405,6 @@ export const scanCommand = new Command('scan')
     'Exclude paths matching a glob pattern. Repeatable, and a single value may list several patterns separated by commas or semicolons (e.g. --exclude "legacy/**,vendor/**"). Merged with excludes from the config file.',
     collectExcludes,
     [],
-  )
-  .option(
-    '--allow-unsafe-root',
-    'Scan a filesystem root, an OS-image layout, or a tree over the walk budget anyway',
   )
   .option('--concurrency <n>', 'Max concurrent registry lookups', '8')
   .option('--push', 'Auto-push results to Vibgrate API after scan')
@@ -437,7 +435,6 @@ export const scanCommand = new Command('scan')
     baseline?: string;
     changedOnly?: boolean;
     exclude: string[];
-    allowUnsafeRoot?: boolean;
     concurrency: string;
     push?: boolean;
     dsn?: string;
@@ -457,6 +454,7 @@ export const scanCommand = new Command('scan')
     projectScanTimeout?: string;
     driftBudget?: string;
     driftWorsening?: string;
+    summaryOut?: string;
     repositoryName?: string;
     force?: boolean;
     graph?: boolean;
@@ -470,10 +468,10 @@ export const scanCommand = new Command('scan')
       process.exit(1);
     }
 
-    // Fail closed before preflight, config execution, or the file walk. A
-    // filesystem root or OS image must not start a scan that hangs or OOMs.
+    // Before preflight, fingerprinting, or the file walk. The walk budget is
+    // enforced inside the walkers; this catches filesystem root and OS images.
     try {
-      assertSafeScanRoot(rootDir, { allowUnsafeRoot: opts.allowUnsafeRoot });
+      assertSafeWalkRoot(rootDir);
     } catch (err) {
       if (err instanceof UnsafeRootError) throw new CliError(err.message, ExitCode.ERROR);
       throw err;
@@ -558,9 +556,7 @@ export const scanCommand = new Command('scan')
       if (parsed) {
         const ingestHost = opts.region ? resolveIngestHost(opts.region) : parsed.host;
         const vcs = await detectVcs(rootDir);
-        const fingerprint = await computeRepoFingerprint(rootDir, vcs, {
-          allowUnsafeRoot: opts.allowUnsafeRoot,
-        });
+        const fingerprint = await computeRepoFingerprint(rootDir, vcs);
         const repositoryName = opts.repositoryName?.trim() || await resolveRepositoryName(rootDir);
         try {
           const preflight = await fetchScanPreflight(parsed, ingestHost, {
@@ -650,7 +646,6 @@ export const scanCommand = new Command('scan')
       baseline: opts.baseline,
       changedOnly: opts.changedOnly,
       exclude: opts.exclude,
-      allowUnsafeRoot: opts.allowUnsafeRoot,
       concurrency: parseInt(opts.concurrency, 10) || 8,
       push: opts.push,
       dsn: opts.dsn,
@@ -711,7 +706,6 @@ export const scanCommand = new Command('scan')
         const result = await buildGraph({
           root: rootDir,
           exclude: opts.exclude,
-          allowUnsafeRoot: opts.allowUnsafeRoot,
           onParseProgress: (done, total) => report(done, total, 'parsing'),
         });
         builtGraph = result.graph;
@@ -766,13 +760,7 @@ export const scanCommand = new Command('scan')
     // Open base scan. The optional advanced-analysis hook is a no-op in this
     // open build, so the scan runs entirely on the open base engine.
     const advanced = await loadAdvancedScanHook();
-    let artifact: ScanArtifact;
-    try {
-      artifact = await runCoreScan(rootDir, scanOpts, advanced);
-    } catch (err) {
-      if (err instanceof UnsafeRootError) throw new CliError(err.message, ExitCode.ERROR);
-      throw err;
-    }
+    const artifact = await runCoreScan(rootDir, scanOpts, advanced);
 
     // The scan just built a code map (its `postScan` step). Start the local
     // runtime if it is not up and hand it that map, so the very first `vg` in a
@@ -830,6 +818,19 @@ export const scanCommand = new Command('scan')
     const gateCases: JUnitTestCase[] = [];
     let junitWritten = false;
     const measuredDrift = artifact.drift.score;
+
+    // Written before any gate can exit, so a CI step can read the score from a
+    // run that failed its budget. Confirmation goes to stderr; stdout stays the
+    // selected --format.
+    if (opts.summaryOut) {
+      try {
+        await writeScanSummary(opts.summaryOut, artifact);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        throw new CliError(`Could not write the scan summary to ${opts.summaryOut}: ${message}`, ExitCode.ERROR);
+      }
+      if (!opts.quiet) console.error(chalk.green('✔') + ` Scan summary written to ${opts.summaryOut}`);
+    }
 
     async function writeJUnitFile(): Promise<void> {
       if (!junitFile || junitWritten) return;

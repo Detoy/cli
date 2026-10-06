@@ -14,16 +14,24 @@
  *     mode: warn                # warn (default) | enforce | shadow
  *     maxScore: 40              # DriftScore ceiling, 0–100 (lower is better)
  *     maxWorseningPercent: 5    # how much one change may worsen drift
+ *     maxRiskScore: 50          # RiskScore ceiling, 0–100 (lower is better)
+ *     maxRiskWorseningPercent: 0
  *     agents:
  *       maxWorseningPercent: 0  # stricter limit for bot / coding-agent PRs
  *
  * Semantics match the historic flags: `maxScore` fails only when DriftScore is
  * strictly above it (`--drift-budget`), and worsening is
- * `delta / max(|base|, 0.0001) * 100`, counted only when drift got worse
+ * `delta / max(|base|, 0.0001) * 100`, counted only when the score got worse
  * (`--drift-worsening`). A missing base is "not evaluated", never zero.
+ * RiskScore limits use the same arithmetic. A missing RiskScore is not
+ * evaluated — never treated as 0, and never a silent pass.
  *
  * Pure: no I/O, no Node APIs — safe in the Cloudflare Worker.
  */
+
+/** `vg scan` does not compute RiskScore. The GitHub App check does, on Team and above. */
+export const LOCAL_SCAN_RISK_NOTE =
+  'Not evaluated on a local scan. The GitHub App computes RiskScore on a Team plan or above.';
 
 export type DriftBudgetMode = 'warn' | 'enforce' | 'shadow';
 export type AuthorClass = 'agent' | 'human' | 'unknown';
@@ -33,6 +41,10 @@ export interface DriftBudgetConfig {
   mode?: DriftBudgetMode;
   maxScore?: number;
   maxWorseningPercent?: number;
+  /** RiskScore ceiling, 0–100. Lower is better, same direction as DriftScore. */
+  maxRiskScore?: number;
+  /** How much one change may worsen RiskScore, as a percent of the base score. */
+  maxRiskWorseningPercent?: number;
   agents?: { maxWorseningPercent?: number };
 }
 
@@ -42,11 +54,18 @@ export interface DriftBudget {
   maxScore: number | null;
   maxWorseningPercent: number | null;
   agentMaxWorseningPercent: number | null;
+  maxRiskScore: number | null;
+  maxRiskWorseningPercent: number | null;
 }
 
 export type DriftBudgetParse = { ok: true; budget: DriftBudget } | { ok: false; errors: string[] };
 
-export type DriftBudgetRuleId = 'maxScore' | 'maxWorseningPercent' | 'agents.maxWorseningPercent';
+export type DriftBudgetRuleId =
+  | 'maxScore'
+  | 'maxWorseningPercent'
+  | 'agents.maxWorseningPercent'
+  | 'maxRiskScore'
+  | 'maxRiskWorseningPercent';
 export type DriftBudgetRuleStatus = 'pass' | 'breach' | 'not_evaluated';
 
 export interface DriftBudgetRuleResult {
@@ -74,10 +93,26 @@ export interface DriftBudgetInput {
   baseScore: number | null;
   budget: DriftBudget;
   authorClass?: AuthorClass;
+  /** RiskScore for this commit. Null = absent, never 0. */
+  headRiskScore?: number | null;
+  /** RiskScore of the base commit. Null = absent, never 0. */
+  baseRiskScore?: number | null;
+  /**
+   * Why a missing head RiskScore cannot be judged. Used for every RiskScore
+   * rule when `headRiskScore` is null. The GitHub App passes the plan sentence
+   * or the computation failure. A local scan passes its own sentence.
+   */
+  riskUnavailableReason?: string | null;
+  /**
+   * Why the base RiskScore is missing after a real attempt (the base scan or
+   * the computation failed). When omitted, a null base uses the ordinary
+   * "no earlier RiskScore" line.
+   */
+  baseRiskUnavailableReason?: string | null;
 }
 
 const MODES: readonly DriftBudgetMode[] = ['warn', 'enforce', 'shadow'];
-const TOP_KEYS = new Set(['mode', 'maxScore', 'maxWorseningPercent', 'agents']);
+const TOP_KEYS = new Set(['mode', 'maxScore', 'maxWorseningPercent', 'maxRiskScore', 'maxRiskWorseningPercent', 'agents']);
 const AGENT_KEYS = new Set(['maxWorseningPercent']);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -115,6 +150,8 @@ export function parseDriftBudget(raw: unknown): DriftBudgetParse | null {
 
   const maxScore = readLimit(raw.maxScore, 'maxScore', errors, 100);
   const maxWorseningPercent = readLimit(raw.maxWorseningPercent, 'maxWorseningPercent', errors);
+  const maxRiskScore = readLimit(raw.maxRiskScore, 'maxRiskScore', errors, 100);
+  const maxRiskWorseningPercent = readLimit(raw.maxRiskWorseningPercent, 'maxRiskWorseningPercent', errors);
 
   let agentMaxWorseningPercent: number | null = null;
   if (raw.agents !== undefined) {
@@ -129,13 +166,24 @@ export function parseDriftBudget(raw: unknown): DriftBudgetParse | null {
   }
 
   if (errors.length > 0) return { ok: false, errors };
-  if (maxScore === null && maxWorseningPercent === null && agentMaxWorseningPercent === null) {
+  if (
+    maxScore === null &&
+    maxWorseningPercent === null &&
+    agentMaxWorseningPercent === null &&
+    maxRiskScore === null &&
+    maxRiskWorseningPercent === null
+  ) {
     return {
       ok: false,
-      errors: ['driftBudget sets no limit. Add maxScore, maxWorseningPercent, or agents.maxWorseningPercent.'],
+      errors: [
+        'driftBudget sets no limit. Add maxScore, maxWorseningPercent, maxRiskScore, maxRiskWorseningPercent, or agents.maxWorseningPercent.',
+      ],
     };
   }
-  return { ok: true, budget: { mode, maxScore, maxWorseningPercent, agentMaxWorseningPercent } };
+  return {
+    ok: true,
+    budget: { mode, maxScore, maxWorseningPercent, agentMaxWorseningPercent, maxRiskScore, maxRiskWorseningPercent },
+  };
 }
 
 /** Same arithmetic as `--drift-worsening`: only worsening counts; a zero base is guarded. */
@@ -150,21 +198,28 @@ function pct(value: number): string {
 }
 
 function worseningRule(
-  id: 'maxWorseningPercent' | 'agents.maxWorseningPercent',
+  id: 'maxWorseningPercent' | 'agents.maxWorseningPercent' | 'maxRiskWorseningPercent',
   limit: number,
   headScore: number,
   baseScore: number | null,
 ): DriftBudgetRuleResult {
-  const label = id === 'agents.maxWorseningPercent' ? 'Agent change worsened drift by' : 'Drift worsened by';
+  const risk = id === 'maxRiskWorseningPercent';
+  const label =
+    id === 'agents.maxWorseningPercent'
+      ? 'Agent change worsened drift by'
+      : risk
+        ? 'Risk worsened by'
+        : 'Drift worsened by';
+  const metric = risk ? 'RiskScore' : 'DriftScore';
   if (baseScore == null) {
     return {
       id,
       status: 'not_evaluated',
-      message: `Worsening limit ${pct(limit)} not evaluated: there was no earlier DriftScore to compare against.`,
+      message: `Worsening limit ${pct(limit)} not evaluated: there was no earlier ${metric} to compare against.`,
     };
   }
   const actual = worseningPercent(headScore, baseScore);
-  const move = `DriftScore ${baseScore} → ${headScore}`;
+  const move = `${metric} ${baseScore} → ${headScore}`;
   if (actual <= limit) {
     return { id, status: 'pass', message: `${label} ${pct(actual)} (limit ${pct(limit)}); ${move}.` };
   }
@@ -172,13 +227,22 @@ function worseningRule(
   return {
     id,
     status: 'breach',
-    message: `${label} ${pct(actual)}, over the ${pct(limit)} limit; ${move}. Bring DriftScore to ${allowed} or lower to pass.`,
+    message: `${label} ${pct(actual)}, over the ${pct(limit)} limit; ${move}. Bring ${metric} to ${allowed} or lower to pass.`,
   };
+}
+
+const RISK_ABSENT = 'RiskScore limit not evaluated: there was no RiskScore for this commit.';
+
+function riskAbsent(id: 'maxRiskScore' | 'maxRiskWorseningPercent', reason: string | null | undefined): DriftBudgetRuleResult {
+  const message = reason?.trim() ? reason.trim() : RISK_ABSENT;
+  return { id, status: 'not_evaluated', message };
 }
 
 export function evaluateDriftBudget(input: DriftBudgetInput): DriftBudgetVerdict {
   const { budget, headScore, baseScore } = input;
   const authorClass = input.authorClass ?? 'unknown';
+  const headRiskScore = input.headRiskScore ?? null;
+  const baseRiskScore = input.baseRiskScore ?? null;
   const rules: DriftBudgetRuleResult[] = [];
 
   if (budget.maxScore !== null) {
@@ -208,6 +272,40 @@ export function evaluateDriftBudget(input: DriftBudgetInput): DriftBudgetVerdict
         status: 'not_evaluated',
         message: 'Agent limit not evaluated: the author of this change could not be identified.',
       });
+    }
+  }
+
+  if (budget.maxRiskScore !== null) {
+    if (headRiskScore == null) {
+      rules.push(riskAbsent('maxRiskScore', input.riskUnavailableReason));
+    } else if (headRiskScore > budget.maxRiskScore) {
+      const over = Math.ceil((headRiskScore - budget.maxRiskScore) * 100) / 100;
+      rules.push({
+        id: 'maxRiskScore',
+        status: 'breach',
+        message: `RiskScore ${headRiskScore} is above the budget of ${budget.maxRiskScore}. Lower it by ${over} point${over === 1 ? '' : 's'} to pass.`,
+      });
+    } else {
+      const headroom = Math.round((budget.maxRiskScore - headRiskScore) * 100) / 100;
+      rules.push({
+        id: 'maxRiskScore',
+        status: 'pass',
+        message: `RiskScore ${headRiskScore} of ${budget.maxRiskScore}, headroom ${headroom}.`,
+      });
+    }
+  }
+
+  if (budget.maxRiskWorseningPercent !== null) {
+    if (headRiskScore == null) {
+      rules.push(riskAbsent('maxRiskWorseningPercent', input.riskUnavailableReason));
+    } else if (baseRiskScore == null && input.baseRiskUnavailableReason?.trim()) {
+      rules.push({
+        id: 'maxRiskWorseningPercent',
+        status: 'not_evaluated',
+        message: input.baseRiskUnavailableReason.trim(),
+      });
+    } else {
+      rules.push(worseningRule('maxRiskWorseningPercent', budget.maxRiskWorseningPercent, headRiskScore, baseRiskScore));
     }
   }
 

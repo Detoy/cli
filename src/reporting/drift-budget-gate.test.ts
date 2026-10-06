@@ -44,6 +44,18 @@ describe('evaluateConfigDriftBudget', () => {
     expect(gate).toMatchObject({ exitCode: 0, lines: [] });
   });
 
+  it('reports a RiskScore limit as not evaluated on a local scan', () => {
+    const gate = evaluateConfigDriftBudget({
+      raw: { mode: 'enforce', maxRiskScore: 40 },
+      configFile: file,
+      headScore: 90,
+      baseScore: null,
+    });
+    expect(gate.exitCode).toBe(0);
+    expect(gate.lines[0]?.text).toContain('Not evaluated on a local scan');
+    expect(gate.lines[0]?.text).not.toContain('Run with --baseline');
+  });
+
   it('reports an invalid budget without failing the scan', () => {
     const gate = evaluateConfigDriftBudget({ raw: { mode: 'enforce', maxscore: 40 }, configFile: file, headScore: 90, baseScore: null });
     expect(gate.exitCode).toBe(0);
