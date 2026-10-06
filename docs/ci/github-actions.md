@@ -2,14 +2,44 @@
 
 Vibgrate already supports CI gating and SARIF export through the core `scan` command.
 
+## Quick start
+
+```bash
+vg init --ci github
+```
+
+This writes `.github/workflows/vibgrate.yml`: it scans every pull request and
+push to `main` with the `vibgrate/cli` Action and uploads SARIF to GitHub
+Security. It never overwrites an existing workflow, and it does not fail the
+build until you opt in (`fail-on`, `--drift-budget`) using the commented lines
+in the file. SARIF upload to private repositories needs GitHub code scanning.
+
+## Gate on the DriftScore
+
+The `vibgrate/cli` Action fails the job when the DriftScore is above a budget
+you choose. `max-score` takes a number from 0 to 100 (lower is better) and maps
+to `--drift-budget`; leave it empty to never fail on the score. A non-numeric
+value fails the step with a clear error.
+
+```yaml
+- uses: actions/checkout@v4
+- uses: vibgrate/cli@v1
+  with:
+    upload-sarif: true
+    max-score: 40
+```
+
+The Action does not yet expose the score as a step output. Read it from the
+JSON report (`format: json`) if a later step needs the number.
+
 ## Copy-paste workflows
 
+- Drift gate (failure versus warn, pins, DriftScore badge): `examples/github-actions/README.md`
 - CI drift gate template: `examples/github-actions/driftscore-ci.yml`
-- Failure versus warn, release pins, and DriftScore badges: `examples/github-actions/README.md`
 - SARIF upload template: `examples/github-actions/driftscore-sarif.yml`
 - Vulnerability gate + SARIF template: `examples/github-actions/vulnerabilities-sarif.yml`
 
-Copy any template into your repository under `.github/workflows/`. The drift-gate README is enough to add the basic gate to an empty repository.
+Copy any template into your repository under `.github/workflows/`. The drift-gate README is enough to add the basic gate to an empty repository: the workflow, when the job fails, which release to pin, and how a README badge is filled in.
 
 ## Vulnerability gate (`--vulns`)
 
@@ -68,23 +98,31 @@ map the scan builds and the Architecture module, which the CLI provisions on
 first use; on an air-gapped runner install it with `vg module install arch`
 from a bundle or set `VIBGRATE_ARCH_PATH`. A gate that cannot be evaluated
 exits 2 with a one-line reason rather than passing. Rule catalogue and output
-shapes: [`../security-packs.md`](../security-packs.md).
+shapes: [`../security-packs.md`](../security-packs.md). How `.tf` and `.tofu`
+files are treated, including a `.tofu`-only tree:
+[Terraform and OpenTofu files](../security-packs.md#terraform-and-opentofu-files).
 
 ## Drift gate behavior
 
-The CI template uses existing scan-time gates:
+The full table — finding gates, budget flags, `warn` / `enforce` / `shadow`, pins, and the DriftScore badge — is in [`examples/github-actions/README.md`](../../examples/github-actions/README.md). The short form:
 
-- `--fail-on error` to fail on error-level findings
-- `--fail-on architecture-finding` to fail on a hard boundary finding from the architecture module (an HTTP handler that writes the store, domain code that does I/O); `architecture-warning` also fails on warnings. Needs the code map the scan builds and the Architecture module (`vg module install arch`); the rules come from `.vibgrate/architecture.toml` (`policy = "hexagonal-v1"`, `"layered-v1"` or `"vertical-v1"`, plus any `[[overlay]]` rules of your own; a `deny` overlay with `severity = "hard"` fails the gate like a baked violation). Each failing line is `file:line  symbol  violation: … (rule)`
-- `--drift-budget <score>` to fail when drift score exceeds your budget
+`--fail-on warn` **fails** the job (exit 2) when a warning or error finding exists. `driftBudget.mode: warn` **does not**. That mode prints a breached budget and exits 0. `shadow` reports only and exits 0. `enforce` exits 2.
 
-Example gate command:
+`--drift-budget` and `--drift-worsening` always exit 2 on a breach, and they ignore `driftBudget` in the project config. A score equal to the budget passes. A DriftScore that was not measured does not fail either flag (it is absent, not 0). `--drift-worsening` without `--baseline` exits 2 when a score was measured. The same worsening key in config, with no baseline, is not evaluated and does not fail.
+
+Do not set `continue-on-error` on the gate step. Exit 2 is what blocks the merge. Upload SARIF or the JSON report with `if: always()` — the file is already written when the gate exits.
 
 ```bash
 vg scan --format json --out vibgrate-report.json --fail-on error --drift-budget 40
 ```
 
-A tripped gate exits `2` (`GATE_FAILED`) and the job fails. `driftBudget.mode: warn` (the default) and `shadow` print the breach and exit `0`, so the job stays green. `--fail-on warn` is the other way around: it exits `2` when a warning finding exists. Passing `--drift-budget` or `--drift-worsening` skips `driftBudget` in the project config. An unpinned `npx @vibgrate/cli` installs npm `latest` on every run. The pinned workflow, the full exit table, and the DriftScore badge URL are in [`examples/github-actions/README.md`](../../examples/github-actions/README.md).
+An unpinned `npx @vibgrate/cli` installs npm `latest` on every run. The pinned workflow in [`examples/github-actions/README.md`](../../examples/github-actions/README.md) is the copy-paste gate.
+
+Other scan-time gates on the same command:
+
+- `--fail-on error` fails on error-level findings. Warnings do not fail this gate.
+- `--fail-on architecture-finding` fails on a hard boundary finding from the architecture module (an HTTP handler that writes the store, domain code that does I/O); `architecture-warning` also fails on warnings. Needs the code map the scan builds and the Architecture module (`vg module install arch`); the rules come from `.vibgrate/architecture.toml` (`policy = "hexagonal-v1"`, `"layered-v1"` or `"vertical-v1"`, plus any `[[overlay]]` rules of your own; a `deny` overlay with `severity = "hard"` fails the gate like a baked violation). Each failing line is `file:line  symbol  violation: … (rule)`. A gate that cannot be evaluated exits 2.
+- `--drift-budget <score>` fails when DriftScore is above the budget.
 
 ## SARIF upload behavior
 
@@ -103,6 +141,16 @@ npx @vibgrate/cli scan --format sarif --out vibgrate-results.sarif --junit vibgr
 ```
 
 What each testcase means (finding vs budget gate, pass / failure / skipped) is in [JUnit](../../DOCS.md#junit).
+
+## DriftScore badge
+
+The gate workflow does not publish a badge and does not take a credential. Embed the hosted image (replace `OWNER` and `REPO`):
+
+```markdown
+[![Vibgrate DriftScore](https://badges.vibgrate.com/OWNER/REPO)](https://dash.vibgrate.com/badges/driftscore/OWNER/REPO)
+```
+
+A public GitHub repository Vibgrate has not scanned shows `scanning…` on the first DriftScore request, then the score on a later request. No account is required for that badge. A repository already scanned in Vibgrate Cloud shows its score after the public badge is turned on. Colour is the score band (0–30 green, 31–60 amber, 61–100 red; lower is better), not a CI result. Details: [`examples/github-actions/README.md`](../../examples/github-actions/README.md) and [vibgrate.com/badges](https://vibgrate.com/badges).
 
 ## Related
 

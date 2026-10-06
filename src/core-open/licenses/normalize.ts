@@ -7,10 +7,11 @@
  *
  * Resolution order (deterministic-first):
  *   1. Exact SPDX id match against the catalog.
- *   2. Compound SPDX expression (OR / AND / WITH).
- *   3. Alias map (legacy / free-text forms).
- *   4. Fuzzy family detection (last deterministic resort).
- *   5. Unknown (explicit — never silently bucketed).
+ *   2. Valid custom LicenseRef-<idstring> (letters, digits, ".", "-").
+ *   3. Compound SPDX expression (OR / AND / WITH).
+ *   4. Alias map (legacy / free-text forms).
+ *   5. Fuzzy family detection (last deterministic resort).
+ *   6. Unknown (explicit — never silently bucketed).
  */
 
 import {
@@ -55,6 +56,18 @@ export interface LicenseVerdict {
 
 /** Declared values that mean "no license asserted", not a failed parse. */
 const EXPLICIT_UNKNOWN_LICENSE = /^(unknown|noassertion|none|n\/a)$/i;
+
+/**
+ * SPDX custom license reference: the prefix `LicenseRef-` (case-sensitive)
+ * plus an idstring of letters, digits, `.`, and `-`. Any other character,
+ * including a space or `_`, is not a LicenseRef.
+ */
+const SPDX_LICENSE_REF = /^LicenseRef-[A-Za-z0-9.-]+$/;
+
+/** True when `value` is a valid SPDX `LicenseRef-<idstring>`, unchanged. */
+export function isSpdxLicenseRef(value: string): boolean {
+  return SPDX_LICENSE_REF.test(value);
+}
 
 /**
  * True for an empty declaration or an explicit unknown sentinel
@@ -121,6 +134,44 @@ function fuzzyMatch(raw: string): LicenseRecord | undefined {
 }
 
 /**
+ * A custom LicenseRef is an exact identifier. The license text is not part
+ * of the declaration, so obligations stay unknown rather than guessed.
+ * Catalog entries such as `LicenseRef-Proprietary` are resolved earlier and
+ * keep their classified record.
+ */
+function verdictForLicenseRef(id: string): LicenseVerdict {
+  const base = verdictFromRecord(unknownLicenseRecord(id), 'exact', 1);
+  return {
+    ...base,
+    spdxId: id,
+    name: id,
+    expression: id,
+    family: 'LicenseRef',
+    components: [id],
+  };
+}
+
+/**
+ * Resolve one license id (not a compound expression). Undefined when nothing
+ * matched. LicenseRef is checked before fuzzy matching so a reference whose
+ * idstring contains a family word (for example `LicenseRef-MIT-Style`) is
+ * kept as that reference.
+ */
+function resolveConstituent(id: string): LicenseVerdict | undefined {
+  const exact = getLicenseRecord(id);
+  if (exact) return verdictFromRecord(exact, 'exact', 1);
+  if (isSpdxLicenseRef(id)) return verdictForLicenseRef(id);
+  const aliasId = resolveAlias(id);
+  if (aliasId) {
+    const rec = getLicenseRecord(aliasId);
+    if (rec) return verdictFromRecord(rec, 'alias', 0.95);
+  }
+  const fuzzy = fuzzyMatch(id);
+  if (fuzzy) return verdictFromRecord(fuzzy, 'fuzzy', 0.6);
+  return undefined;
+}
+
+/**
  * Normalize a single (possibly compound) license string into a verdict.
  */
 export function normalizeLicense(raw: string | null | undefined): LicenseVerdict {
@@ -129,29 +180,34 @@ export function normalizeLicense(raw: string | null | undefined): LicenseVerdict
     return verdictFromRecord(unknownLicenseRecord(), 'unknown', 0);
   }
 
-  // 1. Exact SPDX id
+  // 1. Exact SPDX id (includes catalog LicenseRefs such as LicenseRef-Proprietary).
   const exact = getLicenseRecord(input);
   if (exact) return verdictFromRecord(exact, 'exact', 1);
 
-  // 2. Compound expression
+  // 2. Custom LicenseRef. Checked before compound detection: a hyphen is a
+  // word boundary, so `LicenseRef-OR-1.0` would otherwise look like an OR
+  // expression and recurse.
+  if (isSpdxLicenseRef(input)) return verdictForLicenseRef(input);
+
+  // 3. Compound expression
   if (isCompoundExpression(input)) {
     return resolveExpression(input);
   }
 
-  // 3. Alias
+  // 4. Alias
   const aliasId = resolveAlias(input);
   if (aliasId) {
     const rec = getLicenseRecord(aliasId);
     if (rec) return verdictFromRecord(rec, 'alias', 0.95);
   }
 
-  // 4. Fuzzy family
+  // 5. Fuzzy family
   const fuzzy = fuzzyMatch(input);
   if (fuzzy) {
     return { ...verdictFromRecord(fuzzy, 'fuzzy', 0.6), name: input.slice(0, 120) };
   }
 
-  // 5. Unknown
+  // 6. Unknown
   return verdictFromRecord(unknownLicenseRecord(input.slice(0, 120)), 'unknown', 0);
 }
 
@@ -161,19 +217,9 @@ function resolveExpression(input: string): LicenseVerdict {
     return verdictFromRecord(unknownLicenseRecord(input.slice(0, 120)), 'unknown', 0);
   }
 
-  // Resolve each constituent id to a verdict (via recursion through the
-  // single-id path: exact → alias → fuzzy).
+  // Resolve each constituent id: exact → LicenseRef → alias → fuzzy.
   const componentVerdicts = parsed.licenseIds.map((id) => {
-    const exact = getLicenseRecord(id);
-    if (exact) return verdictFromRecord(exact, 'exact', 1);
-    const aliasId = resolveAlias(id);
-    if (aliasId) {
-      const rec = getLicenseRecord(aliasId);
-      if (rec) return verdictFromRecord(rec, 'alias', 0.95);
-    }
-    const fuzzy = fuzzyMatch(id);
-    if (fuzzy) return verdictFromRecord(fuzzy, 'fuzzy', 0.6);
-    return verdictFromRecord(unknownLicenseRecord(id), 'unknown', 0);
+    return resolveConstituent(id) ?? verdictFromRecord(unknownLicenseRecord(id), 'unknown', 0);
   });
 
   // For OR the consumer may pick the least-restrictive; for AND all apply, so
