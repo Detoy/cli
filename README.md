@@ -509,7 +509,7 @@ vg evidence release acme-gateway 3.2.1 --image ghcr.io/acme/gateway:3.2.1 --ship
 | `unverified` | Cryptographically intact and unmodified, but the signer is not pinned — real, and not yet trusted by you |
 | `failed` | Bad signature, or a `result.json` that no longer matches what was signed |
 
-Exit codes make it a CI gate: **0** no exposure · **2** exposure found · **3** undetermined, needs manual review · **1** operational error.
+Exit codes make it a CI gate: **0** no exposure · **2** exposure found · **3** undetermined, needs manual review · **1** operational error. Exit `1` is also a failure to write or serialize evidence output: the message names the file and tells you to check the path and permissions or pass another `--out` or `--bundle`. It does not print a stack trace, a signing key, a token, or a DSN.
 
 Evidence state lives in `.vibgrate/evidence/`. The Ed25519 signing key is minted on first use at `.vibgrate/attest-key.pem` (mode `0600`, with a `.pub` beside it) unless you point at your own with `VG_ATTEST_KEY` — back it up, and never commit it. `vg build --attest` uses this same key; see [Signing and verifying the graph](./DOCS.md#signing-and-verifying-the-graph).
 

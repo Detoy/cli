@@ -10,7 +10,7 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import { VERSION } from '../../../version.js';
 import { CliError, ExitCode } from '../../../util/exit.js';
-import { writeJsonFile } from '../../utils/fs.js';
+import { OUT_WRITE_NEXT, writeJsonOutput, writeOutputTextSync } from '../../../util/json-output.js';
 import { resolveRegime, listRegimes, DEFAULT_REGIME } from './regimes.js';
 import { loadOrg, saveOrg, loadProducts, saveProducts, getProduct, freezeRelease, loadReleases } from './state.js';
 import { computeExposure, exposureSubjectDigest } from './exposure.js';
@@ -334,7 +334,7 @@ const packCmd = new Command('pack')
     const stage = (opts.stage as string) ?? regime.clocks[0]?.stage ?? 'early-warning';
     const md = buildPack(result, regime, org, stage);
     if (opts.out) {
-      fs.writeFileSync(path.resolve(rootDir, opts.out as string), md);
+      writeOutputTextSync(path.resolve(rootDir, opts.out as string), md, { next: OUT_WRITE_NEXT });
       console.error(chalk.green('✔') + ` pack written to ${opts.out}`);
     } else {
       console.log(md);
@@ -499,10 +499,16 @@ const exportCmd = new Command('export')
     for (const list of releasesByProduct.values()) releases.push(...list);
     const report = computeReadiness({ regime, org, products, releasesByProduct, recentDrill: await hasRecentDrill(rootDir, today()) });
     const dir = path.resolve(rootDir, opts.out as string);
-    await writeJsonFile(path.join(dir, 'org.json'), org);
-    await writeJsonFile(path.join(dir, 'products.json'), products);
-    for (const r of releases) await writeJsonFile(path.join(dir, 'releases', `${r.productId}@${r.version}.json`.replace(/[^A-Za-z0-9._@-]/g, '_')), r);
-    await writeJsonFile(path.join(dir, 'readiness.json'), report);
+    await writeJsonOutput(path.join(dir, 'org.json'), org, { next: OUT_WRITE_NEXT });
+    await writeJsonOutput(path.join(dir, 'products.json'), products, { next: OUT_WRITE_NEXT });
+    for (const r of releases) {
+      await writeJsonOutput(
+        path.join(dir, 'releases', `${r.productId}@${r.version}.json`.replace(/[^A-Za-z0-9._@-]/g, '_')),
+        r,
+        { next: OUT_WRITE_NEXT },
+      );
+    }
+    await writeJsonOutput(path.join(dir, 'readiness.json'), report, { next: OUT_WRITE_NEXT });
     console.error(chalk.green('✔') + ` exported evidence state to ${path.relative(rootDir, dir)} (${products.length} products, ${releases.length} frozen releases)`);
   });
 

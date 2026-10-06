@@ -6,8 +6,9 @@
 // question is about what you *shipped*, not what is in `main` today.
 
 import * as path from 'node:path';
-import { pathExists, readJsonFile, writeJsonFile } from '../../utils/fs.js';
+import { pathExists, readJsonFile } from '../../utils/fs.js';
 import { CliError, ExitCode } from '../../../util/exit.js';
+import { EVIDENCE_STATE_WRITE_NEXT, writeJsonOutput } from '../../../util/json-output.js';
 import { DEFAULT_REGIME } from './regimes.js';
 import type { EvidenceOrg, Product, Release } from './types.js';
 
@@ -42,7 +43,7 @@ export async function loadOrg(root: string): Promise<EvidenceOrg> {
 }
 
 export async function saveOrg(root: string, org: EvidenceOrg): Promise<void> {
-  await writeJsonFile(orgPath(root), org);
+  await writeJsonOutput(orgPath(root), org, { next: EVIDENCE_STATE_WRITE_NEXT });
 }
 
 export async function loadProducts(root: string): Promise<Product[]> {
@@ -52,7 +53,7 @@ export async function loadProducts(root: string): Promise<Product[]> {
 }
 
 export async function saveProducts(root: string, products: Product[]): Promise<void> {
-  await writeJsonFile(productsPath(root), products);
+  await writeJsonOutput(productsPath(root), products, { next: EVIDENCE_STATE_WRITE_NEXT });
 }
 
 export async function getProduct(root: string, id: string): Promise<Product | undefined> {
@@ -74,7 +75,7 @@ export async function freezeRelease(root: string, release: Release): Promise<str
       ExitCode.USAGE_ERROR,
     );
   }
-  await writeJsonFile(p, release);
+  await writeJsonOutput(p, release, { next: EVIDENCE_STATE_WRITE_NEXT });
   return p;
 }
 
