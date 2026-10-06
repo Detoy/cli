@@ -44,6 +44,7 @@ import { registerHcs } from './commands/hcs.js';
 import { registerReview } from './commands/review.js';
 import { ConfigFileError } from './core-open/config.js';
 import { LockfileParseError } from './core-open/utils/lockfile-parse.js';
+import { UnsafeRootError } from './engine/root-safety.js';
 import { CliError, ExitCode } from './util/exit.js';
 import { c, info, disableColor, exitAfterFlush } from './util/output.js';
 
@@ -433,7 +434,12 @@ function handleError(err: unknown): never {
       /* stdout closed */
     }
   };
-  if (err instanceof CliError || err instanceof LockfileParseError || err instanceof ConfigFileError) {
+  if (
+    err instanceof CliError ||
+    err instanceof UnsafeRootError ||
+    err instanceof LockfileParseError ||
+    err instanceof ConfigFileError
+  ) {
     const code = err instanceof CliError ? err.code : ExitCode.ERROR;
     emitHostError(err.message);
     info(c.red(`error: ${err.message}`));

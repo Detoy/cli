@@ -2,9 +2,11 @@ import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { toCycloneDx, toSpdx, formatDeltaText, npmPurl, purlFor, collectLockfileGraph, collectPurlWarnings, describeUnavailablePurl } from './sbom.js';
-import { LICENSE_PARSE_FAILED } from '../../core-open/licenses/diagnostic.js';
-import type { ProjectScan, ScanArtifact } from '../types.js';
+import { toCycloneDx, toSpdx, formatDeltaText, npmPurl, purlFor, collectLockfileGraph, collectPurlWarnings, collectMergeWarnings, collectLicenseWarnings, describeUnavailablePurl, describeUnrepresentableLicense } from './sbom.js';
+import { LICENSE_PARSE_FAILED, licenseParseDiagnostic } from '../../core-open/licenses/diagnostic.js';
+import { buildDependencyLicense } from '../../core-open/licenses/dependency-license.js';
+import { componentLicense, EXTRACTED_LICENSE_TEXT } from './sbom-license.js';
+import type { DependencyRow, ProjectScan, ScanArtifact } from '../types.js';
 import type { LockfileGraph } from '../../engine/lockfile.js';
 
 /** A graph with no resolved edges — same shape `fullDependencyGraph` returns for pnpm/yarn. */
@@ -58,6 +60,45 @@ describe('sbom helpers', () => {
     const sbom = toSpdx(makeArtifact('5.3.0', 90)) as { spdxVersion: string; packages: Array<{ name: string }> };
     expect(sbom.spdxVersion).toBe('SPDX-2.3');
     expect(sbom.packages[0].name).toBe('chalk');
+  });
+
+  it('sets CycloneDX type to application on the root and library on every row, and omits SPDX primaryPackagePurpose', () => {
+    const artifact = makeArtifact('5.3.0', 90);
+    artifact.projects.push({
+      type: 'docker' as ProjectScan['type'],
+      path: 'image',
+      name: 'image',
+      frameworks: [],
+      dependencies: [
+        {
+          package: 'library/alpine',
+          section: 'dependencies',
+          currentSpec: '3.20',
+          resolvedVersion: '3.20',
+          latestStable: null,
+          majorsBehind: null,
+          drift: 'unknown',
+        },
+      ],
+      dependencyAgeBuckets: { current: 0, oneBehind: 0, twoPlusBehind: 0, unknown: 1 },
+    });
+
+    const cdx = toCycloneDx(artifact) as {
+      metadata: { component: { type: string; version?: string } };
+      components: Array<{ type: string; name: string }>;
+    };
+    expect(cdx.metadata.component.type).toBe('application');
+    expect(cdx.metadata.component.version).toBeUndefined();
+    expect(cdx.components.map((c) => ({ type: c.type, name: c.name }))).toEqual([
+      { type: 'library', name: 'chalk' },
+      { type: 'library', name: 'library/alpine' },
+    ]);
+
+    const spdx = toSpdx(artifact) as { packages: Array<Record<string, unknown>> };
+    expect(spdx.packages.map((pkg) => pkg.name)).toEqual(['chalk', 'library/alpine']);
+    for (const pkg of spdx.packages) {
+      expect(pkg).not.toHaveProperty('primaryPackagePurpose');
+    }
   });
 
   it('folds lockfile-only packages in as transitive components alongside the direct ones', () => {
@@ -183,11 +224,82 @@ describe('sbom helpers', () => {
     expect(sbom.components[0].purl).toBe('pkg:golang/github.com/gin-contrib/sse@1.9.0');
   });
 
+  it('keeps a nested Maven group in the purl and does not emit a CPE', () => {
+    const artifact = makeArtifact('2.11.0', 90);
+    artifact.projects[0]!.type = 'java';
+    artifact.projects[0]!.dependencies[0]!.package = 'com.google.code.gson:gson';
+    artifact.projects[0]!.dependencies[0]!.currentSpec = '2.11.0';
+    artifact.projects[0]!.dependencies[0]!.resolvedVersion = '2.11.0';
+
+    const cdx = toCycloneDx(artifact) as {
+      components: Array<{ name: string; purl?: string; cpe?: string; 'bom-ref': string }>;
+    };
+    const component = cdx.components[0]!;
+    expect(component.name).toBe('com.google.code.gson:gson');
+    expect(component.purl).toBe('pkg:maven/com.google.code.gson/gson@2.11.0');
+    expect(component['bom-ref']).toBe(component.purl);
+    expect(component.cpe).toBeUndefined();
+    expect(Object.prototype.hasOwnProperty.call(component, 'cpe')).toBe(false);
+
+    const spdx = toSpdx(artifact) as {
+      packages: Array<{ externalRefs?: Array<{ referenceType: string; referenceLocator: string }> }>;
+    };
+    const refs = spdx.packages[0]!.externalRefs ?? [];
+    expect(refs.map((ref) => ref.referenceType)).toEqual(['purl']);
+    expect(refs[0]!.referenceLocator).toBe('pkg:maven/com.google.code.gson/gson@2.11.0');
+  });
+
   it('dedupes a direct dependency shared by several scanned projects (a Cargo/npm workspace or Gradle multi-module repo) into one component', () => {
     const artifact = makeArtifact('5.3.0', 90);
     artifact.projects.push({ ...artifact.projects[0]!, name: 'other-workspace-member' } as ProjectScan);
-    const sbom = toCycloneDx(artifact) as { components: Array<{ name: string }> };
+    const sbom = toCycloneDx(artifact) as {
+      components: Array<{ name: string; properties: Array<{ name: string; value: string }> }>;
+    };
     expect(sbom.components).toHaveLength(1);
+    expect(sbom.components[0]!.properties.find((p) => p.name === 'vibgrate:projects')?.value).toBe('app,other-workspace-member');
+    expect(collectMergeWarnings(artifact)).toEqual([]);
+  });
+
+  it('keeps an npm purl for a TypeScript project', () => {
+    const artifact = makeArtifact('5.3.0', 90);
+    artifact.projects[0]!.type = 'typescript';
+    const sbom = toCycloneDx(artifact) as { components: Array<{ purl: string }> };
+    expect(sbom.components[0]!.purl).toBe('pkg:npm/chalk@5.3.0');
+    expect(collectPurlWarnings(artifact)).toEqual([]);
+  });
+
+  it('omits the purl and warns when the project type has no Package URL ecosystem', () => {
+    const artifact = makeArtifact('1.7.0', 90);
+    artifact.projects[0]!.type = 'elixir';
+    artifact.projects[0]!.dependencies[0]!.package = 'phoenix';
+    artifact.projects[0]!.dependencies[0]!.currentSpec = '1.7.0';
+    artifact.projects[0]!.dependencies[0]!.resolvedVersion = '1.7.0';
+    const warning =
+      'Ecosystem could not be determined for project type "elixir" package "phoenix@1.7.0"; no Package URL was guessed. The component is included without a purl.';
+
+    const cyclone = toCycloneDx(artifact) as {
+      components: Array<{
+        name: string;
+        purl?: string;
+        'bom-ref': string;
+        properties: Array<{ name: string; value: string }>;
+      }>;
+    };
+    expect(JSON.stringify(toCycloneDx(artifact))).toBe(JSON.stringify(cyclone));
+    expect(cyclone.components[0]!.purl).toBeUndefined();
+    expect(cyclone.components[0]!['bom-ref']).toBe('vibgrate:unknown:phoenix@1.7.0');
+    expect(cyclone.components[0]!.properties.find((p) => p.name === 'vibgrate:purlStatus')?.value).toBe('unavailable');
+    expect(cyclone.components[0]!.properties.find((p) => p.name === 'vibgrate:purlWarning')?.value).toBe(warning);
+    expect(JSON.stringify(cyclone)).not.toContain('pkg:npm/phoenix');
+    expect(collectPurlWarnings(artifact)).toEqual([warning]);
+    expect(collectMergeWarnings(artifact)).toEqual([]);
+
+    const spdx = toSpdx(artifact) as {
+      packages: Array<{ externalRefs?: unknown; annotations: Array<{ comment: string }> }>;
+    };
+    expect(spdx.packages[0]!.externalRefs).toBeUndefined();
+    expect(spdx.packages[0]!.annotations[0]!.comment).toContain('purlStatus=unavailable');
+    expect(spdx.packages[0]!.annotations[1]!.comment).toBe(warning);
   });
 
   it('dedupes a Go direct dependency against its own go.sum-derived transitive entry despite the `v` prefix mismatch', () => {
@@ -361,8 +473,10 @@ describe('sbom helpers', () => {
       artifact.projects.push({ ...artifact.projects[0]!, name: 'docs', path: 'docs', dependencies: [] } as ProjectScan);
 
       const graph = collectLockfileGraph(artifact, root);
-      expect(graph?.components).toContainEqual({ package: 'chalk', version: '5.3.0' });
-      expect(graph?.components).toContainEqual({ package: 'vitepress', version: '1.6.4' });
+      expect(graph?.components).toEqual([
+        { package: 'chalk', version: '5.3.0', ecosystem: 'npm', project: 'app', projects: ['app'] },
+        { package: 'vitepress', version: '1.6.4', ecosystem: 'npm', project: 'docs', projects: ['docs'] },
+      ]);
     });
 
     it('returns undefined when no scanned project path has a lockfile', () => {
@@ -416,6 +530,158 @@ describe('sbom helpers', () => {
     ]);
     expect(toCycloneDx(withFailure)).toEqual(cdx);
     expect(cdx.serialNumber).not.toBe((toCycloneDx(plain) as { serialNumber: string }).serialNumber);
+  });
+
+  it('copies declared licenses into CycloneDX and SPDX, including LicenseRef ids', () => {
+    const row = (packageName: string, version: string, raw: string | null, spdxId: string | null): DependencyRow => ({
+      package: packageName,
+      section: 'dependencies',
+      currentSpec: version,
+      resolvedVersion: version,
+      latestStable: version,
+      majorsBehind: 0,
+      drift: 'current',
+      license: { raw, spdxId, source: raw ? 'manifest' : 'none', confidence: raw ? 1 : 0 },
+    });
+    const artifact = makeArtifact('1.0.0', 90);
+    artifact.projects[0]!.dependencies = [
+      row('mit-pkg', '1.0.0', 'MIT', 'MIT'),
+      // spdxId left null: a valid LicenseRef must still export from the declared string.
+      row('acme-pkg', '1.2.3', 'LicenseRef-Acme-1.0', null),
+      row('dual-pkg', '2.0.0', 'MIT OR LicenseRef-Acme-1.0', 'MIT'),
+      row('llvm-pkg', '3.0.0', 'Apache-2.0 WITH LLVM-exception', 'Apache-2.0'),
+      row('bad-pkg', '4.0.0', 'LicenseRef-has space', null),
+      {
+        package: 'none-pkg',
+        section: 'dependencies',
+        currentSpec: '5.0.0',
+        resolvedVersion: '5.0.0',
+        latestStable: '5.0.0',
+        majorsBehind: 0,
+        drift: 'current',
+      },
+      row('empty-pkg', '6.0.0', null, null),
+      row('zed-pkg', '7.0.0', 'LicenseRef-Zed-2 OR LicenseRef-Acme-1.0', null),
+      row('prop-pkg', '8.0.0', 'LicenseRef-Proprietary', 'LicenseRef-Proprietary'),
+      row('lower-pkg', '9.0.0', 'apache-2.0', null),
+    ];
+
+    const cyclone = toCycloneDx(artifact) as {
+      serialNumber: string;
+      components: Array<{
+        name: string;
+        licenses?: Array<{ license?: { id: string }; expression?: string }>;
+        properties: Array<{ name: string; value: string }>;
+      }>;
+    };
+    const again = JSON.stringify(toCycloneDx(artifact));
+    expect(JSON.stringify(cyclone)).toBe(again);
+    expect(again).not.toMatch(/"id":"LicenseRef-/);
+    expect(again).not.toContain('"expression":""');
+    expect(again).not.toContain(LICENSE_PARSE_FAILED);
+
+    const cdx = new Map(cyclone.components.map((component) => [component.name, component]));
+    expect(cdx.get('mit-pkg')!.licenses).toEqual([{ license: { id: 'MIT' } }]);
+    expect(cdx.get('acme-pkg')!.licenses).toEqual([{ expression: 'LicenseRef-Acme-1.0' }]);
+    expect(cdx.get('dual-pkg')!.licenses).toEqual([{ expression: 'MIT OR LicenseRef-Acme-1.0' }]);
+    expect(cdx.get('llvm-pkg')!.licenses).toEqual([{ expression: 'Apache-2.0 WITH LLVM-exception' }]);
+    expect(cdx.get('zed-pkg')!.licenses).toEqual([{ expression: 'LicenseRef-Zed-2 OR LicenseRef-Acme-1.0' }]);
+    expect(cdx.get('prop-pkg')!.licenses).toEqual([{ expression: 'LicenseRef-Proprietary' }]);
+    expect(cdx.get('lower-pkg')!.licenses).toEqual([{ license: { id: 'Apache-2.0' } }]);
+    for (const name of ['bad-pkg', 'none-pkg', 'empty-pkg']) {
+      expect(cdx.get(name)!.licenses).toBeUndefined();
+    }
+
+    const badWarning = describeUnrepresentableLicense('npm', 'bad-pkg', '4.0.0', 'LicenseRef-has space');
+    expect(badWarning).toContain('npm package "bad-pkg"');
+    expect(badWarning).toContain('version 4.0.0');
+    expect(badWarning).toContain('LicenseRef-has space');
+    const badProps = cdx.get('bad-pkg')!.properties;
+    expect(badProps.find((property) => property.name === 'vibgrate:licenseStatus')?.value).toBe('unrepresentable');
+    expect(badProps.find((property) => property.name === 'vibgrate:licenseWarning')?.value).toBe(badWarning);
+    for (const name of ['mit-pkg', 'acme-pkg', 'dual-pkg', 'llvm-pkg', 'none-pkg', 'empty-pkg', 'zed-pkg', 'prop-pkg']) {
+      expect(cdx.get(name)!.properties.some((property) => property.name === 'vibgrate:licenseStatus')).toBe(false);
+    }
+    expect(collectLicenseWarnings(artifact)).toEqual([badWarning]);
+
+    const spdx = toSpdx(artifact) as {
+      documentNamespace: string;
+      packages: Array<{
+        name: string;
+        licenseDeclared: string;
+        licenseConcluded: string;
+        annotations: Array<{ comment: string }>;
+      }>;
+      hasExtractedLicensingInfos: Array<{ licenseId: string; extractedText: string; name: string }>;
+    };
+    expect(JSON.stringify(toSpdx(artifact))).toBe(JSON.stringify(spdx));
+    expect(JSON.stringify(spdx)).not.toContain('"licenseDeclared":""');
+    expect(JSON.stringify(spdx)).not.toContain('"licenseConcluded":""');
+    expect(JSON.stringify(spdx)).not.toContain(LICENSE_PARSE_FAILED);
+
+    const pkg = new Map(spdx.packages.map((entry) => [entry.name, entry]));
+    for (const entry of spdx.packages) expect(entry.licenseConcluded).toBe('NOASSERTION');
+    expect(pkg.get('mit-pkg')!.licenseDeclared).toBe('MIT');
+    expect(pkg.get('acme-pkg')!.licenseDeclared).toBe('LicenseRef-Acme-1.0');
+    expect(pkg.get('dual-pkg')!.licenseDeclared).toBe('MIT OR LicenseRef-Acme-1.0');
+    expect(pkg.get('llvm-pkg')!.licenseDeclared).toBe('Apache-2.0 WITH LLVM-exception');
+    expect(pkg.get('zed-pkg')!.licenseDeclared).toBe('LicenseRef-Zed-2 OR LicenseRef-Acme-1.0');
+    expect(pkg.get('prop-pkg')!.licenseDeclared).toBe('LicenseRef-Proprietary');
+    expect(pkg.get('lower-pkg')!.licenseDeclared).toBe('Apache-2.0');
+    for (const name of ['bad-pkg', 'none-pkg', 'empty-pkg']) {
+      expect(pkg.get(name)!.licenseDeclared).toBe('NOASSERTION');
+    }
+    const badPkg = pkg.get('bad-pkg')!;
+    expect(badPkg.annotations[0]!.comment).toContain('licenseStatus=unrepresentable');
+    expect(badPkg.annotations.some((annotation) => annotation.comment === badWarning)).toBe(true);
+    expect(pkg.get('acme-pkg')!.annotations[0]!.comment).not.toContain('licenseStatus=');
+
+    expect(spdx.hasExtractedLicensingInfos).toEqual([
+      { licenseId: 'LicenseRef-Acme-1.0', extractedText: EXTRACTED_LICENSE_TEXT, name: 'LicenseRef-Acme-1.0' },
+      { licenseId: 'LicenseRef-Proprietary', extractedText: EXTRACTED_LICENSE_TEXT, name: 'Proprietary / Commercial' },
+      { licenseId: 'LicenseRef-Zed-2', extractedText: EXTRACTED_LICENSE_TEXT, name: 'LicenseRef-Zed-2' },
+    ]);
+
+    const changed = makeArtifact('1.0.0', 90);
+    changed.projects = JSON.parse(JSON.stringify(artifact.projects)) as typeof artifact.projects;
+    changed.projects[0]!.dependencies[0]!.license = {
+      raw: 'ISC',
+      spdxId: 'ISC',
+      source: 'manifest',
+      confidence: 1,
+    };
+    expect((toCycloneDx(changed) as { serialNumber: string }).serialNumber).not.toBe(cyclone.serialNumber);
+    expect((toSpdx(changed) as { documentNamespace: string }).documentNamespace).not.toBe(spdx.documentNamespace);
+    expect((toCycloneDx(artifact) as { serialNumber: string }).serialNumber).toBe(cyclone.serialNumber);
+  });
+
+  it('does not report a valid LicenseRef as a license-parse failure', () => {
+    expect(licenseParseDiagnostic('LicenseRef-Acme-1.0', 'package.json', 'acme-pkg')).toBeNull();
+    expect(licenseParseDiagnostic('MIT OR LicenseRef-Acme-1.0', 'package.json', 'dual-pkg')).toBeNull();
+    expect(licenseParseDiagnostic('LicenseRef-Proprietary', 'package.json')).toBeNull();
+    expect(licenseParseDiagnostic('Apache-2.0 WITH LLVM-exception', 'package.json')).toBeNull();
+    expect(buildDependencyLicense('LicenseRef-Acme-1.0', 'manifest').spdxId).toBe('LicenseRef-Acme-1.0');
+
+    const invalid = licenseParseDiagnostic('LicenseRef-has space', 'package.json', 'bad-pkg');
+    expect(invalid?.code).toBe(LICENSE_PARSE_FAILED);
+    expect(invalid?.raw).toBe('LicenseRef-has space');
+
+    expect(
+      componentLicense('npm', 'choice', '1.0.0', {
+        raw: '(MIT OR Apache-2.0) AND GPL-2.0-only',
+        spdxId: 'GPL-2.0-only',
+        source: 'manifest',
+        confidence: 1,
+      }).licenseDeclared,
+    ).toBe('(MIT OR Apache-2.0) AND GPL-2.0-only');
+    expect(
+      componentLicense('npm', 'alias', '1.0.0', {
+        raw: 'mit or apache-2.0',
+        spdxId: null,
+        source: 'manifest',
+        confidence: 1,
+      }).licenseDeclared,
+    ).toBe('MIT OR Apache-2.0');
   });
 
   it('formats dependency deltas', () => {
