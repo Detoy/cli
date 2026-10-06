@@ -406,6 +406,12 @@ vg baseline                     # snapshot current drift for regression gating
 vg report                       # generate a report from a saved scan artifact
 ```
 
+`vg scan --iac` runs infrastructure rules on that same scan. The drift
+scanner reads `.tf` only; the `iac-cis-v1` findings path reads `.tf` and
+`.tofu`, including a directory that contains only `.tofu`. Paths, finding
+ids, and the current drift gap are in
+[docs/security-packs.md](./docs/security-packs.md#terraform-and-opentofu-files).
+
 `vg scan` and `vg build` exit 1 instead of walking a filesystem root, an operating-system image, or a tree over the walk budget. Pass a project subdirectory, narrow the walk with `--exclude` ignore patterns, or pass `--allow-unsafe-root`. Details: [DOCS.md](./DOCS.md#unsafe-roots).
 
 One scan gives you:
@@ -799,7 +805,7 @@ All HCS computation runs in an optional, separately-licensed engine module that 
 | `vg report` | Generate a report from a scan artifact |
 | `vg review` | **Vibgrate Review** — architecture + security-control review of the current change, locally (`--in-place`, `--local`, `--loop`). Deterministic blast-radius findings from the code graph via `vg review findings-from-diff`; `vg review propose <id>` attaches a PatchIR dry-run (same `--base` / `--in-place` / `--diff`, `--findings`, or `.vibgrate/review-propose-handoff.json`). One decision (`pass` / `needs_review` / `fail` / `undetermined`) in a signed receipt (Ed25519 over the receipt digest; `vg review verify <receipt.json>` checks it offline); protected findings cannot be blessed into a pass. Reports change integrity, not a proof of security. Builds or refreshes the code map itself when it is missing or stale (`--no-auto-build` opts out) |
 | `vg sbom export` / `delta` / `vex` | Export CycloneDX/SPDX SBOM, diff two artifacts, or emit an OpenVEX document |
-| `vg scan [path]` | Scan for upgrade drift |
+| `vg scan [path]` | Scan for upgrade drift. `vg scan --iac` also evaluates infrastructure rules; `.tf` / `.tofu` selection is in [docs/security-packs.md](./docs/security-packs.md#terraform-and-opentofu-files) |
 | `vg scan --full` | Comprehensive scan: drift + vulnerabilities + a banned-dependency report |
 | `vg scan --push` | Scan and push results to Vibgrate Cloud |
 | `vg scan --vulns` | Also detect known vulnerabilities (OSV; offline via `--package-manifest`) |

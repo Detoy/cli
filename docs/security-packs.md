@@ -42,7 +42,7 @@ from a bundle, or point `VIBGRATE_ARCH_PATH` at an unpacked module directory.
 
 | Source | Where the CLI looks | Fact address |
 |---|---|---|
-| Terraform / OpenTofu | any `.tf` or `.tofu` file. Drift scoring is `.tf` only — [Terraform and OpenTofu files](#terraform-and-opentofu-files) | `aws_s3_bucket.logs`, `data.aws_ami.ubuntu`, `module.vpc` |
+| Terraform / OpenTofu | any `.tf` / `.tofu` file (this findings path; the drift scanner reads `.tf` only — [below](#terraform-and-opentofu-files)) | `aws_s3_bucket.logs`, `data.aws_ami.ubuntu`, `module.vpc` |
 | Kubernetes manifests | any `.yaml` with `apiVersion` and `kind` under `k8s/`, `kubernetes/`, `manifests/`, `deploy/` or `infra/` at any depth | `<namespace>/<Kind>/<name>` |
 | Helm | `charts/<name>/Chart.yaml` and `values.yaml` (read as written; templates are not rendered) | `chart:<name>` |
 | Dockerfiles | `Dockerfile`, `Dockerfile.*`, `Containerfile` anywhere | `dockerfile:<path>#<stage>` |
@@ -54,138 +54,6 @@ resource is safe. Secret-shaped keys (`password`, `secret`, `token`,
 `api_key`, `private_key`, `access_key`, `credential`) are redacted before the
 value reaches the module; no attribute value that could be a secret is written
 to any output.
-
-## Terraform and OpenTofu files
-
-`vg scan` reads Terraform and OpenTofu in two passes: provider and module drift, and infrastructure findings (`vg scan --iac`). Each pass has its own file rule.
-
-### Provider and module drift
-
-The drift scanner opens a file only when the name ends in `.tf`. From those files it records `required_providers` entries and registry `module` blocks as dependency rows (`provider:<source>`, `module:<source>`). It does not open `.tofu` files. A provider or module that exists only in a `.tofu` file is not a drift row.
-
-**Same stem.** A directory may contain both `main.tf` and `main.tofu`. Only `main.tf` contributes drift rows. In the example below the Terraform project lists `provider:hashicorp/aws` (constraint `~> 5.0`) and `module:terraform-aws-modules/vpc/aws` (constraint `5.1.0`). It does not list `provider:hashicorp/azurerm` or the module constraint `5.2.0` from `main.tofu`.
-
-**`.tofu`-only tree — current gap.** A directory with no `.tf` file is not a Terraform project, so provider and module requirements in its `.tofu` files are not scored. When those files are the whole tree, `vg scan` prints `No projects found.` and DriftScore is absent (`null`; the text report shows it as not measured).
-
-There is no flag that points the drift scanner at `.tofu`. Until that gap is closed, put the `required_providers` and registry `module` blocks you want scored in a `.tf` file in the same directory. A `versions.tf` that contains only those blocks is enough: the drift scanner then records them, and `vg scan --iac` still reports resources that live only in `.tofu`. Leave the resource blocks in the `.tofu` file. Copying the same resource into both files makes `--iac` report it twice, once per path, with two ids.
-
-### Infrastructure findings (`vg scan --iac`)
-
-The infrastructure rules read every `.tf` file and every `.tofu` file. Both files in a same-stem pair are evaluated. The same resource address declared in both files is two findings, because the path is part of the finding, so the ids differ. Moving the block keeps the id ([Finding identity](#finding-identity)).
-
-`--iac` still needs the Architecture module and the code map, as described above. The ids below are from `vg scan --iac --format json` with pack `iac-cis-v1` version 1. They are `extended.security.findings[].id`.
-
-### Example
-
-Run the command from the directory that holds the files:
-
-```bash
-vg scan --iac --format json --out scan.json
-```
-
-#### `main.tf` and `main.tofu`
-
-`main.tf`:
-
-```hcl
-terraform {
-  required_providers {
-    aws = {
-      source  = "hashicorp/aws"
-      version = "~> 5.0"
-    }
-  }
-}
-
-resource "aws_s3_bucket" "from_tf" {
-  acl = "public-read"
-}
-
-module "vpc_tf" {
-  source  = "terraform-aws-modules/vpc/aws"
-  version = "5.1.0"
-}
-```
-
-`main.tofu`:
-
-```hcl
-terraform {
-  required_providers {
-    azurerm = {
-      source  = "hashicorp/azurerm"
-      version = "~> 3.0"
-    }
-  }
-}
-
-resource "aws_s3_bucket" "from_tofu" {
-  acl = "public-read"
-}
-
-module "vpc_tofu" {
-  source  = "terraform-aws-modules/vpc/aws"
-  version = "5.2.0"
-}
-```
-
-Drift rows come from `main.tf` only: `provider:hashicorp/aws` at `~> 5.0`, and `module:terraform-aws-modules/vpc/aws` at `5.1.0`.
-
-`aws-s3-public` findings, in report order (path, then line):
-
-| Path | Line | Address | Id |
-|---|---|---|---|
-| `main.tf` | 10 | `aws_s3_bucket.from_tf` | `d7c1dd201d14694dcc319c91abe6963c` |
-| `main.tofu` | 10 | `aws_s3_bucket.from_tofu` | `63f1e38403b4db739b230175b34b2d56` |
-
-#### Same address in both files
-
-`main.tf` and `main.tofu`, each containing only:
-
-```hcl
-resource "aws_s3_bucket" "logs" {
-  acl = "public-read"
-}
-```
-
-| Path | Line | Address | Id |
-|---|---|---|---|
-| `main.tf` | 1 | `aws_s3_bucket.logs` | `ee9c34890f987cec7d3a6768b32e22c9` |
-| `main.tofu` | 1 | `aws_s3_bucket.logs` | `81cd15b869a90b4967966a1b48b51dfe` |
-
-`main.tf` still makes this directory a Terraform project. With no provider or module block in that file, the project has no dependency rows. The `.tofu` copy of the bucket is a second finding.
-
-#### `.tofu` only
-
-`main.tofu`:
-
-```hcl
-terraform {
-  required_providers {
-    google = {
-      source  = "hashicorp/google"
-      version = "~> 5.0"
-    }
-  }
-}
-
-resource "aws_s3_bucket" "only_tofu" {
-  acl = "public-read"
-}
-
-module "vpc_only" {
-  source  = "terraform-aws-modules/vpc/aws"
-  version = "5.3.0"
-}
-```
-
-No Terraform project. `provider:hashicorp/google` and `module:terraform-aws-modules/vpc/aws` (`5.3.0`) are not drift rows. One `aws-s3-public` finding:
-
-| Path | Line | Address | Id |
-|---|---|---|---|
-| `main.tofu` | 10 | `aws_s3_bucket.only_tofu` | `4c11ad8767b2fb9b1eb0b5fb9d3f2f31` |
-
-That id follows the file and the bucket block, not the line. The same `aws_s3_bucket.only_tofu` block at line 1 of `main.tofu` produces the same id, including when a `versions.tf` beside it supplies the drift rows.
 
 ## Rules in `iac-cis-v1` (version 1)
 
@@ -242,3 +110,181 @@ that cannot be evaluated (module missing, code map skipped) also exits `2`
 with a one-line reason; it never reports a pass it did not compute.
 
 See [`ci/github-actions.md`](./ci/github-actions.md) for a workflow recipe.
+
+## Terraform and OpenTofu files
+
+`vg scan --iac` runs two readers, and they do not select `.tf` and `.tofu` the
+same way. `vg scan --full` turns the findings reader on as well (`--full`
+includes `--iac`). The commands, the rule list, and the output shapes are
+above. This section records file selection for a same-stem pair and for a
+`.tofu`-only tree. It does not add a fixture tree to the repository.
+
+The examples below were produced by running `vg scan --iac --offline --format
+json` on the trees as written. The recorded run also passed `--no-daemon` and
+`--quiet`; those flags do not change the fields quoted here. A second run of
+the same-stem tree returned the same finding ids. `--offline` is why a parsed
+provider's `drift` is `unknown`; it does not change which files are read. The
+bucket names and `acl = "public-read"` are example inputs for `aws-s3-public`,
+not a live account.
+
+### Drift scanner
+
+The drift scanner builds the Terraform project and its dependency rows.
+
+`vg scan` keeps a file when its basename ends with `.tf`. It parses those
+files for `required_providers`, a legacy `provider` block that sets `version`,
+and a registry `module` block (`source`, and `version` when present). A
+`.tofu` file is not opened. The scan does not print a line that names the
+skipped file.
+
+A directory that contains at least one `.tf` file becomes one Terraform
+project. In JSON that project is a `projects[]` entry with `type`
+`terraform` and `path` set to the directory (`'.'` when you scan the
+directory that holds the files). Dependency package ids are
+`provider:<source>` and `module:<source>`. Drift findings, when the scanner
+emits them, use that directory as `location`. The offline example below
+emits none: `findings` is `[]`, because latest versions are not fetched.
+
+### Infrastructure findings
+
+The `iac-cis-v1` pack reads facts from the code map. A path that ends in
+`.tf` or `.tofu` is classified as infrastructure, and the Terraform extractor
+accepts both suffixes. Same-stem names stay separate files: `main.tf` and
+`main.tofu` are two fact paths and, when a rule matches, two finding ids.
+The finding `path` is the file the fact came from. The finding `id` is the
+content-addressed id in [Finding identity](#finding-identity).
+
+The Terraform / OpenTofu row in [What is scanned](#what-is-scanned) is this
+path.
+
+### Same stem: `main.tf` beside `main.tofu`
+
+`main.tf`:
+
+```hcl
+terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 4.0"
+    }
+  }
+}
+
+resource "aws_s3_bucket" "from_tf" {
+  bucket = "example-logs"
+  acl    = "public-read"
+}
+```
+
+`main.tofu`:
+
+```hcl
+terraform {
+  required_providers {
+    google = {
+      source  = "hashicorp/google"
+      version = "~> 4.0"
+    }
+  }
+}
+
+resource "aws_s3_bucket" "from_tofu" {
+  bucket = "example-logs-tofu"
+  acl    = "public-read"
+}
+```
+
+```bash
+vg scan --iac --offline --format json --out scan.json
+```
+
+Drift scanner: one Terraform project (`type` `terraform`, `path` `.`).
+`dependencies` contains `provider:hashicorp/aws` with `currentSpec` `~> 4.0`
+and `drift` `unknown`. It does not contain `provider:hashicorp/google`. The
+`google` provider and the `from_tofu` bucket are declared only in `main.tofu`,
+so this scanner does not see them. Drift `findings` is `[]`.
+
+Infrastructure findings: four facts are handed to the pack — `provider.aws`
+and `aws_s3_bucket.from_tf` from `main.tf`, `provider.google` and
+`aws_s3_bucket.from_tofu` from `main.tofu`. All four are evaluated. The two
+buckets match `aws-s3-public`. Text rows:
+
+```text
+main.tf:10  aws_s3_bucket.from_tf  aws-s3-public [high]: aws_s3_bucket.from_tf grants public access (acl public-read)
+main.tofu:10  aws_s3_bucket.from_tofu  aws-s3-public [high]: aws_s3_bucket.from_tofu grants public access (acl public-read)
+```
+
+JSON `extended.security.findings` for those rows:
+
+| path | address | rule | id |
+|---|---|---|---|
+| `main.tf` | `aws_s3_bucket.from_tf` | `aws-s3-public` | `087c07df86b0e5b1c0d1c94c34577b65` |
+| `main.tofu` | `aws_s3_bucket.from_tofu` | `aws-s3-public` | `2b42c4e1016cb65b005d5bcf3c6f2d48` |
+
+`provider.google` is evaluated and produces no finding. This pack has no rule
+for that provider block.
+
+### A `.tofu`-only tree — current gap
+
+`main.tofu`:
+
+```hcl
+terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 4.0"
+    }
+  }
+}
+
+resource "aws_s3_bucket" "logs" {
+  bucket = "example-logs"
+  acl    = "public-read"
+}
+```
+
+```bash
+vg scan --iac --offline --format json
+```
+
+What that command prints and records:
+
+- Stdout includes `No projects found.`
+- The text report shows DriftScore `n/a`. JSON `projects` is `[]`,
+  `drift.score` is `null`, and drift `findings` is `[]`.
+- `provider:hashicorp/aws` is absent. The drift scanner does not read
+  `main.tofu`, and it does not print an error that names the file.
+- Infrastructure findings still run. Text row:
+
+```text
+main.tofu:10  aws_s3_bucket.logs  aws-s3-public [high]: aws_s3_bucket.logs grants public access (acl public-read)
+```
+
+| path | address | rule | id |
+|---|---|---|---|
+| `main.tofu` | `aws_s3_bucket.logs` | `aws-s3-public` | `cb770504b2ca988ee208750c819fca7d` |
+
+`vg scan --iac --fail-on iac-finding` on this tree exits `2` and prints:
+
+```text
+Failing: 1 infrastructure finding at or above high (iac-cis-v1).
+  main.tofu:10  aws_s3_bucket.logs  aws-s3-public [high]: aws_s3_bucket.logs grants public access (acl public-read)
+```
+
+**Current gap.** Provider and module drift is not computed from `.tofu`. A
+tree whose infrastructure files are only `.tofu` is not a Terraform project,
+even when `main.tofu` declares `required_providers`.
+
+A `.tf` file with no provider or module blocks still discovers a Terraform
+project, and `dependencies` stays empty. On a tree with `main.tf` containing
+only `# placeholder` next to the `main.tofu` above, `vg scan --iac --offline`
+reported one Terraform project, zero dependencies, and the same
+`main.tofu` finding id `cb770504b2ca988ee208750c819fca7d`. Requirements that
+exist only in `.tofu` stay out of `projects[].dependencies`.
+
+What to do: put the providers and modules you want scored into a `.tf` file
+in that directory. Copy the `terraform { required_providers { … } }` block and
+any registry `module` blocks into `main.tf` (or another `*.tf` name). The
+infrastructure pack already reads `.tofu`. This gap is the drift scanner.

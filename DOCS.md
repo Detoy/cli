@@ -26,6 +26,7 @@ For a quick overview, see the [README](./README.md). This document covers everyt
     - [Dependency scope](./docs/sbom-dependency-scope.md)
   - [vg scan](#vg-scan)
     - [Offline scan with a package-version manifest](#offline-scan-with-a-package-version-manifest)
+    - [Terraform and OpenTofu files](#terraform-and-opentofu-files)
     - [Vulnerabilities and exposure attribution](#vulnerabilities-and-exposure-attribution)
       - [Go pseudo-versions and +incompatible](#go-pseudo-versions-and-incompatible)
     - [Maven and Gradle manifests](#maven-and-gradle-manifests)
@@ -2132,8 +2133,8 @@ vg scan [path] [--vulns] [--full] [--iac] [--format text|json|sarif|md] [--out <
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--vulns` | — | Also detect known vulnerabilities (OSV online; offline via `--package-manifest` advisories) |
-| `--full` | — | Comprehensive scan: turns on known-vulnerability detection (`--vulns`), infrastructure misconfiguration rules (`--iac`), and, when a standards policy exists, a banned-dependency report |
-| `--iac` | — | Evaluate infrastructure misconfiguration rules (Terraform, Kubernetes, Helm, Dockerfiles) with the Architecture module's `iac-cis-v1` pack. Needs the code map. How this pass and Terraform drift scoring treat `.tf` and `.tofu`: [Terraform and OpenTofu files](./docs/security-packs.md#terraform-and-opentofu-files) |
+| `--full` | — | Comprehensive scan: enables `--vulns`, infrastructure rules (`--iac`), and a banned-dependency report when a standards policy exists |
+| `--iac` | — | Evaluate infrastructure misconfiguration rules with the Architecture module's `iac-cis-v1` pack. Needs the code map. Also enabled by `--full`. How `.tf` and `.tofu` are selected: [Terraform and OpenTofu files](#terraform-and-opentofu-files) |
 | `--format` | `text` | Output format: `text`, `json`, `sarif`, or `md` |
 | `--out <file>` | — | Write output to a file |
 | `--junit <file>` | — | Also write a deterministic JUnit XML report of findings and gates. See [JUnit](#junit). Does not replace `--format` |
@@ -2291,6 +2292,35 @@ Expected results:
 - When `--push` is enabled, artifact upload is attempted after scan completion.
 
 **Plan limits never block the scan.** If your workspace is at a plan limit that gates ingestion — repository cap, scan credits, VM minutes — the CLI warns with the reason (and the upgrade link), disables the upload, and runs the **full local scan** anyway, repeating the warning after the results so it isn't lost in the output. Local scoring never depended on the cloud, and now neither does it depend on your plan. Pass `--strict` to keep the old behaviour and fail the command instead, which is usually what you want in CI.
+
+### Terraform and OpenTofu files
+
+`vg scan --iac` (and `vg scan --full`, which includes `--iac`) reads Terraform
+on two paths.
+
+- **Drift scanner.** A file is kept when its basename ends with `.tf`.
+  Providers and registry modules declared in that file become
+  `provider:<source>` and `module:<source>` rows on a Terraform project.
+  A `.tofu` file is not opened, and the scan does not print a line that names
+  it. Same-stem `main.tf` + `main.tofu`: only `main.tf` contributes drift
+  rows.
+- **Infrastructure findings (`iac-cis-v1`).** The code map classifies both
+  `.tf` and `.tofu`. Same-stem files stay separate: each matching resource
+  keeps its own `path` and content-addressed finding `id`. A `.tofu`-only
+  tree still produces those findings.
+
+**Current gap.** `.tofu` files do not create a Terraform project. A directory
+whose only file is `main.tofu` prints `No projects found.`, leaves DriftScore
+unset (`n/a` in the text report, `drift.score` `null` in JSON), and records
+no Terraform project. A `.tf`
+file with no provider or module blocks discovers a project whose
+`dependencies` stay empty; requirements that exist only in `.tofu` are still
+omitted. Copy the `required_providers` and registry `module` blocks into a
+`.tf` file in that directory to have them scored. `--fail-on iac-finding`
+still exits `2` when the pack reports a finding in the `.tofu` file.
+
+The worked trees, text rows, and finding ids are in
+[docs/security-packs.md](./docs/security-packs.md#terraform-and-opentofu-files).
 
 Maven scopes, Maven profiles, and Gradle configurations do not all become dependency rows. The included and omitted cases, and what to edit when a version is missing, are in [Maven and Gradle manifests](#maven-and-gradle-manifests).
 
