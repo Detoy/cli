@@ -26,7 +26,7 @@ For a quick overview, see the [README](./README.md). This document covers everyt
   - [vg scan](#vg-scan)
     - [Offline scan with a package-version manifest](#offline-scan-with-a-package-version-manifest)
     - [Vulnerabilities and exposure attribution](#vulnerabilities-and-exposure-attribution)
-      - [Go modules: pseudo-versions and +incompatible](#go-modules-pseudo-versions-and-incompatible)
+      - [Go pseudo-versions and +incompatible](#go-pseudo-versions-and-incompatible)
     - [Maven and Gradle manifests](#maven-and-gradle-manifests)
   - [vg update](#vg-update)
   - [vg why](#vg-why)
@@ -174,7 +174,7 @@ Vibgrate evaluates **upgrade drift** in depth for:
 - **Python** (`requirements.txt`, `pyproject.toml`-style manifests)
 - **Java** (`pom.xml`, Gradle-style manifests). Which Maven profiles, scopes, and Gradle configurations become a `vg scan` row or a `vg build` edge is in [Maven and Gradle manifests](#maven-and-gradle-manifests).
 
-**Known-vulnerability detection** (`--vulns`) and **dependency attribution** (`vg why`, exposure windows) additionally cover npm / pnpm / yarn, pip / poetry / pipenv, cargo, composer, bundler, pub, hex, NuGet, and Maven/Gradle, read from each project's lockfile. Go is matched from direct `require` lines in `go.mod`. Pseudo-versions and `+incompatible` tags follow [Go modules: pseudo-versions and +incompatible](#go-modules-pseudo-versions-and-incompatible).
+**Known-vulnerability detection** (`--vulns`) and **dependency attribution** (`vg why`, exposure windows) additionally cover npm / pnpm / yarn, pip / poetry / pipenv, cargo, composer, bundler, go, pub, hex, NuGet, and Maven/Gradle — read from each project's lockfile. For Go, that file is `go.mod`: direct `require` versions, including pseudo-versions and `+incompatible` tags. The match rules are in [Go pseudo-versions and +incompatible](#go-pseudo-versions-and-incompatible).
 
 ### End-to-end workflow (recommended)
 
@@ -2008,7 +2008,7 @@ Minimal example, saved as `package-versions.json` next to a project whose lockfi
 vg scan --vulns --offline --package-manifest ./package-versions.json
 ```
 
-The installed version comes from the lockfile when that version still satisfies the range declared in the project. `--vulns` turns advisory matching on. `--offline` without `--vulns` still uses the file for latest-version drift and does not report advisories.
+The installed version comes from the lockfile when that version still satisfies the range declared in the project. For a Go module the compared version is the cleaned `require` token in `go.mod`, described in [Go pseudo-versions and +incompatible](#go-pseudo-versions-and-incompatible). `--vulns` turns advisory matching on. `--offline` without `--vulns` still uses the file for latest-version drift and does not report advisories.
 
 #### Missing or invalid manifest
 
@@ -2106,7 +2106,7 @@ In a git repository the scan also attributes each finding: the commit, author, a
 
 The scan also reconstructs **closed** exposure windows from history — a vulnerable version that was later bumped out of the affected range or removed from the lockfile entirely — and reports real remediation time (MTTR) from them: measured, not estimated. Offline, a package-version manifest extends this to advisories that are fully fixed today, so a dependency that is clean now but was once vulnerable still counts toward your remediation record.
 
-Detection and attribution read each project's lockfile for npm / pnpm / yarn, pip / poetry / pipenv, cargo, composer, bundler, pub, hex, NuGet, and Maven/Gradle. Go is matched from direct `require` lines in `go.mod`. The pseudo-version and `+incompatible` rules are in [Go modules: pseudo-versions and +incompatible](#go-modules-pseudo-versions-and-incompatible).
+Detection and attribution read each project's lockfile, so they cover npm / pnpm / yarn, pip / poetry / pipenv, cargo, composer, bundler, go, pub, hex, NuGet, and Maven/Gradle. Go reads direct `require` versions from `go.mod`. Pseudo-versions and `+incompatible` tags are matched as described in [Go pseudo-versions and +incompatible](#go-pseudo-versions-and-incompatible).
 
 ```bash
 # Online detection against OSV
@@ -2119,212 +2119,104 @@ vg scan --vulns --offline --package-manifest ./package-versions.zip
 vg scan --full
 ```
 
-#### Go modules: pseudo-versions and +incompatible
+#### Go pseudo-versions and +incompatible
 
-Go modules pin an untagged commit as a pseudo-version (`v0.0.0-20191109021931-daa7c04131f5`, or `v1.2.4-0.20210101120000-abcdefabcdef` for a commit after tag `v1.2.3`). A major of 2 or higher whose module path has no `/vN` suffix is written with `+incompatible` (`v2.0.0+incompatible`). The local comparison below is what `vg scan --vulns` uses against a package-version manifest. `--offline` keeps that comparison on the machine: no module proxy, no OSV query, no registry token. Leave `--offline` off and the same recorded version is sent to the public OSV API, which applies OSV's own comparison.
+Go modules often require a pseudo-version (`v0.0.0-yyyymmddhhmmss-abcdefabcdef`, or that timestamp-and-commit suffix on a later base) or a release tagged `+incompatible`. `vg scan --vulns` compares the version written on the direct `require` line. It does not run `go list` or a module proxy to reinterpret that token. With `--offline` and `--package-manifest`, the compare stays on the machine. The checked-in tree `test/fixtures/go-vuln-versions` is the example: a `go.mod`, a `go.work`, and an `advisories.json`, with no registry URL and no credential. Without `--offline`, the same cleaned version is sent to the public OSV API with ecosystem `Go`, and the advisory ids OSV returns are reported as returned. The range rules below are the offline matcher. A manifest supplied on an online run still uses those rules for the advisories in the file.
 
-##### Which version is compared
+##### Version taken from `go.mod`
 
-The scan reads direct `require` lines in `go.mod`.
+The Go scanner (`src/core-open/scanners/go-scanner.ts`) keeps a `require` version when it is a single token, starts with `v`, and contains none of `^~*<>|`. `semver.clean` produces the string vulnerability matching uses (`collectVulnTargets` in `src/core-open/scanners/vulnerability-scanner.ts`). Cleaning drops a leading `v` and a `+…` suffix such as `+incompatible`, and it keeps a prerelease.
 
-- A concrete `v` version that is valid semver after the leading `v` is removed is the recorded version. `v1.2.3` is recorded as `1.2.3`.
-- Build metadata is dropped. `v2.0.0+incompatible` is recorded as `2.0.0`. The major stays 2.
-- A pseudo-version keeps its pre-release suffix. `v0.0.0-20191109021931-daa7c04131f5` is recorded as `0.0.0-20191109021931-daa7c04131f5`.
-- A bare module path, a range such as `>=1.4.0`, a line marked `// indirect`, and a token that is not a full semver (`v1.2`) are not matched against advisories.
-- `go.sum` is not the version source for this match.
+| Token in `go.mod` | Version `vg scan --vulns` compares |
+| --- | --- |
+| `v1.2.3` | `1.2.3` |
+| `v2.3.4+incompatible` | `2.3.4` |
+| `v0.0.0-20240615120000-abcdefabcdef` | `0.0.0-20240615120000-abcdefabcdef` |
+| `v1.2.4-0.20240615120000-abcdefabcdef` | `1.2.4-0.20240615120000-abcdefabcdef` |
+| `v1.2.3-rc.0.20240615120000-abcdefabcdef` | `1.2.3-rc.0.20240615120000-abcdefabcdef` |
+| `v2.1.0-0.20240615120000-abcdefabcdef+incompatible` | `2.1.0-0.20240615120000-abcdefabcdef` |
 
-A range is half-open: the version matches from `introduced` up to, and not including, `fixed`. `introduced` of `0` means from the beginning. Before that check, the recorded version is reduced to `major.minor.patch`. The pre-release suffix is not ordered against the tag. An explicit `versions` list matches the recorded string exactly, so the list entry still has the pre-release suffix and has no leading `v`.
+`v1.2` and `v1.2.3.4` stay on the drift row as written and have no resolved version, so they are not vulnerability targets. A require with no version, and a range such as `>=1.4.0`, are handled the same way (`test/go-unpinned-require.test.ts`).
 
-##### Pseudo-versions and tagged releases
+Several nearby directives are visible in the file and are not the version that is compared:
 
-| Require line | Recorded | Compared as | `introduced` `1.0.0`, `fixed` `1.2.4` |
-| --- | --- | --- | --- |
-| `v1.2.3` | `1.2.3` | `1.2.3` | matches |
-| `v1.2.3-0.20210101120000-abcdefabcdef` | `1.2.3-0.20210101120000-abcdefabcdef` | `1.2.3` | matches |
-| `v1.2.4-0.20210101120000-abcdefabcdef` | `1.2.4-0.20210101120000-abcdefabcdef` | `1.2.4` | does not match |
-| `v0.0.0-20191109021931-daa7c04131f5` | `0.0.0-20191109021931-daa7c04131f5` | `0.0.0` | does not match |
+- A `// indirect` requirement is omitted from the Go project scan.
+- A module that appears only in `go.sum` is omitted. `vg sbom export` can list `go.sum` rows when that file is the lockfile it selects (`src/engine/lockfile.ts`). That list is the SBOM component list, separate from the packages `--vulns` matches.
+- `exclude` leaves the required version in the scan.
+- `replace` — another module, another version, or a directory — leaves the `require` token in the scan.
+- `go.work` is not a vulnerability input. A `replace` in `go.work` is not applied. Each `go.mod` the walk finds is scanned on its own. A `go.work` fixture for `vg build` edges is tracked in [#243](https://github.com/vibgrate/cli/issues/243). Broader language coverage is on the [public roadmap](https://github.com/vibgrate/cli/issues/144).
 
-In Go's own order, `v1.2.4-0.<timestamp>-<commit>` is a commit after `v1.2.3` and before the `v1.2.4` tag. Local matching compares it as `1.2.4`, so an advisory fixed at `1.2.4` does not include it. That gap is real. A `v0.0.0-<timestamp>-<commit>` pseudo-version (no earlier tag for that major) compares as `0.0.0`. It matches a range that starts at `0` and is fixed at `1.0.0`. It does not match a range that starts at `1.0.0`.
+`vg build` records an import for every `require` module path, including `// indirect` and the `v1.2` / `v1.2.3.4` tokens above, and it skips `replace` and `exclude` (`src/engine/manifests.ts`). Graph nodes store the module path.
 
-An explicit list entry of `v0.0.0-20191109021931-daa7c04131f5` does not match the open finding. The entry `0.0.0-20191109021931-daa7c04131f5` does. The entry `0.0.0` does not: the list is exact, and the recorded string still has the pre-release suffix.
+##### Offline match
 
-Exposure windows replay the `require` token as written in `go.mod`, including the leading `v` and a `+incompatible` suffix. Range checks reduce that token to the same `major.minor.patch` as the open finding. An explicit `versions` list matches the string it is given, so `v2.0.0+incompatible` can match a history replay and miss the open finding (`2.0.0`), or the other way around.
+Manifest entries live under `go`, keyed by the module path as written in `go.mod`. Matching (`isVersionAffected`) does two things:
 
-##### `+incompatible`
+1. **Exact `versions` list.** The cleaned version must equal the list entry. For a requirement `v2.3.4+incompatible`, the entry `2.3.4` hits and the entry `v2.3.4+incompatible` does not. For `v0.0.0-20240615120000-abcdefabcdef`, the entry `0.0.0-20240615120000-abcdefabcdef` hits and the same text with a leading `v` does not.
 
-The suffix is dropped before the comparison. `v2.0.0+incompatible` matches a range from `2.0.0` up to `2.1.0`. It does not match a range that only covers `1.x`. An explicit list entry of `v2.0.0+incompatible` does not match the open finding. The entry `2.0.0` does.
+2. **`ranges`.** A range is half-open: from `introduced` up to, and not including, `fixed`. A missing `introduced`, or `"0"`, means `0.0.0`. A missing `fixed` means the range is still open. Before the compare, the cleaned version and both bounds are reduced to `major.minor.patch` (`semver.coerce`). The pseudo-version timestamp, commit, other prerelease identifiers, and `+incompatible` are dropped for this compare. A leading `v` on a bound is dropped the same way, so `fixed: "v1.2.5"` is the bound `1.2.5`.
 
-##### `replace` and `exclude`
+Applied to the forms Go writes:
 
-`replace` and `exclude` are not applied before the match.
+- **No earlier tag.** `v0.0.0-yyyymmddhhmmss-abcdefabcdef` compares as `0.0.0`. A range `introduced: "0"`, `fixed: "1.0.0"` includes it. A range that starts at `0.0.1` excludes it. The timestamp is not ordered against a later release tag, so a commit newer than the fix still matches a range that contains `0.0.0`.
+- **Commit after a release tag.** Go writes `v1.2.4-0.yyyymmddhhmmss-abcdefabcdef` for a commit after `v1.2.3` and before `v1.2.4`. The range compare uses `1.2.4`. A fix bound of `1.2.4` excludes it. A fix bound of `1.2.5` includes it. The tagged release `v1.2.3` compares as `1.2.3`: it is inside a range fixed at `1.2.4`, and outside a range fixed at `1.2.3`.
+- **Commit after a pre-release tag.** `v1.2.3-rc.0.yyyymmddhhmmss-abcdefabcdef` compares as `1.2.3`. A fix bound of `1.2.3` excludes it. A fix bound of `1.2.4` includes it.
+- **`+incompatible`.** The major is kept. `v2.3.4+incompatible` compares as `2.3.4`. A fix bound of `2.3.4` excludes it. A fix bound of `2.3.5` includes it. The module path stays the path on the `require` line, so `github.com/foo/bar v2.3.4+incompatible` is looked up as `github.com/foo/bar`. A pseudo-version that also carries `+incompatible` (`v2.1.0-0.yyyymmddhhmmss-abcdefabcdef+incompatible`) compares as `2.1.0`.
 
-- The module path and version on the `require` line are what get matched. A `replace` to a fork, another version, or a local directory does not change that target. A `replace` with no `require` adds nothing.
-- An `exclude` line does not add a module, and it does not drop a version that is also required.
+##### How to verify locally
 
-The code graph records those same `require` paths, including lines marked `// indirect`, and skips `replace` and `exclude`. The graph does not store the version. Vulnerability matching still skips `// indirect`.
-
-##### Check it locally
-
-The two files are checked in at `examples/go-pseudo-versions/`. They use `example.com` module paths and example advisory ids. Copy them into an empty directory if you are reading this from an installed package.
-
-`go.mod`:
-
-```go
-module example.com/demo
-
-go 1.22
-
-require (
-	example.com/tagged v1.2.3
-	example.com/pseudo-next v1.2.4-0.20210101120000-abcdefabcdef
-	example.com/pseudo-base v0.0.0-20191109021931-daa7c04131f5
-	example.com/oldmajor v2.0.0+incompatible
-	example.com/replaced-mod v1.0.0
-	example.com/indirect-mod v1.2.3 // indirect
-)
-
-exclude example.com/excluded-mod v1.2.3
-
-replace example.com/replaced-mod => ./local
-
-replace example.com/fork-only => example.com/fork v1.2.3
-```
-
-`package-versions.json`:
-
-```json
-{
-  "go": {
-    "example.com/tagged": {
-      "latest": "1.2.4",
-      "vulns": [
-        {
-          "id": "GHSA-example-tagged",
-          "severity": "high",
-          "ranges": [{ "introduced": "1.0.0", "fixed": "1.2.4" }]
-        }
-      ]
-    },
-    "example.com/pseudo-next": {
-      "latest": "1.2.4",
-      "vulns": [
-        {
-          "id": "GHSA-example-pseudo-next",
-          "severity": "high",
-          "ranges": [{ "introduced": "1.0.0", "fixed": "1.2.4" }]
-        }
-      ]
-    },
-    "example.com/pseudo-base": {
-      "latest": "1.0.0",
-      "vulns": [
-        {
-          "id": "GHSA-example-pseudo-base",
-          "severity": "moderate",
-          "ranges": [{ "introduced": "0", "fixed": "1.0.0" }]
-        },
-        {
-          "id": "GHSA-example-pseudo-explicit-v",
-          "severity": "low",
-          "versions": ["v0.0.0-20191109021931-daa7c04131f5"]
-        },
-        {
-          "id": "GHSA-example-pseudo-explicit-clean",
-          "severity": "low",
-          "versions": ["0.0.0-20191109021931-daa7c04131f5"]
-        }
-      ]
-    },
-    "example.com/oldmajor": {
-      "latest": "2.1.0",
-      "vulns": [
-        {
-          "id": "GHSA-example-incompatible-range",
-          "severity": "high",
-          "ranges": [{ "introduced": "2.0.0", "fixed": "2.1.0" }]
-        },
-        {
-          "id": "GHSA-example-incompatible-v1",
-          "severity": "high",
-          "ranges": [{ "introduced": "1.0.0", "fixed": "1.9.0" }]
-        },
-        {
-          "id": "GHSA-example-incompatible-explicit",
-          "severity": "low",
-          "versions": ["v2.0.0+incompatible"]
-        }
-      ]
-    },
-    "example.com/replaced-mod": {
-      "latest": "1.0.1",
-      "vulns": [
-        {
-          "id": "GHSA-example-replaced",
-          "severity": "moderate",
-          "ranges": [{ "introduced": "0", "fixed": "1.0.1" }]
-        }
-      ]
-    },
-    "example.com/indirect-mod": {
-      "latest": "1.2.4",
-      "vulns": [
-        {
-          "id": "GHSA-example-indirect",
-          "severity": "high",
-          "ranges": [{ "introduced": "0", "fixed": "9.0.0" }]
-        }
-      ]
-    },
-    "example.com/excluded-mod": {
-      "latest": "1.2.3",
-      "vulns": [
-        {
-          "id": "GHSA-example-excluded",
-          "severity": "high",
-          "ranges": [{ "introduced": "0" }]
-        }
-      ]
-    }
-  }
-}
-```
-
-From that directory:
+From a checkout of this repository:
 
 ```bash
-vg scan --vulns --offline --package-manifest package-versions.json --format json --out go-vulns.json
+vg scan test/fixtures/go-vuln-versions \
+  --vulns --offline \
+  --package-manifest test/fixtures/go-vuln-versions/advisories.json \
+  --no-graph --no-local-artifacts --format json
 ```
 
-`findings[].details.advisoryId` in `go-vulns.json` (the same ids are under `extended.vulnerabilities.packages[].advisories`):
+`pnpm dev scan` runs that command from source. JSON is written to stdout. Findings whose `ruleId` is `vibgrate/vulnerability` are, in this order:
 
-| Module | Advisory id | Result |
-| --- | --- | --- |
-| `example.com/tagged` | `GHSA-example-tagged` | reported (`1.2.3` is below `1.2.4`) |
-| `example.com/pseudo-next` | `GHSA-example-pseudo-next` | absent (compared as `1.2.4`) |
-| `example.com/pseudo-base` | `GHSA-example-pseudo-base` | reported (compared as `0.0.0`) |
-| `example.com/pseudo-base` | `GHSA-example-pseudo-explicit-v` | absent (the list has the leading `v`) |
-| `example.com/pseudo-base` | `GHSA-example-pseudo-explicit-clean` | reported |
-| `example.com/oldmajor` | `GHSA-example-incompatible-range` | reported (`2.0.0`) |
-| `example.com/oldmajor` | `GHSA-example-incompatible-v1` | absent (that range is `1.x`) |
-| `example.com/oldmajor` | `GHSA-example-incompatible-explicit` | absent (the list is `v2.0.0+incompatible`) |
-| `example.com/replaced-mod` | `GHSA-example-replaced` | reported (the `require` version; the `replace` is ignored) |
-| `example.com/indirect-mod` | `GHSA-example-indirect` | absent |
-| `example.com/excluded-mod` | `GHSA-example-excluded` | absent |
-| `example.com/fork-only` | — | absent (`replace` only, no `require`) |
+```text
+github.com/old/major@2.3.4: GO-INCOMPAT-EXACT (low)
+github.com/pseudo/after@1.2.4-0.20240615120000-abcdefabcdef: GO-AFTER-NEXT (moderate) — fix available (1.2.5)
+github.com/pseudo/base@0.0.0-20240615120000-abcdefabcdef: GO-PSEUDO-BASE (high) — fix available (1.0.0)
+github.com/pseudo/incompat@2.1.0-0.20240615120000-abcdefabcdef: GO-BOTH-NEXT (moderate) — fix available (2.1.1)
+github.com/pseudo/pre@1.2.3-rc.0.20240615120000-abcdefabcdef: GO-PRE-NEXT (moderate) — fix available (1.2.4)
+github.com/tagged/mod@1.2.3: GO-TAGGED (high) — fix available (1.2.4)
+```
 
-`timestamp` and `durationMs` change between runs. The advisory ids and their order do not: ecosystem, then package name, then recorded version, then severity (critical, high, moderate, low, unknown), then advisory id. The scan also writes `.vibgrate/scan_result.json` beside the `go.mod`.
+`GO-TAGGED` names the `require` version `1.2.3`. The fixture's `exclude` names that same version, and its `replace` points at `github.com/other/mod v1.9.9`. The finding stays on `1.2.3`. The parenthetical fix version is the manifest's `fixed` bound (`1.2.4`), copied through as written.
 
-##### If the match looks wrong
+These advisory ids are in `advisories.json` and are absent from the findings:
 
-A surprise match, or a missing one, is a bug report. Include a local repro:
+| Absent id | Why the offline matcher left it out |
+| --- | --- |
+| `GO-AFTER-AT-BASE` | `v1.2.4-0.20240615120000-abcdefabcdef` compares as `1.2.4`, and the range is fixed at `1.2.4` |
+| `GO-PRE-AT-RELEASE` | `v1.2.3-rc.0.20240615120000-abcdefabcdef` compares as `1.2.3`, and the range is fixed at `1.2.3` |
+| `GO-BOTH-AT-BASE` | the `+incompatible` pseudo-version compares as `2.1.0`, and the range is fixed at `2.1.0` |
+| `GO-INCOMPAT-RAW` | the exact list is `v2.3.4+incompatible`; the cleaned version is `2.3.4` |
+| `GO-INDIRECT` | `rsc.io/quote` is marked `// indirect` |
+| `GO-REPLACE-TARGET` | `github.com/other/mod` is only the right-hand side of `replace` |
+| `GO-WORK-REPLACE` | `example.com/not-scanned` is only a `replace` in `go.work` |
 
-- the `go.mod` `require` line
-- the advisory id and its `introduced` / `fixed` bounds, or the explicit `versions` list
-- the command above, run with `--offline`, so the repro needs no network and no registry credential
-- the advisory ids from the JSON, and which row in the table you expected to differ
-- `vg --version`
+`example.com/partial` (`v1.2`) and `example.com/four` (`v1.2.3.4`) have no resolved version, so they produce no finding either. `test/go-vuln-versions.test.ts` asserts the list. `pnpm exec vitest run test/go-vuln-versions.test.ts` repeats it offline.
 
-Leave out tokens, `.netrc` contents, and private module-proxy URLs.
+##### Limitations, and filing a false positive
+
+- A `v0.0.0-…` pseudo-version matches every offline range that contains `0.0.0`. The timestamp and commit are not treated as ancestry, and they are not treated as a later tag.
+- A pseudo-version of the form `vX.Y.(Z+1)-0.yyyymmddhhmmss-commit` matches as the release `X.Y.(Z+1)`. Go orders that commit before the tag that uses the same number. A fix bound equal to that number leaves the commit unmatched. `GO-AFTER-AT-BASE` in the fixture is that case.
+- `+incompatible` keeps the numeric major and the module path written on the `require` line.
+- Modules that show up only in `go.sum`, on the right-hand side of `replace`, or in a `go.work` replace are outside `vg scan --vulns`.
+- An online scan asks OSV with the cleaned version: no leading `v`, and no `+incompatible`. To check a finding against the table above, re-run with `--offline` and a manifest that contains the range you expected.
+
+A false positive or a missed advisory is a [bug report](https://github.com/vibgrate/cli/issues/new?template=bug_report.yml). Include:
+
+1. The `require` line, plus any `replace` or `exclude` lines.
+2. The advisory id and the `ranges` or `versions` you expected to hit.
+3. A `vg scan --vulns --offline --package-manifest` command with those versions filled in, and the finding line — or a note that the id was absent. The fixture in `test/fixtures/go-vuln-versions` is a complete local repro; substitute your module path and versions.
+4. Whether you also ran an online `vg scan --vulns`.
+
+Leave out proxy credentials, `GOPROXY` tokens, and `.netrc` contents. A vulnerability in the CLI itself belongs in the [security policy](https://github.com/vibgrate/cli/security/policy), not a public issue.
 
 ---
 

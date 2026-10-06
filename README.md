@@ -419,7 +419,7 @@ One scan gives you:
 
 ## Find known vulnerabilities and who introduced them
 
-`vg scan --vulns` checks your installed dependencies against the public [OSV](https://vibgrate.com/glossary/osv) database and reports each known vulnerability with its severity, CVSS score, and the version that fixes it — as text, JSON, or SARIF. JSON also includes `epss`, `epssPercentile`, and `kev` when the advisory data already carried them; a missing score is omitted, never written as `0`. Add `--package-manifest` to run it fully offline from a local advisory bundle. Offline and manifest scans do not contact an EPSS service. A missing or invalid manifest exits `1` and does not scan. The manifest shape and the error text are in [DOCS.md](./DOCS.md#offline-scan-with-a-package-version-manifest).
+`vg scan --vulns` checks your installed dependencies against the public [OSV](https://vibgrate.com/glossary/osv) database and reports each known vulnerability with its severity, CVSS score, and the version that fixes it — as text, JSON, or SARIF. JSON also includes `epss`, `epssPercentile`, and `kev` when the advisory data already carried them; a missing score is omitted, never written as `0`. Add `--package-manifest` to run it fully offline from a local advisory bundle. Offline and manifest scans do not contact an EPSS service. A missing or invalid manifest exits `1` and does not scan. The manifest shape and the error text are in [DOCS.md](./DOCS.md#offline-scan-with-a-package-version-manifest). Go pseudo-versions and `+incompatible` tags are compared from the `require` line in `go.mod`; the local rules and a fixture are in [DOCS.md](./DOCS.md#go-pseudo-versions-and-incompatible).
 
 SARIF writes one result per package and advisory (`vg scan --vulns --format sarif`). The advisory's own id is the primary id. CVE and other aliases stay on that result. A second code-scanning alert is expected when the scan kept two advisory ids, including when those ids list each other as aliases. Field layout and result order: [DOCS.md](./DOCS.md#advisories-with-several-ids).
 
@@ -437,7 +437,7 @@ vg why lodash                   # who added a dependency, every version since, a
 vg bisect lodash 4.17.21        # the commit where lodash crossed a version line (e.g. reached the fix)
 ```
 
-Detection and attribution span the whole npm ecosystem (npm, pnpm, yarn) plus pip/poetry, cargo, composer, bundler, pub, hex, NuGet, and Maven/Gradle — read from each project's lockfile, so it works whatever you build in. Go is matched from direct `require` lines in `go.mod`. Pseudo-versions and `+incompatible` tags are compared as described in [DOCS.md](./DOCS.md#go-modules-pseudo-versions-and-incompatible).
+Detection and attribution span the whole npm ecosystem (npm, pnpm, yarn) plus pip/poetry, cargo, composer, bundler, pub, hex, NuGet, and Maven/Gradle — read from each project's lockfile, so it works whatever you build in. Go is matched from direct `require` lines in `go.mod`. Pseudo-versions and `+incompatible` tags are compared as described in [DOCS.md](./DOCS.md#go-pseudo-versions-and-incompatible).
 
 Your AI assistant sees this too: `vg serve` exposes `list_vulnerabilities`, `vuln_attribution`, and an `upgrade_impact` tool that tells an agent what an upgrade will cost — version distance, how many files import the package, the vulnerabilities it fixes, and (online, opt in) the breaking-change notes between your version and the latest.
 
@@ -852,6 +852,7 @@ Recommended rollout: `vg build` + `vg install` now, add `vg scan` to CI this wee
 - **`--auto` is a denylist, not a sandbox.** It blocks known-catastrophic commands; it does not confine the agent. Run untrusted instructions in a container, or under `--worktree` with `--security-tier L1`.
 - **`--verify` re-runs your tests; it does not prove correctness.** Failures are fed back for a repair attempt. Passing tests mean passing tests.
 - **Vulnerability data is only as current as its source.** `--vulns` reports what OSV knows at scan time; offline runs report what is in the bundle you supplied.
+- **Go vulnerability matches use the cleaned `require` version.** Range checks reduce a pseudo-version to `major.minor.patch`, and `+incompatible` is dropped before the compare. `replace`, `exclude`, and `go.sum` leave that version unchanged. See [DOCS.md](./DOCS.md#go-pseudo-versions-and-incompatible).
 - **Vibgrate Evidence produces evidence, not a compliance determination.** It supports your obligations under a regime; it does not decide that you meet them, does not certify anything, and is not legal advice. The filing is yours.
 - **Evidence cannot look backwards.** Exposure is answered from manifests frozen at ship time. A release you never froze stays `undetermined` — there is no way to reconstruct it after the fact.
 - **`vg evidence watch` surfaces a KEV listing, not a determination.** Whether a vulnerability is "actively exploited" for the purposes of a filing is your call, not the tool's.

@@ -80,10 +80,14 @@ describe('Go pseudo-versions and +incompatible (vg scan --vulns, offline)', () =
     expect(names).not.toContain('example.com/fork');
   });
 
-  it('documents the same advisory ids and the offline check command', () => {
-    for (const id of [...REPORTED, ...ABSENT]) expect(docs).toContain(id);
+  it('documents the offline check against the checked-in fixture', () => {
+    expect(docs).toContain('#### Go pseudo-versions and +incompatible');
+    expect(docs).toContain('test/fixtures/go-vuln-versions');
     expect(docs).toContain(
-      'vg scan --vulns --offline --package-manifest package-versions.json --format json --out go-vulns.json',
+      'vg scan test/fixtures/go-vuln-versions \\\n  --vulns --offline \\\n  --package-manifest test/fixtures/go-vuln-versions/advisories.json',
     );
+    for (const id of ['GO-TAGGED', 'GO-PSEUDO-BASE', 'GO-AFTER-NEXT', 'GO-INCOMPAT-EXACT', 'GO-BOTH-NEXT', 'GO-PRE-NEXT']) {
+      expect(docs).toContain(id);
+    }
   });
 });
