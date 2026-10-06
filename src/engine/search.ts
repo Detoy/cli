@@ -5,6 +5,7 @@ import { findNodes } from './lookup.js';
 import { scanCandidates } from './literal-scan.js';
 import { extractLiteralNeedles, residualForSymbolSearch } from './query.js';
 import type { GraphNode, VgGraph } from '../schema.js';
+import { assertSafeWalkRoot } from '../core-open/utils/root-safety.js';
 
 /**
  * `search_symbols` — the hybrid flashlight next to the map
@@ -384,6 +385,8 @@ interface Listing {
 
 /** rg-pruned candidates when available (fast), else the (cached) full Node walk. */
 function listCandidateFiles(root: string, needle: string): Listing {
+  // Refuse filesystem root and OS images before ripgrep or the Node walk.
+  assertSafeWalkRoot(root);
   return ripgrepCandidates(root, needle) ?? walkCandidatesCached(root);
 }
 

@@ -6,7 +6,10 @@ import type { DependencyRow, Finding, ProjectScan, ScanArtifact } from '../types
 import { LICENSE_PARSE_FAILED } from '../../core-open/licenses/diagnostic.js';
 import { fullDependencyGraph, type LockfileComponent, type LockfileGraph } from '../../engine/lockfile.js';
 import { ECOSYSTEMS, type Ecosystem } from '../../engine/drift.js';
+import { componentLicense, extractedLicensingInfos, type ComponentLicense } from './sbom-license.js';
 import { vexCommand } from './vex.js';
+
+export { describeUnrepresentableLicense } from './sbom-license.js';
 
 type SbomFormat = 'cyclonedx' | 'spdx';
 
@@ -31,6 +34,8 @@ interface FlattenedDependency {
   ecosystemWarning: string | null;
   /** Collisions that dropped differing manifest fields. A matching second project is not a warning. */
   mergeWarnings: string[];
+  /** Declared license from the kept scan row. Lockfile-only rows have none. */
+  license?: DependencyRow['license'];
 }
 
 /**
@@ -153,6 +158,11 @@ const MERGE_WARNING_PROPERTY = 'vibgrate:mergeWarning';
 const PROJECTS_PROPERTY = 'vibgrate:projects';
 /** Identity segment used when a project type has no Package URL ecosystem. */
 const UNKNOWN_ECOSYSTEM = 'unknown';
+
+/** CycloneDX properties that say why a declared license was not copied onto the component. */
+const LICENSE_STATUS_PROPERTY = 'vibgrate:licenseStatus';
+const LICENSE_WARNING_PROPERTY = 'vibgrate:licenseWarning';
+const LICENSE_STATUS_UNREPRESENTABLE = 'unrepresentable';
 
 /** The purl type/namespace/name portion, without a version — shared by every ecosystem branch of `purlFor`. */
 function purlPath(ecosystem: Ecosystem, name: string): string | null {
@@ -328,14 +338,28 @@ function undeterminedEcosystemWarning(projectType: string, name: string, version
  * A later row with the same identity dropped fields the kept row does not
  * have. Identical fields are not a warning — the project list records them.
  */
+function licenseToken(license: DependencyRow['license']): string {
+  if (!license || (license.raw == null && license.spdxId == null)) return '';
+  return `${license.raw ?? ''}/${license.spdxId ?? ''}`;
+}
+
 function droppedFieldWarning(
   kept: FlattenedDependency,
-  incoming: { project: string; currentSpec: string; drift: DependencyRow['drift']; majorsBehind: number | null },
+  incoming: {
+    project: string;
+    currentSpec: string;
+    drift: DependencyRow['drift'];
+    majorsBehind: number | null;
+    license?: DependencyRow['license'];
+  },
 ): string | null {
   const dropped: string[] = [];
   if (incoming.currentSpec !== kept.currentSpec) dropped.push(`currentSpec ${incoming.currentSpec}`);
   if (incoming.drift !== kept.drift) dropped.push(`drift ${incoming.drift}`);
   if (incoming.majorsBehind !== kept.majorsBehind) dropped.push(`majorsBehind ${incoming.majorsBehind ?? 'unknown'}`);
+  if (licenseToken(incoming.license) !== licenseToken(kept.license)) {
+    dropped.push(`license ${incoming.license?.raw ?? incoming.license?.spdxId ?? 'none'}`);
+  }
   if (!dropped.length) return null;
   const ecosystem = kept.ecosystem ?? UNKNOWN_ECOSYSTEM;
   return `Kept ${ecosystem} package "${kept.package}@${kept.version}" from project "${kept.project}". Dropped ${dropped.join(', ')} from project "${incoming.project}".`;
@@ -399,6 +423,8 @@ function sbomSerialSeed(format: string, artifact: ScanArtifact, deps: FlattenedD
         d.majorsBehind ?? '',
         d.scope,
         d.ecosystemWarning ?? '',
+        d.license?.raw ?? '',
+        d.license?.spdxId ?? '',
         ...d.mergeWarnings,
       ].join('|'),
     ),
@@ -518,6 +544,7 @@ export function flattenDependencies(
           currentSpec: dep.currentSpec,
           drift: dep.drift,
           majorsBehind: dep.majorsBehind,
+          license: dep.license,
         });
         if (warning && !existing.mergeWarnings.includes(warning)) existing.mergeWarnings.push(warning);
         continue;
@@ -535,6 +562,7 @@ export function flattenDependencies(
         ecosystem,
         ecosystemWarning: ecosystem ? null : undeterminedEcosystemWarning(project.type, dep.package, version),
         mergeWarnings: [],
+        license: dep.license,
       });
     }
   }
@@ -655,6 +683,10 @@ export function collectLockfileGraph(artifact: ScanArtifact, root: string): Lock
   };
 }
 
+function licenseFor(dep: FlattenedDependency): ComponentLicense {
+  return componentLicense(dep.ecosystem ?? UNKNOWN_ECOSYSTEM, dep.package, dep.version, dep.license);
+}
+
 export function toCycloneDx(artifact: ScanArtifact, graph?: LockfileGraph): Record<string, unknown> {
   const dependencies = flattenDependencies(artifact, graph?.components ?? [], graph?.ecosystem);
   const dependencyGraph = cycloneDxDependencyGraph(dependencies, graph);
@@ -689,6 +721,7 @@ export function toCycloneDx(artifact: ScanArtifact, graph?: LockfileGraph): Reco
     },
     components: dependencies.map((dep) => {
       const { purl, warning } = resolveRowPurl(dep);
+      const license = licenseFor(dep);
       const properties: Array<{ name: string; value: string }> = [
         { name: 'vibgrate:project', value: dep.project },
         { name: PROJECTS_PROPERTY, value: dep.projects.join(',') },
@@ -706,12 +739,19 @@ export function toCycloneDx(artifact: ScanArtifact, graph?: LockfileGraph): Reco
       for (const mergeWarning of dep.mergeWarnings) {
         properties.push({ name: MERGE_WARNING_PROPERTY, value: mergeWarning });
       }
+      if (license.warning) {
+        properties.push(
+          { name: LICENSE_STATUS_PROPERTY, value: LICENSE_STATUS_UNREPRESENTABLE },
+          { name: LICENSE_WARNING_PROPERTY, value: license.warning },
+        );
+      }
       return {
         type: 'library',
         'bom-ref': purl ?? componentBomRef(dep.ecosystem, dep.package, dep.version),
         name: dep.package,
         version: dep.version,
         ...(purl ? { purl } : {}),
+        ...(license.cycloneLicenses ? { licenses: license.cycloneLicenses } : {}),
         properties,
       };
     }),
@@ -723,6 +763,8 @@ export function toSpdx(artifact: ScanArtifact, graph?: LockfileGraph): Record<st
   const dependencies = flattenDependencies(artifact, graph?.components ?? [], graph?.ecosystem);
   const relationships = spdxRelationships(dependencies, graph);
   const licenseNotes = licenseParseFindings(artifact);
+  const licenses = dependencies.map((dep) => licenseFor(dep));
+  const extracted = extractedLicensingInfos(licenses.flatMap((license) => license.licenseRefs));
   return {
     spdxVersion: 'SPDX-2.3',
     dataLicense: 'CC0-1.0',
@@ -735,13 +777,15 @@ export function toSpdx(artifact: ScanArtifact, graph?: LockfileGraph): Record<st
     },
     packages: dependencies.map((dep, i) => {
       const { purl, warning } = resolveRowPurl(dep);
-      const status = warning ? `; purlStatus=${PURL_STATUS_UNAVAILABLE}` : '';
+      const license = licenses[i]!;
+      const purlStatus = warning ? `; purlStatus=${PURL_STATUS_UNAVAILABLE}` : '';
+      const licenseStatus = license.warning ? `; licenseStatus=${LICENSE_STATUS_UNREPRESENTABLE}` : '';
       const annotations = [
         {
           annotationType: 'OTHER',
           annotator: 'Tool: @vibgrate/cli',
           annotationDate: artifact.timestamp,
-          comment: `project=${dep.project}; projects=${dep.projects.join(',')}; drift=${dep.drift}; majorsBehind=${dep.majorsBehind ?? 'unknown'}; scope=${dep.scope}${status}`,
+          comment: `project=${dep.project}; projects=${dep.projects.join(',')}; drift=${dep.drift}; majorsBehind=${dep.majorsBehind ?? 'unknown'}; scope=${dep.scope}${purlStatus}${licenseStatus}`,
         },
       ];
       if (warning) {
@@ -760,12 +804,22 @@ export function toSpdx(artifact: ScanArtifact, graph?: LockfileGraph): Record<st
           comment: mergeWarning,
         });
       }
+      if (license.warning) {
+        annotations.push({
+          annotationType: 'OTHER',
+          annotator: 'Tool: @vibgrate/cli',
+          annotationDate: artifact.timestamp,
+          comment: license.warning,
+        });
+      }
       return {
         name: dep.package,
         SPDXID: `SPDXRef-Package-${i + 1}`,
         versionInfo: dep.version,
         downloadLocation: 'NOASSERTION',
         filesAnalyzed: false,
+        licenseConcluded: 'NOASSERTION',
+        licenseDeclared: license.licenseDeclared,
         ...(purl
           ? {
               externalRefs: [
@@ -780,6 +834,7 @@ export function toSpdx(artifact: ScanArtifact, graph?: LockfileGraph): Record<st
         annotations,
       };
     }),
+    ...(extracted.length ? { hasExtractedLicensingInfos: extracted } : {}),
     ...(relationships ? { relationships } : {}),
     ...(licenseNotes.length
       ? {
@@ -809,6 +864,14 @@ export function collectPurlWarnings(artifact: ScanArtifact, graph?: LockfileGrap
  */
 export function collectMergeWarnings(artifact: ScanArtifact, graph?: LockfileGraph): string[] {
   return flattenDependencies(artifact, graph?.components ?? [], graph?.ecosystem).flatMap((dep) => dep.mergeWarnings);
+}
+
+/** Warnings for declared licenses that cannot be represented. Same order as the SBOM rows. */
+export function collectLicenseWarnings(artifact: ScanArtifact, graph?: LockfileGraph): string[] {
+  return flattenDependencies(artifact, graph?.components ?? [], graph?.ecosystem).flatMap((dep) => {
+    const warning = licenseFor(dep).warning;
+    return warning ? [warning] : [];
+  });
 }
 
 function projectDependencyMap(artifact: ScanArtifact): Map<string, DependencyRow> {
@@ -910,6 +973,9 @@ const exportCommand = new Command('export')
       console.error(chalk.yellow(`warning: ${warning}`));
     }
     for (const warning of collectMergeWarnings(artifact, lockfileGraph)) {
+      console.error(chalk.yellow(`warning: ${warning}`));
+    }
+    for (const warning of collectLicenseWarnings(artifact, lockfileGraph)) {
       console.error(chalk.yellow(`warning: ${warning}`));
     }
     const body = JSON.stringify(sbom, null, 2);
