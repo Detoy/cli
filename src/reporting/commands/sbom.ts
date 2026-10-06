@@ -11,7 +11,10 @@ import { vexCommand } from './vex.js';
 type SbomFormat = 'cyclonedx' | 'spdx';
 
 interface FlattenedDependency {
+  /** Precedence winner: first direct row, else the earliest lockfile path. */
   project: string;
+  /** Every contributing project, sorted. The same identity is one component. */
+  projects: string[];
   package: string;
   version: string;
   currentSpec: string;
@@ -19,13 +22,27 @@ interface FlattenedDependency {
   majorsBehind: number | null;
   /** 'direct' comes from a scanned manifest; 'transitive' is lockfile-only. */
   scope: 'direct' | 'transitive';
-  /** Which package registry this dependency resolves against — picks the purl scheme. */
-  ecosystem: Ecosystem;
+  /**
+   * Which package registry this dependency resolves against — picks the purl
+   * scheme. Absent when the project type has no Package URL ecosystem.
+   */
+  ecosystem: Ecosystem | undefined;
+  /** Set when `ecosystem` could not be determined. Rendered as a purl warning. */
+  ecosystemWarning: string | null;
+  /** Collisions that dropped differing manifest fields. A matching second project is not a warning. */
+  mergeWarnings: string[];
 }
 
-/** `ProjectScan.type` → the purl-scheme ecosystem for its dependencies. */
-function projectEcosystem(type: ProjectScan['type']): Ecosystem {
+/**
+ * `ProjectScan.type` → the purl-scheme ecosystem for its dependencies.
+ * `undefined` when this exporter has no Package URL ecosystem for the type.
+ * Callers warn and omit the purl; they do not guess `npm`.
+ */
+function projectEcosystem(type: ProjectScan['type']): Ecosystem | undefined {
   switch (type) {
+    case 'node':
+    case 'typescript':
+      return 'npm';
     case 'python':
       return 'pypi';
     case 'rust':
@@ -47,7 +64,7 @@ function projectEcosystem(type: ProjectScan['type']): Ecosystem {
     case 'dart':
       return 'dart';
     default:
-      return 'npm';
+      return undefined;
   }
 }
 
@@ -130,6 +147,12 @@ const KNOWN_ECOSYSTEMS = new Set<string>(ECOSYSTEMS);
 const PURL_STATUS_PROPERTY = 'vibgrate:purlStatus';
 const PURL_WARNING_PROPERTY = 'vibgrate:purlWarning';
 const PURL_STATUS_UNAVAILABLE = 'unavailable';
+/** CycloneDX property for a merge that kept one row and dropped differing fields. */
+const MERGE_WARNING_PROPERTY = 'vibgrate:mergeWarning';
+/** Sorted contributing projects for one component identity. */
+const PROJECTS_PROPERTY = 'vibgrate:projects';
+/** Identity segment used when a project type has no Package URL ecosystem. */
+const UNKNOWN_ECOSYSTEM = 'unknown';
 
 /** The purl type/namespace/name portion, without a version — shared by every ecosystem branch of `purlFor`. */
 function purlPath(ecosystem: Ecosystem, name: string): string | null {
@@ -272,8 +295,60 @@ export function resolvePurl(ecosystem: Ecosystem, name: string, version: string)
 }
 
 /** Stable CycloneDX bom-ref. A valid purl when we have one; never a rejected purl string. */
-function componentBomRef(ecosystem: Ecosystem, name: string, version: string): string {
+function componentBomRef(ecosystem: Ecosystem | undefined, name: string, version: string): string {
+  if (!ecosystem) return `vibgrate:${UNKNOWN_ECOSYSTEM}:${name}@${version}`;
   return purlFor(ecosystem, name, version) ?? `vibgrate:${ecosystem}:${name}@${version}`;
+}
+
+/** Component identity. Ecosystem is part of the key so the same name@version in two registries stays two components. */
+function identityKey(ecosystem: string, name: string, version: string): string {
+  return `${ecosystem}\0${name}\0${version}`;
+}
+
+/**
+ * Project label recorded on a component. Two scanned projects that share a
+ * name are disambiguated with the path so both stay in the sorted list.
+ */
+function contributorLabel(project: ProjectScan, projects: readonly ProjectScan[]): string {
+  const duplicateName = projects.some((other) => other !== project && other.name === project.name);
+  return duplicateName ? `${project.name} (${project.path})` : project.name;
+}
+
+function addContributor(row: FlattenedDependency, label: string): void {
+  if (row.projects.includes(label)) return;
+  row.projects.push(label);
+  row.projects.sort();
+}
+
+function undeterminedEcosystemWarning(projectType: string, name: string, version: string): string {
+  return `Ecosystem could not be determined for project type "${projectType}" package "${name}@${version}"; no Package URL was guessed. The component is included without a purl.`;
+}
+
+/**
+ * A later row with the same identity dropped fields the kept row does not
+ * have. Identical fields are not a warning — the project list records them.
+ */
+function droppedFieldWarning(
+  kept: FlattenedDependency,
+  incoming: { project: string; currentSpec: string; drift: DependencyRow['drift']; majorsBehind: number | null },
+): string | null {
+  const dropped: string[] = [];
+  if (incoming.currentSpec !== kept.currentSpec) dropped.push(`currentSpec ${incoming.currentSpec}`);
+  if (incoming.drift !== kept.drift) dropped.push(`drift ${incoming.drift}`);
+  if (incoming.majorsBehind !== kept.majorsBehind) dropped.push(`majorsBehind ${incoming.majorsBehind ?? 'unknown'}`);
+  if (!dropped.length) return null;
+  const ecosystem = kept.ecosystem ?? UNKNOWN_ECOSYSTEM;
+  return `Kept ${ecosystem} package "${kept.package}@${kept.version}" from project "${kept.project}". Dropped ${dropped.join(', ')} from project "${incoming.project}".`;
+}
+
+function resolveRowPurl(dep: FlattenedDependency): { purl: string | null; warning: string | null } {
+  if (!dep.ecosystem) {
+    return {
+      purl: null,
+      warning: dep.ecosystemWarning ?? undeterminedEcosystemWarning('unknown', dep.package, dep.version),
+    };
+  }
+  return resolvePurl(dep.ecosystem, dep.package, dep.version);
 }
 
 function splitDependencyKey(key: string): { name: string; version: string } {
@@ -312,7 +387,21 @@ function sbomSerialSeed(format: string, artifact: ScanArtifact, deps: FlattenedD
     artifact.rootPath ?? '',
     artifact.timestamp ?? '',
     artifact.vibgrateVersion ?? '',
-    ...deps.map((d) => `${d.package}|${d.version}|${d.currentSpec}|${d.project}|${d.drift}|${d.majorsBehind ?? ''}|${d.scope}`),
+    ...deps.map((d) =>
+      [
+        d.ecosystem ?? UNKNOWN_ECOSYSTEM,
+        d.package,
+        d.version,
+        d.currentSpec,
+        d.project,
+        d.projects.join(','),
+        d.drift,
+        d.majorsBehind ?? '',
+        d.scope,
+        d.ecosystemWarning ?? '',
+        ...d.mergeWarnings,
+      ].join('|'),
+    ),
     ...(graph?.rootDependsOn.length ? [`root>${uniqSorted(graph.rootDependsOn).join(',')}`] : []),
     ...edgeLines,
     ...licenseParseFindings(artifact).map((f) => `license-parse|${f.location}|${f.message}`),
@@ -329,17 +418,20 @@ function cycloneDxDependencyGraph(
   graph: LockfileGraph | undefined,
 ): Array<{ ref: string; dependsOn: string[] }> | undefined {
   if (!graph?.edges) return undefined;
+  // Edges belong to one lockfile. An absent graph ecosystem is the npm family.
+  const edgeEco = graph.ecosystem ?? 'npm';
   const purlOfKey = (key: string): string => {
     const { name, version } = splitDependencyKey(key);
-    // Lockfile edges are keyed `name@version` and carry no ecosystem. For npm
-    // this ref matches the component bom-ref, including the non-purl ref used
-    // when the name cannot be a Package URL.
-    return componentBomRef('npm', name, version);
+    // Lockfile edges are keyed `name@version` inside that lockfile's ecosystem.
+    return componentBomRef(edgeEco, name, version);
   };
   const nodes = [{ ref: ROOT_BOM_REF, dependsOn: uniqSorted(graph.rootDependsOn).map(purlOfKey) }];
   for (const dep of dependencies) {
     const key = `${dep.package}@${dep.version}`;
-    nodes.push({ ref: componentBomRef('npm', dep.package, dep.version), dependsOn: uniqSorted(graph.edges.get(key) ?? []).map(purlOfKey) });
+    // A component from another ecosystem keeps its own ref. It does not inherit
+    // this lockfile's edges, and it does not inherit this lockfile's purl type.
+    const children = dep.ecosystem === edgeEco ? uniqSorted(graph.edges.get(key) ?? []) : [];
+    nodes.push({ ref: componentBomRef(dep.ecosystem, dep.package, dep.version), dependsOn: children.map(purlOfKey) });
   }
   return nodes;
 }
@@ -350,19 +442,24 @@ function spdxRelationships(
   graph: LockfileGraph | undefined,
 ): Array<{ spdxElementId: string; relatedSpdxElementId: string; relationshipType: string }> | undefined {
   if (!graph?.edges) return undefined;
+  const edgeEco = graph.ecosystem ?? 'npm';
   const spdxIdOf = new Map<string, string>();
-  dependencies.forEach((dep, i) => spdxIdOf.set(`${dep.package}@${dep.version}`, `SPDXRef-Package-${i + 1}`));
+  dependencies.forEach((dep, i) => {
+    const eco = dep.ecosystem ?? UNKNOWN_ECOSYSTEM;
+    spdxIdOf.set(`${eco}\0${dep.package}@${dep.version}`, `SPDXRef-Package-${i + 1}`);
+  });
 
   const rels: Array<{ spdxElementId: string; relatedSpdxElementId: string; relationshipType: string }> = [];
   for (const key of uniqSorted(graph.rootDependsOn)) {
-    const id = spdxIdOf.get(key);
+    const id = spdxIdOf.get(`${edgeEco}\0${key}`);
     if (id) rels.push({ spdxElementId: 'SPDXRef-DOCUMENT', relatedSpdxElementId: id, relationshipType: 'DEPENDS_ON' });
   }
   for (const dep of dependencies) {
-    const fromId = spdxIdOf.get(`${dep.package}@${dep.version}`);
+    if (dep.ecosystem !== edgeEco) continue;
+    const fromId = spdxIdOf.get(`${dep.ecosystem}\0${dep.package}@${dep.version}`);
     if (!fromId) continue;
     for (const childKey of uniqSorted(graph.edges.get(`${dep.package}@${dep.version}`) ?? [])) {
-      const toId = spdxIdOf.get(childKey);
+      const toId = spdxIdOf.get(`${edgeEco}\0${childKey}`);
       if (toId) rels.push({ spdxElementId: fromId, relatedSpdxElementId: toId, relationshipType: 'DEPENDS_ON' });
     }
   }
@@ -376,8 +473,15 @@ function spdxRelationships(
  * lockfile-free for the code graph (see `engine/manifests.ts`), which is
  * right for that use case but wrong for an SBOM: "16 packages I typed into
  * package.json" is not the installed dependency surface a vulnerability or
- * supply-chain review needs. Deduped by exact name@version so a package
- * already reported as direct isn't repeated as transitive.
+ * supply-chain review needs.
+ *
+ * Identity is ecosystem + name + version. Direct rows come first, in artifact
+ * order, and win over a later row with the same identity. Lockfile components
+ * follow, already ordered by sorted project path (see `collectLockfileGraph`).
+ * A second project with the same identity keeps one component and records
+ * every contributing project. That is not a warning. A warning is recorded
+ * only when the dropped row carried different manifest fields, or when a
+ * project type has no Package URL ecosystem.
  */
 export function flattenDependencies(
   artifact: ScanArtifact,
@@ -385,9 +489,10 @@ export function flattenDependencies(
   lockfileEcosystem?: Ecosystem,
 ): FlattenedDependency[] {
   const rows: FlattenedDependency[] = [];
-  const seen = new Set<string>();
+  const indexByKey = new Map<string, number>();
   for (const project of artifact.projects) {
     const ecosystem = projectEcosystem(project.type);
+    const label = contributorLabel(project, artifact.projects);
     for (const dep of project.dependencies) {
       // Go always pins an exact version in go.mod, but the scanner's
       // `resolvedVersion` runs it through `semver.clean` (for semver math
@@ -403,17 +508,24 @@ export function flattenDependencies(
       // the SBOM's "version" (and building a purl from it) states something
       // that isn't true; `UNKNOWN_VERSION` says plainly that it isn't known.
       const version = isConcreteVersion(rawVersion) ? rawVersion : UNKNOWN_VERSION;
-      const key = `${dep.package}@${version}`;
-      // A workspace/monorepo (Cargo workspace, npm workspaces, Gradle
-      // multi-module, …) scans as several `artifact.projects`, and the same
-      // dependency is commonly declared by more than one of them. An SBOM
-      // reports the installed package surface, not "once per project that
-      // happens to use it" — keep the first project's attribution and skip
-      // the rest, same as the lockfile-only loop below already does.
-      if (seen.has(key)) continue;
-      seen.add(key);
+      const key = identityKey(ecosystem ?? UNKNOWN_ECOSYSTEM, dep.package, version);
+      const existingIndex = indexByKey.get(key);
+      if (existingIndex !== undefined) {
+        const existing = rows[existingIndex]!;
+        addContributor(existing, label);
+        const warning = droppedFieldWarning(existing, {
+          project: label,
+          currentSpec: dep.currentSpec,
+          drift: dep.drift,
+          majorsBehind: dep.majorsBehind,
+        });
+        if (warning && !existing.mergeWarnings.includes(warning)) existing.mergeWarnings.push(warning);
+        continue;
+      }
+      indexByKey.set(key, rows.length);
       rows.push({
-        project: project.name,
+        project: label,
+        projects: [label],
         package: dep.package,
         version,
         currentSpec: dep.currentSpec,
@@ -421,22 +533,38 @@ export function flattenDependencies(
         majorsBehind: dep.majorsBehind,
         scope: 'direct',
         ecosystem,
+        ecosystemWarning: ecosystem ? null : undeterminedEcosystemWarning(project.type, dep.package, version),
+        mergeWarnings: [],
       });
     }
   }
   for (const dep of lockfileDeps) {
-    const key = `${dep.package}@${dep.version}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
+    // A merged component carries its own ecosystem. A single-lockfile graph
+    // leaves it unset and the graph ecosystem applies; an absent graph
+    // ecosystem is the npm family, which is which parser ran, not a guess.
+    const ecosystem = dep.ecosystem ?? lockfileEcosystem ?? 'npm';
+    const key = identityKey(ecosystem, dep.package, dep.version);
+    const labels = dep.projects?.length ? dep.projects : dep.project ? [dep.project] : [artifact.rootPath];
+    const existingIndex = indexByKey.get(key);
+    if (existingIndex !== undefined) {
+      const existing = rows[existingIndex]!;
+      for (const label of labels) addContributor(existing, label);
+      continue;
+    }
+    const projects = [...new Set(labels)].sort();
+    indexByKey.set(key, rows.length);
     rows.push({
-      project: artifact.rootPath,
+      project: dep.project ?? projects[0] ?? artifact.rootPath,
+      projects,
       package: dep.package,
       version: dep.version,
       currentSpec: dep.version,
       drift: 'unknown',
       majorsBehind: null,
       scope: 'transitive',
-      ecosystem: lockfileEcosystem ?? 'npm',
+      ecosystem,
+      ecosystemWarning: null,
+      mergeWarnings: [],
     });
   }
   return rows;
@@ -448,25 +576,83 @@ export function flattenDependencies(
  * member) — not just the one at `root`. Reading only `root`'s lockfile misses
  * every package a sub-project's own lockfile resolves that root's lockfile
  * doesn't also list, which for something like a docs site's build toolchain
- * can be hundreds of components. Merge every project path's lockfile graph
- * into one components list; the top-level dependency-graph edges/rootDependsOn
- * still come from whichever project's lockfile matches `root` itself (or the
- * first one found), since a single CycloneDX `dependencies` section can only
- * describe one root's resolution, not several unrelated ones side by side.
+ * can be hundreds of components.
+ *
+ * Identity is ecosystem + name + version. Project paths are visited in sorted
+ * order and the first component wins; a later lockfile with the same identity
+ * is recorded on `projects` instead of replacing the row. `edges`,
+ * `rootDependsOn`, and the graph-level `ecosystem` still come from the
+ * lockfile at `root` (or the first sorted path that has one): one CycloneDX
+ * `dependencies` section describes one resolution. Each component keeps the
+ * ecosystem of the lockfile it was read from, so a sub-project in another
+ * ecosystem does not inherit the root purl type.
  */
 export function collectLockfileGraph(artifact: ScanArtifact, root: string): LockfileGraph | undefined {
-  const paths = uniqSorted(artifact.projects.map((p) => p.path));
-  const graphs = paths.map((p) => fullDependencyGraph(path.resolve(root, p))).filter((g): g is LockfileGraph => Boolean(g));
-  if (!graphs.length) return undefined;
+  const labeled = artifact.projects
+    .map((project) => ({ project, label: contributorLabel(project, artifact.projects) }))
+    .sort((a, b) => a.project.path.localeCompare(b.project.path) || a.label.localeCompare(b.label));
 
-  const primaryIndex = paths.findIndex((p, i) => graphs[i] && (p === '.' || path.resolve(root, p) === path.resolve(root)));
-  const primary = primaryIndex >= 0 ? graphs[primaryIndex]! : graphs[0]!;
-
-  const components = new Map<string, LockfileComponent>();
-  for (const graph of graphs) {
-    for (const c of graph.components) components.set(`${c.package}@${c.version}`, c);
+  const byPath = new Map<string, string[]>();
+  for (const entry of labeled) {
+    const list = byPath.get(entry.project.path);
+    if (list) list.push(entry.label);
+    else byPath.set(entry.project.path, [entry.label]);
   }
-  return { ...primary, components: [...components.values()].sort((a, b) => a.package.localeCompare(b.package) || a.version.localeCompare(b.version)) };
+
+  const loaded: Array<{ path: string; labels: string[]; graph: LockfileGraph }> = [];
+  for (const [projectPath, pathLabels] of byPath) {
+    const graph = fullDependencyGraph(path.resolve(root, projectPath));
+    if (!graph) continue;
+    loaded.push({ path: projectPath, labels: pathLabels, graph });
+  }
+  if (!loaded.length) return undefined;
+
+  const primary =
+    loaded.find((entry) => entry.path === '.' || path.resolve(root, entry.path) === path.resolve(root)) ?? loaded[0]!;
+
+  const merged = new Map<string, { component: LockfileComponent; projects: string[] }>();
+  for (const entry of loaded) {
+    // Undefined on an npm-family lockfile: the parser that matched was npm, pnpm, or yarn.
+    const ecosystem = entry.graph.ecosystem ?? 'npm';
+    for (const component of entry.graph.components) {
+      const key = identityKey(ecosystem, component.package, component.version);
+      const existing = merged.get(key);
+      if (!existing) {
+        merged.set(key, {
+          component: {
+            package: component.package,
+            version: component.version,
+            ecosystem,
+            project: entry.labels[0] ?? entry.path,
+          },
+          projects: [...entry.labels],
+        });
+        continue;
+      }
+      for (const label of entry.labels) {
+        if (!existing.projects.includes(label)) existing.projects.push(label);
+      }
+    }
+  }
+
+  const components = [...merged.values()]
+    .map((acc) => {
+      const projects = [...acc.projects].sort();
+      return { ...acc.component, projects };
+    })
+    .sort(
+      (a, b) =>
+        a.package.localeCompare(b.package) ||
+        a.version.localeCompare(b.version) ||
+        (a.ecosystem ?? '').localeCompare(b.ecosystem ?? ''),
+    );
+
+  return {
+    components,
+    edges: primary.graph.edges,
+    rootDependsOn: primary.graph.rootDependsOn,
+    ecosystem: primary.graph.ecosystem,
+  };
 }
 
 export function toCycloneDx(artifact: ScanArtifact, graph?: LockfileGraph): Record<string, unknown> {
@@ -502,9 +688,10 @@ export function toCycloneDx(artifact: ScanArtifact, graph?: LockfileGraph): Reco
         : {}),
     },
     components: dependencies.map((dep) => {
-      const { purl, warning } = resolvePurl(dep.ecosystem, dep.package, dep.version);
+      const { purl, warning } = resolveRowPurl(dep);
       const properties: Array<{ name: string; value: string }> = [
         { name: 'vibgrate:project', value: dep.project },
+        { name: PROJECTS_PROPERTY, value: dep.projects.join(',') },
         { name: 'vibgrate:currentSpec', value: dep.currentSpec },
         { name: 'vibgrate:drift', value: dep.drift },
         { name: 'vibgrate:majorsBehind', value: String(dep.majorsBehind ?? 'unknown') },
@@ -515,6 +702,9 @@ export function toCycloneDx(artifact: ScanArtifact, graph?: LockfileGraph): Reco
           { name: PURL_STATUS_PROPERTY, value: PURL_STATUS_UNAVAILABLE },
           { name: PURL_WARNING_PROPERTY, value: warning },
         );
+      }
+      for (const mergeWarning of dep.mergeWarnings) {
+        properties.push({ name: MERGE_WARNING_PROPERTY, value: mergeWarning });
       }
       return {
         type: 'library',
@@ -544,14 +734,14 @@ export function toSpdx(artifact: ScanArtifact, graph?: LockfileGraph): Record<st
       creators: [`Tool: @vibgrate/cli-${artifact.vibgrateVersion}`],
     },
     packages: dependencies.map((dep, i) => {
-      const { purl, warning } = resolvePurl(dep.ecosystem, dep.package, dep.version);
+      const { purl, warning } = resolveRowPurl(dep);
       const status = warning ? `; purlStatus=${PURL_STATUS_UNAVAILABLE}` : '';
       const annotations = [
         {
           annotationType: 'OTHER',
           annotator: 'Tool: @vibgrate/cli',
           annotationDate: artifact.timestamp,
-          comment: `project=${dep.project}; drift=${dep.drift}; majorsBehind=${dep.majorsBehind ?? 'unknown'}; scope=${dep.scope}${status}`,
+          comment: `project=${dep.project}; projects=${dep.projects.join(',')}; drift=${dep.drift}; majorsBehind=${dep.majorsBehind ?? 'unknown'}; scope=${dep.scope}${status}`,
         },
       ];
       if (warning) {
@@ -560,6 +750,14 @@ export function toSpdx(artifact: ScanArtifact, graph?: LockfileGraph): Record<st
           annotator: 'Tool: @vibgrate/cli',
           annotationDate: artifact.timestamp,
           comment: warning,
+        });
+      }
+      for (const mergeWarning of dep.mergeWarnings) {
+        annotations.push({
+          annotationType: 'OTHER',
+          annotator: 'Tool: @vibgrate/cli',
+          annotationDate: artifact.timestamp,
+          comment: mergeWarning,
         });
       }
       return {
@@ -599,9 +797,18 @@ export function toSpdx(artifact: ScanArtifact, graph?: LockfileGraph): Record<st
 /** Warnings for components whose purl was omitted. Same order as the SBOM rows; stable for a given artifact. */
 export function collectPurlWarnings(artifact: ScanArtifact, graph?: LockfileGraph): string[] {
   return flattenDependencies(artifact, graph?.components ?? [], graph?.ecosystem).flatMap((dep) => {
-    const warning = resolvePurl(dep.ecosystem, dep.package, dep.version).warning;
+    const warning = resolveRowPurl(dep).warning;
     return warning ? [warning] : [];
   });
+}
+
+/**
+ * Warnings for merges that dropped differing manifest fields. Same order as
+ * the SBOM rows. A second project with the same identity and the same fields
+ * is not included — that project is listed on `vibgrate:projects`.
+ */
+export function collectMergeWarnings(artifact: ScanArtifact, graph?: LockfileGraph): string[] {
+  return flattenDependencies(artifact, graph?.components ?? [], graph?.ecosystem).flatMap((dep) => dep.mergeWarnings);
 }
 
 function projectDependencyMap(artifact: ScanArtifact): Map<string, DependencyRow> {
@@ -700,6 +907,9 @@ const exportCommand = new Command('export')
 
     const sbom = format === 'cyclonedx' ? toCycloneDx(artifact, lockfileGraph) : toSpdx(artifact, lockfileGraph);
     for (const warning of collectPurlWarnings(artifact, lockfileGraph)) {
+      console.error(chalk.yellow(`warning: ${warning}`));
+    }
+    for (const warning of collectMergeWarnings(artifact, lockfileGraph)) {
       console.error(chalk.yellow(`warning: ${warning}`));
     }
     const body = JSON.stringify(sbom, null, 2);

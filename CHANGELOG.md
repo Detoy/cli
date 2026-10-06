@@ -14,6 +14,19 @@ backward compatible.
 
 ### Fixed
 
+- **`vg sbom export` merges multi-project lockfiles by ecosystem, name, and
+  version.** Components were keyed only by `name@version`, so a later lockfile
+  replaced an earlier one and did not record which projects contributed.
+  Every merged component also inherited the root lockfile's ecosystem, which
+  gave a sub-project from another ecosystem the root purl type. Identity is
+  now ecosystem + name + version. Direct manifest rows still win, then
+  lockfile components in sorted project-path order. The same identity from
+  two projects stays one component and lists every contributing project on
+  `vibgrate:projects`. A warning is recorded when a project type has no
+  Package URL ecosystem, or when keeping the first row drops differing
+  manifest fields (`vibgrate:mergeWarning`, the same text on stderr). The
+  document is deterministic for the same scan and lockfiles.
+
 - **Vulnerability lines in `vg scan` and `vg report` text name a fix only when
   the scan result already has one.** A finding with published fixed versions
   now shows `fix available` (and those versions). A finding with no fix
