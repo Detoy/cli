@@ -921,6 +921,17 @@ export interface ScanOptions {
   /** Additional exclude glob patterns (e.g. from the CLI `--exclude` flag).
    *  Merged with `exclude` from the config file. */
   exclude?: string[];
+  /**
+   * Scan a filesystem root, an OS-image layout, or a tree over the walk
+   * budget. Also enabled by `VG_ALLOW_UNSAFE_ROOT=1` or `--allow-unsafe-root`.
+   */
+  allowUnsafeRoot?: boolean;
+  /**
+   * Ceiling on directory entries the scan walk may visit. Overrides
+   * `VG_MAX_WALK_ENTRIES` when set. `0` disables the budget. Ignored when
+   * `allowUnsafeRoot` is set.
+   */
+  maxWalkEntries?: number;
   /** Version string to embed in scan artifacts (e.g. the CLI or extension version). */
   vibgrateVersion?: string;
   /** Authoritative repository name override. When set, takes precedence over the

@@ -1979,8 +1979,28 @@ vg scan [path] [--vulns] [--full] [--iac] [--format text|json|sarif|md] [--out <
 | `--repository-name <name>` | directory / `package.json` name | Override the repository name recorded for this scan |
 | `--force` | — | Always create a fresh ingest, even when the repository is unchanged since the last scan |
 | `--quiet` | — | Suppress promotional output; scan results are unaffected |
+| `--allow-unsafe-root` | — | Scan a filesystem root, an OS-image layout, or a tree over the walk budget anyway. See [Unsafe roots](#unsafe-roots) |
 
 By default, the scan writes `.vibgrate/scan_result.json`. Use `--no-local-artifacts` or `--max-privacy` to suppress local JSON artifact files.
+
+### Unsafe roots
+
+`vg scan` and `vg build` refuse to walk a root that looks like a whole filesystem. The command exits 1 and prints one stable message — no stack trace. The same path always produces the same text.
+
+The check fires when:
+
+- the path is a filesystem root (`/` on Linux and macOS, a drive root such as `C:\` on Windows), including a symlink to one
+- the top level looks like an operating-system image: `etc`, `usr`, and `var` together, plus one of `bin`, `sbin`, `lib`, or `boot`; or `Windows` plus `Program Files`, `Users`, or `ProgramData`
+- the walk visits more entries than the budget (`VG_MAX_WALK_ENTRIES`, default `1000000`)
+
+The message tells you to pass a project subdirectory, narrow the walk with `--exclude` ignore patterns, raise `VG_MAX_WALK_ENTRIES` (`0` disables the budget), or pass `--allow-unsafe-root`. `--allow-unsafe-root` and `VG_ALLOW_UNSAFE_ROOT=1` skip all three checks. `vg build ./app` checks `./app`, not the current directory, so a narrowed path is the usual fix.
+
+```bash
+vg scan ./my-app
+vg scan . --exclude "unpack/**"
+VG_MAX_WALK_ENTRIES=2000000 vg scan .
+vg scan /var/images/rootfs --allow-unsafe-root
+```
 
 For offline drift scoring, pass `--package-manifest <file>` with a downloaded manifest bundle such as `https://github.com/vibgrate/manifests/latest-packages.zip`. The manifest shape, the fail-closed errors, and what offline mode skips are in [Offline scan with a package-version manifest](#offline-scan-with-a-package-version-manifest).
 
@@ -2433,6 +2453,7 @@ Maps source code into a graph artifact, enabling all downstream queries (`vg sho
 | `[paths...]` | `.` | Folders or files to map |
 | `--only <langs>` | — | Restrict to languages (e.g. `ts,py,go`) |
 | `--exclude <glob>` | — | Extra ignore glob (repeatable) |
+| `--allow-unsafe-root` | — | Map a filesystem root, an OS-image layout, or a tree over the walk budget anyway. See [Unsafe roots](#unsafe-roots) |
 | `--jobs <n>` | auto | Worker count (`1` = single-threaded) |
 | `--scip <file>` | auto-detect | Ingest a SCIP index for precise resolution |
 | `--no-scip` | — | Ignore any SCIP index |
@@ -4471,7 +4492,9 @@ and `0` always means "disabled".
 | Variable              | Default                     | What it does                                                                                                                          |
 | --------------------- | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
 | `VG_MAX_FILE_BYTES`   | `2097152` (2 MiB)           | Per-file source cap. Larger files (almost always generated/minified) are skipped with a warning; they stay freshness-tracked.          |
-| `VG_MAX_FILES`        | `100000`                    | Walk-entry ceiling for `vg scan` and `vg build`. Exceeding it stops the walk with guidance (narrow the path, add `--exclude`, or raise this value; `0` disables the budget only). Pointing either command at the filesystem root or an operating-system image stops before the walk, with the same guidance to narrow the path. |
+| `VG_MAX_FILES`        | `100000`                    | Corpus file-count ceiling. Exceeding it stops the build with guidance (scope with paths, `--exclude`, or `--only`) instead of an OOM.   |
+| `VG_MAX_WALK_ENTRIES` | `1000000`                   | Directory entries `vg scan` / `vg build` may visit. Exceeding it stops the walk with guidance. `0` disables the budget. See [Unsafe roots](#unsafe-roots). |
+| `VG_ALLOW_UNSAFE_ROOT`| unset                       | Set to `1` to scan a filesystem root, an OS-image layout, or a tree over the walk budget. Same as `--allow-unsafe-root`. |
 | `VG_TSC_MAX_FILES`    | `10000`                     | Max TS/JS files handed to the in-process TypeScript resolver (the largest single memory consumer). Above it, the heuristic rung is used. |
 | `VG_MEMORY_BUDGET_MB` | 90% of the Node heap ceiling | Heap budget checked at phase boundaries. Exceeding it stops the build with a clear, catchable error before V8 hard-crashes.             |
 | `VG_JOBS`             | CPU cores − 1               | Default parse worker count when `--jobs` isn't passed. Fewer workers = lower peak memory (each worker loads its own grammar set).       |

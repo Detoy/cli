@@ -24,6 +24,7 @@ import { redactSecrets } from '../core-open/utils/redact.js';
 import { nodeId } from './ids.js';
 import { isSkippedDirName, loadRootIgnore, SKIP_FILES } from './discover.js';
 import { assertSafeWalkRoot, createWalkBudget, noteWalkEntry, UnsafeRootError } from '../core-open/utils/root-safety.js';
+import { unsafeRootAllowed, type RootSafetyOptions } from './root-safety.js';
 import type { GraphNode } from '../schema.js';
 
 /** Soft cap on characters stored/embedded per document (keeps index snappy). */
@@ -55,8 +56,13 @@ export interface DiscoverDocsOptions {
   exclude?: string[];
   paths?: string[];
   maxFiles?: number;
-  /** Walk-entry ceiling. `0` disables. Default: `VG_MAX_FILES`, else 100000. */
-  maxEntries?: number;
+  /** Skip filesystem-root, OS-image, and walk-budget checks. */
+  allowUnsafeRoot?: boolean;
+  /**
+   * Walk-entry ceiling. Wins over `VG_MAX_WALK_ENTRIES` (default 1_000_000).
+   * `0` disables the budget. Ignored when `allowUnsafeRoot` is set.
+   */
+  maxWalkEntries?: number;
 }
 
 export interface DiscoveredDoc {
@@ -375,7 +381,11 @@ export function discoverDocs(options: DiscoverDocsOptions): DiscoveredDoc[] {
   );
 
   const found = new Map<string, DiscoveredDoc>();
-  const budget = createWalkBudget(root, options.maxEntries);
+  const safety: RootSafetyOptions = {
+    allowUnsafeRoot: options.allowUnsafeRoot,
+    maxWalkEntries: options.maxWalkEntries,
+  };
+  const budget = createWalkBudget(root, unsafeRootAllowed(options.allowUnsafeRoot) ? 0 : options.maxWalkEntries);
 
   const consider = (abs: string): void => {
     if (found.size >= maxFiles) return;
@@ -428,7 +438,7 @@ export function discoverDocs(options: DiscoverDocsOptions): DiscoveredDoc[] {
     try {
       const st = fs.statSync(scope);
       if (st.isDirectory()) {
-        assertSafeWalkRoot(scope);
+        assertSafeWalkRoot(scope, safety);
         walk(scope, 0);
       } else if (st.isFile()) consider(scope);
     } catch (err) {

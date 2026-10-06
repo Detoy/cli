@@ -406,6 +406,8 @@ vg baseline                     # snapshot current drift for regression gating
 vg report                       # generate a report from a saved scan artifact
 ```
 
+`vg scan` and `vg build` exit 1 instead of walking a filesystem root, an operating-system image, or a tree over the walk budget. Pass a project subdirectory, narrow the walk with `--exclude` ignore patterns, or pass `--allow-unsafe-root`. Details: [DOCS.md](./DOCS.md#unsafe-roots).
+
 One scan gives you:
 
 - **Overall score** (0–100) and risk level (**Low / Moderate / High**)
