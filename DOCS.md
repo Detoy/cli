@@ -21,6 +21,7 @@ For a quick overview, see the [README](./README.md). This document covers everyt
   - [vg review](#vg-review)
     - [Findings JSON contract](#findings-json-contract)
   - [vg sbom](#vg-sbom)
+    - [Choosing CycloneDX or SPDX](#choosing-cyclonedx-or-spdx)
     - [Component identity](#component-identity)
     - [CycloneDX type and SPDX primaryPackagePurpose](#cyclonedx-type-and-spdx-primarypackagepurpose)
     - [Component type](#component-type)
@@ -1386,14 +1387,206 @@ vg sbom vex [--from <file>] [--statement <json>...] [--product <ref>] [--out <fi
 
 | Command | Description |
 |---------|-------------|
-| `vg sbom export` | Emit CycloneDX or SPDX JSON from a scan artifact |
+| `vg sbom export` | Emit CycloneDX (the default) or SPDX JSON from a scan artifact |
 | `vg sbom delta` | Compare dependencies between two artifacts (added/removed/changed + drift delta) |
 | `vg sbom vex` | Emit a spec-compliant OpenVEX document (exploitability statements) for attestation |
 
 Use this to treat SBOMs as operational intelligence instead of static compliance output.
+`--format` is `cyclonedx` or `spdx`; omitting it writes CycloneDX. Where the two
+documents put the same facts is [Choosing CycloneDX or SPDX](#choosing-cyclonedx-or-spdx).
 How CycloneDX `type` is set, and when SPDX `primaryPackagePurpose` is omitted,
 is [Component type](#component-type). The export is an inventory, not a
 compliance determination.
+
+#### Choosing CycloneDX or SPDX
+
+`vg sbom export --format` accepts `cyclonedx` and `spdx`. Omitting `--format`
+writes the same JSON as `--format cyclonedx`. The value is lowercased, so
+`CycloneDX` and `SPDX` are accepted. Any other value prints
+`Invalid SBOM format. Use cyclonedx or spdx.` on stderr and exits `1`.
+`vg sbom export --help` lists those two values and the default. Both values
+write JSON.
+
+Both formats read one scan artifact (`--in`, default
+`.vibgrate/scan_result.json`) and the lockfiles under `--root` (default `.`).
+They list the same components. `--no-transitive` applies to both: lockfile-only
+rows are dropped, and the dependency graph is omitted. CycloneDX output is
+[CycloneDX 1.5](https://cyclonedx.org/docs/1.5/json/) JSON. SPDX output is
+[SPDX 2.3](https://spdx.github.io/spdx-spec/v2.3/) JSON. The file is an
+inventory, not a compliance determination.
+
+| Fact | CycloneDX 1.5 | SPDX 2.3 |
+| --- | --- | --- |
+| Document id | `serialNumber` is `urn:uuid:` plus a version-8 UUID. Document `version` is `1`. `bomFormat` is `CycloneDX`. `specVersion` is `1.5`. | `documentNamespace` is `https://vibgrate.com/spdx/<rootPath>/<uuid>`. `SPDXID` is `SPDXRef-DOCUMENT`. `name` is `<rootPath>-sbom`. `spdxVersion` is `SPDX-2.3`. `dataLicense` is `CC0-1.0` (the SPDX data license on the document). |
+| Tool and time | `metadata.timestamp` is the scan artifact's `timestamp`. `metadata.tools` is one object: `vendor` `Vibgrate`, `name` `@vibgrate/cli`, `version` the artifact's `vibgrateVersion`. | `creationInfo.created` is that same timestamp. `creationInfo.creators` is one string, `Tool: @vibgrate/cli-<vibgrateVersion>`. SPDX has no `metadata` object. |
+| Root | `metadata.component`: `type` `application`, `bom-ref` `vibgrate-root`, `name` the artifact's `rootPath`. No `version` and no `purl` on that object. | No package for the root. `primaryPackagePurpose` is omitted on every package. |
+| Package identity | `components[].purl`. `bom-ref` is that same purl. `name` and `version` are the package name and installed version. | The purl is `packages[].externalRefs[]` with `referenceCategory` `PACKAGE-MANAGER`, `referenceType` `purl`, and `referenceLocator` set to the purl. The id inside this file is `SPDXID` `SPDXRef-Package-N` (1-based position in `packages`). `name` and `versionInfo` are the package name and installed version. |
+| Dependency graph | Top-level `dependencies`: objects `{ "ref", "dependsOn" }`. `ref` and each `dependsOn` entry are that component's `bom-ref` (the purl when one was built). The root `ref` is `vibgrate-root`. Every component is an entry. A component with no children has `dependsOn` `[]`. The member is omitted when the lockfile has no resolved edges. | `relationships`: objects `{ "spdxElementId", "relatedSpdxElementId", "relationshipType" }` with `relationshipType` `DEPENDS_ON`. An edge from the root uses `spdxElementId` `SPDXRef-DOCUMENT` and points at `SPDXRef-Package-N`. A component with no children is never `spdxElementId`. The member is omitted when the lockfile has no resolved edges. |
+| Licenses | `components[].licenses` when the scan row's declared license is representable. Otherwise `licenses` is omitted. | `licenseDeclared` on every package. `licenseConcluded` is `NOASSERTION` on every package. `downloadLocation` is `NOASSERTION` and `filesAnalyzed` is `false`. `hasExtractedLicensingInfos` is written when a `LicenseRef-` id is used. |
+| Scan facts on each component | `properties` entries `vibgrate:project`, `vibgrate:projects`, `vibgrate:currentSpec`, `vibgrate:drift`, `vibgrate:majorsBehind`, and `vibgrate:scope` (`direct` or `transitive`). | One annotation: `annotationType` `OTHER`, `annotator` `Tool: @vibgrate/cli`, `annotationDate` the scan timestamp, `comment` `project=…; projects=…; drift=…; majorsBehind=…; scope=…`. |
+
+`<rootPath>` is the scan artifact's `rootPath`, the basename of the directory
+passed to `vg scan`. The UUID in `serialNumber` and the UUID in
+`documentNamespace` are each a hash of that artifact (timestamp included) and
+of the ordered component list, declared licenses, license-parse notes, and
+edges. The format name is part of the hash input, so the two files from one
+artifact carry different UUIDs. Exporting again from the same artifact and the
+same lockfiles repeats that format's id. A later scan records a new timestamp,
+and both ids change. Purls and CycloneDX `bom-ref` values stay. The stability
+rule is **Same inputs, same document**, later in this section.
+
+These rows name the field. The rules for what goes in it are already written:
+
+- Package URL placement, `bom-ref` when the purl is omitted, and scan JSON
+  identity: [Component identity](#component-identity).
+- CycloneDX `type` and the omitted SPDX `primaryPackagePurpose`:
+  [Component type](#component-type) and
+  [CycloneDX type and SPDX primaryPackagePurpose](#cyclonedx-type-and-spdx-primarypackagepurpose).
+- `vibgrate:scope`, which edges exist, and the relationship types this export
+  leaves out: [Production, development, and optional scope](#production-development-and-optional-scope)
+  and [Dependency scope](./docs/sbom-dependency-scope.md).
+- Declared-license values, `vibgrate:licenseStatus`, and `LicenseRef-` text:
+  [Declared licenses](#declared-licenses).
+
+A scan finding whose rule is `vibgrate/license-parse-failed` is repeated on
+CycloneDX `metadata.properties` and as a top-level SPDX `annotations` entry.
+Both are absent when the scan has no such finding.
+
+**Example.** Directory `format-fixture`. The package names are local
+placeholders, so `vg scan --offline` does not contact a registry. `package.json`:
+
+```json
+{
+  "name": "format-fixture",
+  "version": "1.0.0",
+  "dependencies": { "left-pad": "1.3.0" }
+}
+```
+
+`package-lock.json` (lockfileVersion 3):
+
+```json
+{
+  "name": "format-fixture",
+  "lockfileVersion": 3,
+  "requires": true,
+  "packages": {
+    "": {
+      "name": "format-fixture",
+      "version": "1.0.0",
+      "dependencies": { "left-pad": "1.3.0" }
+    },
+    "node_modules/left-pad": {
+      "version": "1.3.0",
+      "dependencies": { "once": "1.4.0" }
+    },
+    "node_modules/once": { "version": "1.4.0" }
+  }
+}
+```
+
+```bash
+vg scan ./format-fixture --offline --no-graph
+vg sbom export --in ./format-fixture/.vibgrate/scan_result.json \
+  --root ./format-fixture --format cyclonedx --out sbom.cdx.json
+vg sbom export --in ./format-fixture/.vibgrate/scan_result.json \
+  --root ./format-fixture --format spdx --out sbom.spdx.json
+```
+
+The same `vg sbom export` command with `--format` omitted writes the same JSON
+as `--format cyclonedx`. Each command prints `✔ SBOM written to <file>`. The
+JSON is the file. Warnings, when there are any, go to stderr.
+
+The scan row for `left-pad` carried no declared license, so CycloneDX omits
+`licenses` and SPDX sets `licenseDeclared` to `NOASSERTION`.
+An offline scan leaves `vibgrate:drift` and `vibgrate:majorsBehind` as
+`unknown`. `metadata.tools[0].version` and the SPDX creator string use the
+scan artifact's `vibgrateVersion`. `metadata.timestamp` and
+`creationInfo.created` are the artifact's `timestamp`.
+
+CycloneDX document fields from that export:
+
+```json
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "version": 1,
+  "metadata": {
+    "tools": [{ "vendor": "Vibgrate", "name": "@vibgrate/cli" }],
+    "component": { "type": "application", "bom-ref": "vibgrate-root", "name": "format-fixture" }
+  }
+}
+```
+
+`metadata.timestamp` and `metadata.tools[0].version` are present on that
+object. They are the scan timestamp and `vibgrateVersion`, and are left out of
+the excerpt above.
+
+`serialNumber` on that file was `urn:uuid:` plus the CycloneDX hash described
+above. `left-pad` is the direct component (`bom-ref` and `purl`
+`pkg:npm/left-pad@1.3.0`). `once` is the lockfile-only component (`purl`
+`pkg:npm/once@1.4.0`, `vibgrate:scope` `transitive`). The resolved edges:
+
+```json
+[
+  { "ref": "vibgrate-root", "dependsOn": ["pkg:npm/left-pad@1.3.0"] },
+  { "ref": "pkg:npm/left-pad@1.3.0", "dependsOn": ["pkg:npm/once@1.4.0"] },
+  { "ref": "pkg:npm/once@1.4.0", "dependsOn": [] }
+]
+```
+
+SPDX document fields from the same artifact:
+
+```json
+{
+  "spdxVersion": "SPDX-2.3",
+  "dataLicense": "CC0-1.0",
+  "SPDXID": "SPDXRef-DOCUMENT",
+  "name": "format-fixture-sbom"
+}
+```
+
+`documentNamespace` was `https://vibgrate.com/spdx/format-fixture/` plus the
+SPDX hash. That UUID differed from `serialNumber`. The `left-pad` package:
+
+```json
+{
+  "name": "left-pad",
+  "SPDXID": "SPDXRef-Package-1",
+  "versionInfo": "1.3.0",
+  "downloadLocation": "NOASSERTION",
+  "filesAnalyzed": false,
+  "licenseConcluded": "NOASSERTION",
+  "licenseDeclared": "NOASSERTION",
+  "externalRefs": [
+    {
+      "referenceCategory": "PACKAGE-MANAGER",
+      "referenceType": "purl",
+      "referenceLocator": "pkg:npm/left-pad@1.3.0"
+    }
+  ]
+}
+```
+
+Its annotation comment was
+`project=format-fixture; projects=format-fixture; drift=unknown; majorsBehind=unknown; scope=direct`.
+`once` was `SPDXRef-Package-2` with `scope=transitive`. The same edges. `once`
+is `relatedSpdxElementId` on the second row, and it is not an `spdxElementId`:
+
+```json
+[
+  {
+    "spdxElementId": "SPDXRef-DOCUMENT",
+    "relatedSpdxElementId": "SPDXRef-Package-1",
+    "relationshipType": "DEPENDS_ON"
+  },
+  {
+    "spdxElementId": "SPDXRef-Package-1",
+    "relatedSpdxElementId": "SPDXRef-Package-2",
+    "relationshipType": "DEPENDS_ON"
+  }
+]
+```
 
 `vg sbom export` reports the full resolved dependency tree, not just what's declared
 in the manifest: it reads each scanned project's lockfile (`package-lock.json` /
@@ -1872,9 +2065,11 @@ orders that contribute the same set list the same projects.
 `--root`, `vg sbom export` writes the same JSON on every run, including the
 CycloneDX `serialNumber` and the SPDX `documentNamespace`. Those document ids
 are a hash of that artifact — timestamp included — and of the ordered component
-list, declared licenses, license-parse notes, and edges. A later scan of the
+list, declared licenses, license-parse notes, and edges. The format name is
+part of that hash, so the two files do not share a UUID. A later scan of the
 same tree records a new timestamp, so the document id changes. Purls and
-CycloneDX `bom-ref` values do not.
+CycloneDX `bom-ref` values do not. Field placement is
+[Choosing CycloneDX or SPDX](#choosing-cyclonedx-or-spdx).
 
 **Known limitations:**
 

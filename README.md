@@ -623,6 +623,8 @@ vg sbom delta  --from .vibgrate/baseline.json --to .vibgrate/scan_result.json --
 vg vex                          # generate an OpenVEX document for attestation
 ```
 
+`--format` accepts `cyclonedx` (the default) and `spdx`. Both files come from the same scan artifact. Purl placement, dependency edges, licenses, tool metadata, CycloneDX `serialNumber`, and SPDX `documentNamespace` are compared in [Choosing CycloneDX or SPDX](./DOCS.md#choosing-cyclonedx-or-spdx).
+
 CycloneDX `type` and SPDX `primaryPackagePurpose` (omitted on every package) are mapped in [Component type](./DOCS.md#component-type). An inventory, not a compliance determination. The same labels (`application` on the metadata component, `library` on every dependency row, including a container image), the gaps (OS packages, image contents, Terraform resources), and short fixture examples are also in [CycloneDX type and SPDX primaryPackagePurpose](./DOCS.md#cyclonedx-type-and-spdx-primarypackagepurpose).
 
 Each exported component is labeled `direct` or `transitive` (CycloneDX property `vibgrate:scope`, SPDX annotation `scope=`). Production, development, and optional manifest sections are not copied into those fields. The mapping, a fixture, and the ecosystems where that scope is omitted: [Production, development, and optional scope](./DOCS.md#production-development-and-optional-scope). How those dependencies are written in CycloneDX and SPDX, including fields the export omits, is also in [Dependency scope](./docs/sbom-dependency-scope.md).
