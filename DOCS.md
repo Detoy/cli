@@ -321,6 +321,14 @@ vg evidence export [--out <dir>] [--regime <id>]
 
 **Exit codes** (CI-usable): `0` no exposure · `2` exposure found · `3` undetermined (manual review) · `1` operational error.
 
+Exit `1` is also what you get when a subcommand cannot serialize or write its output (the pack `--out` file, an export directory, a `--bundle` directory, a drill record, or state under `.vibgrate/evidence/`). Stderr is a single `error:` line that names the path and the reason — permission denied, the path is a directory, no space left on the device, a parent directory is missing, a parent path is not a directory, a parent path exists and is not a directory, or the value is not valid JSON (a cycle, a BigInt, or another non-JSON value) — then a next step. A pack or export says to check the path and permissions or pass a different `--out`. A bundle says to pass a different `--bundle`. State under `.vibgrate/evidence/` says to check that directory is writable. There is no stack trace, and the line does not include a signing key, a token, or a DSN. When `vg evidence export --out` points at a directory whose `org.json` entry is itself a directory, the line is:
+
+```text
+error: could not write /work/outdir/org.json (the path is a directory). Check the path and permissions, or pass a different --out.
+```
+
+The path in that sample is a stand-in for the resolved output file.
+
 No language model touches any figure in the evidence path, and every determination carries an evidence-not-compliance disclaimer. Vibgrate Evidence produces evidence to support your obligations under a regime; it does not determine compliance and is not legal advice.
 
 ---
@@ -3117,6 +3125,22 @@ error: could not read an Ed25519 private key from bad.pem
 ```
 
 Replace it with an Ed25519 PEM. The same relative-versus-absolute path rule as the type error applies.
+
+**Attestation file cannot be written** — exit 1. `--attestation` (or the default `.vibgrate/attestation.intoto.jsonl`) could not be serialized or written. The reason is one of: the path is a directory, a parent path is not a directory, a parent path exists and is not a directory, permission denied, the filesystem is read-only, no space left on the device, a parent directory is missing, or the value is not valid JSON. There is no second `ref` line. For a path that is a directory:
+
+```text
+error: could not write attest-out (the path is a directory). Check the path and permissions, or pass a different --attestation.
+```
+
+Check the path and permissions, or pass `--attestation` pointing at a writable file. The signing key is not printed.
+
+**Signing key cannot be written** — exit 1, when the default key path cannot be created. A path inside the project is shown relative to it. When `.vibgrate` exists as a file rather than a directory:
+
+```text
+error: could not write .vibgrate/attest-key.pem (a parent path exists and is not a directory). Check the path and permissions for the signing key.
+```
+
+Permission denied, a full disk, and a read-only filesystem use that same sentence with the matching reason. No PEM material is included. Fix the directory, or point `--attest-key` / `VG_ATTEST_KEY` at a key file this process can write.
 
 **Named attestation is missing** — exit 3. This is the failure in the try-it above. `--pub` with no attestation file uses the same sentence and the default path:
 
