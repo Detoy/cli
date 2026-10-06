@@ -224,6 +224,28 @@ describe('drift gate — committed policy files are valid', () => {
     expect(cfg.driftBudget).toBeLessThanOrEqual(100);
     expect(['major', 'minor', null]).toContain(cfg.currency);
     expect(Array.isArray(cfg.scanExclude)).toBe(true);
+    // Documentation examples and fixtures are intentionally stale. The budget
+    // scan must skip them; the budget itself stays the reviewed ceiling.
+    expect(cfg.driftBudget).toBe(30);
+    for (const glob of ['**/examples/**', '**/example/**', '**/fixtures/**', '**/__fixtures__/**']) {
+      expect(cfg.scanExclude).toContain(glob);
+    }
+  });
+
+  it('threads example and fixture excludes into the budget scan', () => {
+    const policy = loadPolicy(PKG_ROOT);
+    const budget = planSteps({ policy, online: true, baselineExists: false }).find((s) => s.id === 'budget')!;
+    const excludes: string[] = [];
+    for (let i = 0; i < budget.args.length; i++) {
+      if (budget.args[i] === '--exclude') excludes.push(budget.args[i + 1]);
+    }
+    expect(excludes).toEqual(expect.arrayContaining(['**/examples/**', '**/example/**', '**/fixtures/**']));
+    expect(budget.args).toContain('30');
+  });
+
+  it('project scan config also skips documentation examples', () => {
+    const cfg = JSON.parse(readFileSync(path.join(PKG_ROOT, 'vibgrate.config.json'), 'utf8'));
+    expect(cfg.exclude).toEqual(expect.arrayContaining(['examples/**', 'example/**']));
   });
 
   it('vibgrate.standards.json parses to a non-empty banned list and every rule names a package', () => {

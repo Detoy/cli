@@ -5,6 +5,7 @@ import { langForExtension, langById, type LanguageDef } from './languages.js';
 import { requireDataConfig } from '../core-open/config.js';
 import { dropBlankPatterns, gitignoreWithoutBlankLines } from '../core-open/utils/glob.js';
 import { assertLockfileFile, lockfileKind } from '../core-open/utils/lockfile-parse.js';
+import { assertSafeScanRoot, createWalkBudget, type RootSafetyOptions } from './root-safety.js';
 
 /**
  * Deterministic file discovery.
@@ -160,6 +161,10 @@ export interface DiscoverOptions {
   exclude?: string[];
   /** Explicit sub-paths to scope to (relative or absolute). */
   paths?: string[];
+  /** Skip filesystem-root, OS-image, and walk-budget checks. */
+  allowUnsafeRoot?: boolean;
+  /** Walk-entry ceiling (else `VG_MAX_WALK_ENTRIES`, else the default). 0 disables. */
+  maxWalkEntries?: number;
 }
 
 export interface DiscoveredFile {
@@ -221,6 +226,10 @@ export function loadRootIgnore(root: string, exclude: string[]): Ignore {
 
 export function discover(options: DiscoverOptions): DiscoveredFile[] {
   const root = path.resolve(options.root);
+  const safety: RootSafetyOptions = {
+    allowUnsafeRoot: options.allowUnsafeRoot,
+    maxWalkEntries: options.maxWalkEntries,
+  };
   const onlyLangs = (options.only ?? []).filter(Boolean);
   const allowLang = (lang: LanguageDef): boolean =>
     onlyLangs.length === 0 || onlyLangs.includes(lang.id);
@@ -232,13 +241,19 @@ export function discover(options: DiscoverOptions): DiscoveredFile[] {
     }
   }
 
-  const rootIg = loadRootIgnore(root, options.exclude ?? []);
-
-  // Scope roots: explicit paths, or the whole repo.
-  const scopeAbs = (options.paths && options.paths.length
+  // Scope roots: explicit paths, or the whole repo. Refuse an unsafe scope
+  // before reading gitignore or descending — a filesystem root has no project
+  // ignore file worth reading, and the walk itself is the hazard.
+  const scopeCandidates = options.paths && options.paths.length
     ? options.paths.map((p) => path.resolve(root, p))
-    : [root]
-  ).filter((p) => fs.existsSync(p));
+    : [root];
+  for (const scope of scopeCandidates) {
+    assertSafeScanRoot(scope, safety);
+  }
+
+  const rootIg = loadRootIgnore(root, options.exclude ?? []);
+  const scopeAbs = scopeCandidates.filter((p) => fs.existsSync(p));
+  const budget = createWalkBudget(root, safety);
 
   const found = new Map<string, DiscoveredFile>();
 
@@ -258,6 +273,7 @@ export function discover(options: DiscoverOptions): DiscoveredFile[] {
   };
 
   const walk = (dir: string): void => {
+    if (budget.aborted) return;
     let entries: fs.Dirent[];
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -265,6 +281,8 @@ export function discover(options: DiscoverOptions): DiscoveredFile[] {
       return; // unreadable dir — skip rather than crash the build
     }
     for (const entry of entries) {
+      if (budget.aborted) return;
+      budget.note();
       const abs = path.join(dir, entry.name);
       const rel = toPosix(path.relative(root, abs));
       if (entry.isDirectory()) {
