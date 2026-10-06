@@ -30,6 +30,8 @@ backward compatible.
 
 ### Added
 
+- **Component identity in `vg sbom` and scan JSON is documented as the Package URL.** CycloneDX `purl` / `bom-ref` and the SPDX purl `externalRef` are the SBOM identity. Scan JSON and SARIF key advisories on ecosystem, package name, and installed version. These outputs leave CPE unset; a CPE from another cataloger does not replace the purl. The docs include a local `vg scan` / `vg sbom export` example and the offline manifest lookup.
+
 - **`vg scan --junit <file>` writes a deterministic JUnit XML report.**
   CI test reporters (GitLab, Azure DevOps, Jenkins) can publish it beside
   JSON or SARIF. One testcase per drift finding, plus architecture, security,

@@ -166,6 +166,9 @@ export async function buildGraph(options: BuildOptions): Promise<BuildResult> {
   const scopes = options.paths?.length ? options.paths.map((p) => path.resolve(root, p)) : [root];
   for (const scope of scopes) assertSafeScanRoot(scope, safety);
   const exclude = mergeExcludes(root, options.exclude);
+  // Corpus cap is applied to the file list below. The walk's own ceiling is
+  // VG_MAX_WALK_ENTRIES (see root-safety.ts), not VG_MAX_FILES.
+  const limits = resolveLimits(options.limits);
   timer.start('discover');
   const files = discover({
     root,
@@ -179,7 +182,6 @@ export async function buildGraph(options: BuildOptions): Promise<BuildResult> {
 
   // Resource safeguards (see limits.ts): stop a pathological corpus before it
   // OOM-kills the process. Skips are deterministic functions of the input.
-  const limits = resolveLimits(options.limits);
   if (limits.maxFiles > 0 && files.length > limits.maxFiles) {
     throw new ResourceLimitError(
       `graph build stopped: ${files.length.toLocaleString()} files exceed the ` +
@@ -516,6 +518,8 @@ export async function buildGraph(options: BuildOptions): Promise<BuildResult> {
     root,
     exclude,
     paths: options.paths,
+    allowUnsafeRoot: options.allowUnsafeRoot,
+    maxWalkEntries: options.maxWalkEntries,
   });
   for (const d of docs) {
     try {

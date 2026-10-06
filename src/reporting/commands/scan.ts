@@ -558,7 +558,9 @@ export const scanCommand = new Command('scan')
       if (parsed) {
         const ingestHost = opts.region ? resolveIngestHost(opts.region) : parsed.host;
         const vcs = await detectVcs(rootDir);
-        const fingerprint = await computeRepoFingerprint(rootDir, vcs);
+        const fingerprint = await computeRepoFingerprint(rootDir, vcs, {
+          allowUnsafeRoot: opts.allowUnsafeRoot,
+        });
         const repositoryName = opts.repositoryName?.trim() || await resolveRepositoryName(rootDir);
         try {
           const preflight = await fetchScanPreflight(parsed, ingestHost, {

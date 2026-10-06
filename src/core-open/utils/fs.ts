@@ -1001,12 +1001,15 @@ export async function findFiles(
   rootDir: string,
   predicate: (name: string) => boolean,
 ): Promise<string[]> {
+  assertSafeScanRoot(rootDir);
+  const budget = createWalkBudget(rootDir);
   const results: string[] = [];
   const cores = typeof os.availableParallelism === 'function' ? os.availableParallelism() : os.cpus().length || 4;
   const maxConcurrentReads = Math.max(8, Math.min(64, cores * 4));
   const readDirSemaphore = new Semaphore(maxConcurrentReads);
 
   async function walk(dir: string) {
+    if (budget.aborted) return;
     let entries: Dirent[];
     try {
       entries = await readDirSemaphore.run(() => fs.readdir(dir, { withFileTypes: true }));
@@ -1017,6 +1020,8 @@ export async function findFiles(
     const subDirectoryWalks: Promise<void>[] = [];
 
     for (const e of entries) {
+      if (budget.aborted) break;
+      budget.note();
       if (e.isDirectory()) {
         if (isSkippedDirName(e.name)) continue;
         subDirectoryWalks.push(walk(path.join(dir, e.name)));
