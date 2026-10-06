@@ -503,7 +503,7 @@ vg evidence release acme-gateway 3.2.1 --image ghcr.io/acme/gateway:3.2.1 --ship
 
 Exit codes make it a CI gate: **0** no exposure · **2** exposure found · **3** undetermined, needs manual review · **1** operational error.
 
-Evidence state lives in `.vibgrate/evidence/`. The Ed25519 signing key is minted on first use at `.vibgrate/attest-key.pem` (mode `0600`, with a `.pub` beside it) unless you point at your own with `VG_ATTEST_KEY` — back it up, and never commit it.
+Evidence state lives in `.vibgrate/evidence/`. The Ed25519 signing key is minted on first use at `.vibgrate/attest-key.pem` (mode `0600`, with a `.pub` beside it) unless you point at your own with `VG_ATTEST_KEY` — back it up, and never commit it. `vg build --attest` uses this same key; see [Signing and verifying the graph](./DOCS.md#signing-and-verifying-the-graph).
 
 ---
 
@@ -678,7 +678,7 @@ Under each set, commands are listed A–Z. A short **typical path** (usual order
 | Command | Description |
 | --- | --- |
 | `vg ask "<question>"` | Query the map in natural language |
-| `vg build [path]` | Build / update the code map (incremental, deterministic); `--policy hexagonal-v1\|layered-v1\|vertical-v1` picks the boundary rules the architecture module evaluates (default from `.vibgrate/architecture.toml`, which may also carry your own `[[overlay]]` rules); `--init-policy` writes a first draft of that file from what the build classified (the packs and overlays are described in [docs/architecture-policies.md](./docs/architecture-policies.md)) |
+| `vg build [path]` | Build / update the code map (incremental, deterministic); `--policy hexagonal-v1\|layered-v1\|vertical-v1` picks the boundary rules the architecture module evaluates (default from `.vibgrate/architecture.toml`, which may also carry your own `[[overlay]]` rules); `--init-policy` writes a first draft of that file from what the build classified (the packs and overlays are described in [docs/architecture-policies.md](./docs/architecture-policies.md)); `--attest` signs the map into `.vibgrate/attestation.intoto.jsonl` and `--verify` checks that file locally ([Signing and verifying the graph](./DOCS.md#signing-and-verifying-the-graph)) |
 | `vg bundle` | Build an air-gapped bundle (grammars + graph + library catalog) |
 | `vg code ["<instruction>"]` | Graph-grounded coding agent — local or hosted model, every edit and command approved (`--auto` for CI, `--single` for a one-shot diff) |
 | `vg embed` | Precompute the semantic index for instant `vg ask` |
