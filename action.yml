@@ -1,5 +1,5 @@
 name: 'Vibgrate Scan'
-description: 'Score how far a repo has drifted and catch supply-chain risk in CI. Emits SARIF to the Security tab and a 0-100 DriftScore. Runs the signed, provenance-verified scanner.'
+description: 'Stop dependency drift entering your main branch. Scans every pull request for a 0-100 DriftScore and uploads SARIF to GitHub Security. No account needed.'
 author: 'Vibgrate'
 
 branding:
@@ -21,6 +21,10 @@ inputs:
     default: 'vibgrate.sarif'
   fail-on:
     description: 'Fail the job on findings of this severity or higher (e.g. "error"). Empty = never fail on findings.'
+    required: false
+    default: ''
+  max-score:
+    description: 'Fail the job when the DriftScore is above this budget (0-100, lower is better). Empty = never fail on the score. Maps to --drift-budget.'
     required: false
     default: ''
   vulns:
@@ -46,7 +50,7 @@ inputs:
   image-tag:
     description: 'Scanner image tag to run (defaults to a pinned, tested release).'
     required: false
-    default: '2026.1005.1' # vibgrate:cli-version — stamped by scripts/stamp-release-pins.mjs
+    default: '2026.1006.1' # vibgrate:cli-version — stamped by scripts/stamp-release-pins.mjs
   verify:
     description: 'Verify the image cosign signature + provenance before running (requires cosign on the runner).'
     required: false
@@ -92,6 +96,7 @@ runs:
         INPUT_FORMAT: ${{ inputs.format }}
         INPUT_OUTPUT: ${{ inputs.output }}
         INPUT_FAIL_ON: ${{ inputs.fail-on }}
+        INPUT_MAX_SCORE: ${{ inputs.max-score }}
         INPUT_VULNS: ${{ inputs.vulns }}
         INPUT_ARGS: ${{ inputs.args }}
         VIBGRATE_DSN: ${{ inputs.dsn }}
@@ -100,6 +105,13 @@ runs:
         extra=()
         if [ -n "${INPUT_FAIL_ON}" ]; then
           extra+=(--fail-on "${INPUT_FAIL_ON}")
+        fi
+        if [ -n "${INPUT_MAX_SCORE}" ]; then
+          if ! [[ "${INPUT_MAX_SCORE}" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+            echo "::error::max-score must be a number from 0 to 100 (got '${INPUT_MAX_SCORE}')."
+            exit 1
+          fi
+          extra+=(--drift-budget "${INPUT_MAX_SCORE}")
         fi
         if [ "${INPUT_VULNS}" = "true" ]; then
           extra+=(--vulns)

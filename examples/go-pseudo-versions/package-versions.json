@@ -1,0 +1,94 @@
+{
+  "go": {
+    "example.com/tagged": {
+      "latest": "1.2.4",
+      "vulns": [
+        {
+          "id": "GHSA-example-tagged",
+          "severity": "high",
+          "ranges": [{ "introduced": "1.0.0", "fixed": "1.2.4" }]
+        }
+      ]
+    },
+    "example.com/pseudo-next": {
+      "latest": "1.2.4",
+      "vulns": [
+        {
+          "id": "GHSA-example-pseudo-next",
+          "severity": "high",
+          "ranges": [{ "introduced": "1.0.0", "fixed": "1.2.4" }]
+        }
+      ]
+    },
+    "example.com/pseudo-base": {
+      "latest": "1.0.0",
+      "vulns": [
+        {
+          "id": "GHSA-example-pseudo-base",
+          "severity": "moderate",
+          "ranges": [{ "introduced": "0", "fixed": "1.0.0" }]
+        },
+        {
+          "id": "GHSA-example-pseudo-explicit-v",
+          "severity": "low",
+          "versions": ["v0.0.0-20191109021931-daa7c04131f5"]
+        },
+        {
+          "id": "GHSA-example-pseudo-explicit-clean",
+          "severity": "low",
+          "versions": ["0.0.0-20191109021931-daa7c04131f5"]
+        }
+      ]
+    },
+    "example.com/oldmajor": {
+      "latest": "2.1.0",
+      "vulns": [
+        {
+          "id": "GHSA-example-incompatible-range",
+          "severity": "high",
+          "ranges": [{ "introduced": "2.0.0", "fixed": "2.1.0" }]
+        },
+        {
+          "id": "GHSA-example-incompatible-v1",
+          "severity": "high",
+          "ranges": [{ "introduced": "1.0.0", "fixed": "1.9.0" }]
+        },
+        {
+          "id": "GHSA-example-incompatible-explicit",
+          "severity": "low",
+          "versions": ["v2.0.0+incompatible"]
+        }
+      ]
+    },
+    "example.com/replaced-mod": {
+      "latest": "1.0.1",
+      "vulns": [
+        {
+          "id": "GHSA-example-replaced",
+          "severity": "moderate",
+          "ranges": [{ "introduced": "0", "fixed": "1.0.1" }]
+        }
+      ]
+    },
+    "example.com/indirect-mod": {
+      "latest": "1.2.4",
+      "vulns": [
+        {
+          "id": "GHSA-example-indirect",
+          "severity": "high",
+          "ranges": [{ "introduced": "0", "fixed": "9.0.0" }]
+        }
+      ]
+    },
+    "example.com/excluded-mod": {
+      "latest": "1.2.3",
+      "vulns": [
+        {
+          "id": "GHSA-example-excluded",
+          "severity": "high",
+          "ranges": [{ "introduced": "0" }]
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,105 @@
+{
+  "go": {
+    "github.com/tagged/mod": {
+      "vulns": [
+        {
+          "id": "GO-TAGGED",
+          "severity": "high",
+          "ranges": [{ "introduced": "0", "fixed": "1.2.4" }]
+        }
+      ]
+    },
+    "github.com/pseudo/base": {
+      "vulns": [
+        {
+          "id": "GO-PSEUDO-BASE",
+          "severity": "high",
+          "ranges": [{ "introduced": "0", "fixed": "1.0.0" }]
+        }
+      ]
+    },
+    "github.com/pseudo/after": {
+      "vulns": [
+        {
+          "id": "GO-AFTER-AT-BASE",
+          "severity": "high",
+          "ranges": [{ "introduced": "0", "fixed": "1.2.4" }]
+        },
+        {
+          "id": "GO-AFTER-NEXT",
+          "severity": "moderate",
+          "ranges": [{ "introduced": "0", "fixed": "1.2.5" }]
+        }
+      ]
+    },
+    "github.com/old/major": {
+      "vulns": [
+        {
+          "id": "GO-INCOMPAT-EXACT",
+          "severity": "low",
+          "versions": ["2.3.4"]
+        },
+        {
+          "id": "GO-INCOMPAT-RAW",
+          "severity": "low",
+          "versions": ["v2.3.4+incompatible"]
+        }
+      ]
+    },
+    "github.com/pseudo/pre": {
+      "vulns": [
+        {
+          "id": "GO-PRE-AT-RELEASE",
+          "severity": "high",
+          "ranges": [{ "introduced": "0", "fixed": "1.2.3" }]
+        },
+        {
+          "id": "GO-PRE-NEXT",
+          "severity": "moderate",
+          "ranges": [{ "introduced": "0", "fixed": "1.2.4" }]
+        }
+      ]
+    },
+    "github.com/pseudo/incompat": {
+      "vulns": [
+        {
+          "id": "GO-BOTH-AT-BASE",
+          "severity": "high",
+          "ranges": [{ "introduced": "0", "fixed": "2.1.0" }]
+        },
+        {
+          "id": "GO-BOTH-NEXT",
+          "severity": "moderate",
+          "ranges": [{ "introduced": "0", "fixed": "2.1.1" }]
+        }
+      ]
+    },
+    "rsc.io/quote": {
+      "vulns": [
+        {
+          "id": "GO-INDIRECT",
+          "severity": "critical",
+          "ranges": [{ "introduced": "0", "fixed": "9.9.9" }]
+        }
+      ]
+    },
+    "github.com/other/mod": {
+      "vulns": [
+        {
+          "id": "GO-REPLACE-TARGET",
+          "severity": "critical",
+          "ranges": [{ "introduced": "0", "fixed": "9.9.9" }]
+        }
+      ]
+    },
+    "example.com/not-scanned": {
+      "vulns": [
+        {
+          "id": "GO-WORK-REPLACE",
+          "severity": "critical",
+          "ranges": [{ "introduced": "0", "fixed": "9.9.9" }]
+        }
+      ]
+    }
+  }
+}
