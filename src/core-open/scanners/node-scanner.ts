@@ -10,6 +10,7 @@ import { loadNpmLockIndex, type NpmLockIndex, type LockfileIo } from './npm-lock
 import { Semaphore } from '../utils/semaphore.js';
 import { withTimeout } from '../utils/timeout.js';
 import { NpmCache, isSemverSpec } from './npm-cache.js';
+import { classifyNpmVersionLag } from './npm-latest.js';
 import { buildDependencyLicense, normalizeLicenseSourcePath } from '../licenses/dependency-license.js';
 import { ageDaysBetween, daysToLibyears, aggregateLibyears } from '../scoring/libyear.js';
 import { latestLts, runtimeEolStatus, extractCycle, eolDate } from '../runtimes/catalog.js';
@@ -380,29 +381,14 @@ async function scanOnePackageJson(
       (!range || semver.satisfies(lockedVersion, range, { includePrerelease: true }));
     const resolvedVersion = lockUsable ? lockedVersion : latestSatisfying;
 
-    const latestStable = meta.latestStableOverall;
-
-    let majorsBehind: number | null = null;
-    let drift: DependencyRow['drift'] = 'unknown';
-
-    if (resolvedVersion && latestStable) {
-      const currentMajor = semver.major(resolvedVersion);
-      const latestMajor = semver.major(latestStable);
-      majorsBehind = latestMajor - currentMajor;
-
-      if (majorsBehind === 0) {
-        drift = semver.eq(resolvedVersion, latestStable) ? 'current' : 'minor-behind';
-      } else {
-        drift = 'major-behind';
-      }
-
-      // Bucketise
-      if (majorsBehind === 0) buckets.current++;
-      else if (majorsBehind === 1) buckets.oneBehind++;
-      else buckets.twoPlusBehind++;
-    } else {
-      buckets.unknown++;
-    }
+    const lag = classifyNpmVersionLag(resolvedVersion, meta.latestStableOverall);
+    const latestStable = lag.reportedLatest;
+    const majorsBehind = lag.majorsBehind;
+    const drift: DependencyRow['drift'] = lag.drift;
+    if (lag.bucket === 'current') buckets.current++;
+    else if (lag.bucket === 'oneBehind') buckets.oneBehind++;
+    else if (lag.bucket === 'twoPlusBehind') buckets.twoPlusBehind++;
+    else buckets.unknown++;
 
     const ageDays = ageDaysBetween(resolvedVersion, latestStable, meta.releaseDates);
     const libyears = daysToLibyears(ageDays);

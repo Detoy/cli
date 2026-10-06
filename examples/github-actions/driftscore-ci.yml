@@ -1,9 +1,20 @@
+# Drift gate for a pull request.
+#
+# Copy to .github/workflows/. Exit behaviour, warn versus fail, pins, and the
+# DriftScore badge are in examples/github-actions/README.md.
+#
+# This job fails (exit 2) on an error-level finding or a DriftScore above 40.
+# driftBudget.mode warn is a different knob: it prints a breach and exits 0.
+# --fail-on warn is a finding level, and it fails the job too.
+#
+# Pin the CLI. An unpinned `npx @vibgrate/cli` installs npm latest each run.
+
 name: DriftScore CI
 
 on:
   pull_request:
   push:
-    branches: [ main ]
+    branches: [main]
 
 permissions:
   contents: read
@@ -14,16 +25,26 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
-      - name: Run Vibgrate drift gate
-        run: |
-          npx @vibgrate/cli scan \
-            --format json \
-            --out vibgrate-report.json \
-            --fail-on error \
-            --drift-budget 40
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
 
-      - name: Upload report artifact
+      # Published npm release. Do not use @latest on a gate.
+      # package.json and action.yml image-tag stamp 2026.1006.1; move this
+      # pin to that stamp when the package and ghcr.io/vibgrate/cli tag exist.
+      - name: Install Vibgrate CLI
+        run: npm install -g @vibgrate/cli@2026.1005.1
+
+      - name: Drift gate
+        run: vg scan --format json --out vibgrate-report.json --fail-on error --drift-budget 40
+
+      # --out is written before a failing gate exits. always() keeps the report.
+      - name: Upload report
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: vibgrate-report

@@ -8,6 +8,7 @@ import type { NpmMeta } from '../types.js';
 import { getManifestEntry, type PackageVersionManifest } from '../package-version-manifest.js';
 import { RegistryDiskCache, type RegistryCacheOptions } from '../utils/registry-disk-cache.js';
 import { redactForDisplay } from '../utils/redact.js';
+import { collectDeprecatedVersions, resolveNpmMetaVersions } from './npm-latest.js';
 
 export { NPM_META_TTL_MS, npmMetaCacheDir, vibgrateUserCacheDir, REGISTRY_META_TTL_MS, registryMetaCacheDir } from '../utils/user-cache.js';
 export type { RegistryCacheOptions as NpmCacheOptions } from '../utils/registry-disk-cache.js';
@@ -19,16 +20,6 @@ const FETCH_TIMEOUT_MS = 10_000;
 
 function emptyMeta(): NpmMeta {
   return { latest: null, stableVersions: [], latestStableOverall: null, license: null };
-}
-
-function stableOnly(versions: string[]): string[] {
-  return versions.filter((v) => semver.valid(v) && semver.prerelease(v) === null);
-}
-
-function maxStable(versions: string[]): string | null {
-  const stable = stableOnly(versions);
-  if (stable.length === 0) return null;
-  return stable.sort(semver.rcompare)[0] ?? null;
 }
 
 /** Extract a version → ISO-date map from an npm `time` object, dropping the
@@ -67,12 +58,14 @@ function parseLicenseField(value: unknown): string | null {
 function metaFromManifest(pkg: string, manifest: PackageVersionManifest | undefined): NpmMeta | null {
   const manifestEntry = getManifestEntry(manifest, 'npm', pkg);
   if (!manifestEntry) return null;
-  const stable = stableOnly(manifestEntry.versions ?? []);
-  const latestStableOverall = maxStable(stable);
+  const resolved = resolveNpmMetaVersions({
+    distTagLatest: manifestEntry.latest ?? null,
+    versions: manifestEntry.versions ?? [],
+  });
   return {
-    latest: manifestEntry.latest ?? latestStableOverall,
-    stableVersions: stable,
-    latestStableOverall,
+    latest: resolved.latest,
+    stableVersions: resolved.stableVersions,
+    latestStableOverall: resolved.latestStableOverall,
     license: manifestEntry.license ?? null,
     ...(manifestEntry.releaseDates ? { releaseDates: manifestEntry.releaseDates } : {}),
   };
@@ -113,11 +106,19 @@ export function parseNpmMetaPayload(data: unknown): NpmMeta {
   }
 
   const releaseDates = parseReleaseDates(record.time);
-  const stable = stableOnly(versions);
-  const latestStableOverall = maxStable(stable);
-  if (!latest && latestStableOverall) latest = latestStableOverall;
+  const resolved = resolveNpmMetaVersions({
+    distTagLatest: latest,
+    versions,
+    deprecated: collectDeprecatedVersions(v),
+  });
 
-  return { latest, stableVersions: stable, latestStableOverall, license, ...(releaseDates ? { releaseDates } : {}) };
+  return {
+    latest: resolved.latest,
+    stableVersions: resolved.stableVersions,
+    latestStableOverall: resolved.latestStableOverall,
+    license,
+    ...(releaseDates ? { releaseDates } : {}),
+  };
 }
 
 /**
