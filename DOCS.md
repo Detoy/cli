@@ -1466,12 +1466,14 @@ vg sbom vex [--from <file>] [--statement <json>...] [--product <ref>] [--out <fi
 Use this to treat SBOMs as operational intelligence instead of static compliance output.
 
 `vg sbom export` reports the full resolved dependency tree, not just what's declared
-in the manifest: it reads `package-lock.json` / `pnpm-lock.yaml` / `yarn.lock` (npm,
-pnpm, and yarn) from `--root` (defaults to the current directory) and folds every
-transitive package in alongside the directly-scanned ones. Each component carries a
-`vibgrate:scope` property (`direct` or `transitive`) so consumers can still tell the
-two apart. Pass `--no-transitive` to report only the manifest-declared dependencies,
-matching pre-existing output.
+in the manifest: it reads each scanned project's lockfile (`package-lock.json` /
+`pnpm-lock.yaml` / `yarn.lock`, plus Cargo, Go, and Python lockfiles the scan
+already understands) and folds every transitive package in alongside the
+directly-scanned ones. A repository with several projects merges those lockfiles
+into one component list. Each component carries a `vibgrate:scope` property
+(`direct` or `transitive`) so consumers can still tell the two apart. Pass
+`--no-transitive` to report only the manifest-declared dependencies, matching
+pre-existing output.
 
 Every component also carries a [purl](https://github.com/package-url/purl-spec)
 (`pkg:npm/<name>@<version>`, scoped names as their own namespace segment) — as the
@@ -1484,11 +1486,15 @@ the purl is omitted. CycloneDX sets `vibgrate:purlStatus` to `unavailable` and
 records the reason on `vibgrate:purlWarning`. SPDX omits the purl externalRef,
 records `purlStatus=unavailable` on the package annotation, and repeats the
 reason in a second annotation. `vg sbom export` prints the same warning on
-stderr. The warning names the package and its ecosystem. The purl rules above
-are the identity a scanner should store. [Component identity](#component-identity)
+stderr. The warning names the package and its ecosystem. A project type this
+exporter cannot map to a Package URL ecosystem (anything other than Node,
+TypeScript, Python, Rust, Go, Java/Kotlin/Scala, Ruby, PHP, .NET, Swift, or
+Dart) does not inherit an npm purl. The component stays, the purl is omitted,
+and the warning says the ecosystem could not be determined. The purl rules
+above are the identity a scanner should store. [Component identity](#component-identity)
 names the fields to key on, including scan JSON and a local advisory match.
 The rest of this section says how that identity behaves when one package is
-installed more than once.
+installed more than once, and when several projects are merged.
 
 #### Component identity
 
@@ -1561,14 +1567,13 @@ the scanners and `vg sbom export` implement:
 | `ruby` | `rubygems` | `pkg:gem/<name>@<version>` |
 | `dart` | `pub` | `pkg:pub/<name>@<version>` |
 | `swift` | not vulnerability-matched | `pkg:swift/<name>@<version>` |
-| `elixir` | `hex` | `pkg:npm/<name>@<version>` |
+| `elixir` | `hex` | purl omitted; `vibgrate:purlWarning` says the ecosystem could not be determined |
 
-Any other project type is exported with an npm purl when the name can be one.
-`elixir` is the row where that default and the advisory ecosystem differ:
-`--vulns` looks up ecosystem `hex`, package name, and version, while the SBOM
-purl uses the npm type. Match Hex advisories on the scan fields. The npm purl
-is the string the exporter wrote; it is not a Hex registry id. Leave CPE unset
-there too.
+Any other project type, including `elixir`, does not inherit an npm purl.
+The component stays in the SBOM, the purl is omitted, and `vibgrate:purlWarning`
+says the ecosystem could not be determined. `--vulns` still looks `elixir` up
+as ecosystem `hex` on the scan fields (package name and version). Match Hex
+advisories on those scan fields. Leave CPE unset there too.
 
 ##### Matching an advisory locally
 
@@ -1679,16 +1684,20 @@ Document-level license-parse failures are unchanged. A scan finding whose
 rule is `vibgrate/license-parse-failed` is repeated on the CycloneDX metadata
 `properties` and as an SPDX document annotation.
 
-The license on a shared `name@version` is the license from the scan row that
-was kept (the first project that declared that version). A lockfile-only
-transitive row has no declared license, so its SPDX `licenseDeclared` is
-`NOASSERTION` and its CycloneDX `licenses` field is omitted.
+The license on a shared ecosystem + name + version is the license from the
+scan row that was kept (the first direct project that declared that identity).
+A later project whose declared license differs is recorded on
+`vibgrate:projects` and reported with `vibgrate:mergeWarning`; the kept
+license stays. A lockfile-only transitive row has no declared license, so its
+SPDX `licenseDeclared` is `NOASSERTION` and its CycloneDX `licenses` field is
+omitted.
 
 #### Several versions of one package
 
-A component's identity is **package name + resolved version**. That pair is what
-deduplication uses. The purl, when one can be built, is the same pair in Package
-URL form, and it is what you should match on.
+A component's identity is **ecosystem + package name + resolved version**. That
+triple is what deduplication uses. The purl, when one can be built, is that
+identity in Package URL form, and it is what you should match on. `left-pad@1.0.0`
+from npm and `left-pad@1.0.0` from Cargo are two components.
 
 | Field | What it is |
 | --- | --- |
@@ -1699,22 +1708,33 @@ URL form, and it is what you should match on.
 `left-pad@1.3.0` and `left-pad@1.2.0` are two components. An npm
 `package-lock.json` v2/v3 that records both — `node_modules/left-pad` at 1.3.0
 and `node_modules/widget/node_modules/left-pad` at 1.2.0 — exports both, with
-distinct purls and distinct `bom-ref` values. The same `name@version` is one
-component: a second install path of that exact version, or a second scanned
-project that resolved that exact version, does not add a row.
+distinct purls and distinct `bom-ref` values. The same identity is one component: a second install path of that exact
+version, or a second scanned project that resolved that exact version, does
+not add a row.
 
-The row that is kept for a shared `name@version` is the first project in the
-scan artifact that declared it. `vibgrate:project`, `vibgrate:currentSpec`,
-`vibgrate:drift`, `vibgrate:majorsBehind`, and the declared license come from
-that project. A later project's copy of the same version is dropped.
+Precedence for the row that is kept: direct manifest rows first, in the order
+`projects` appears on the scan artifact, then lockfile components in sorted
+project-path order. The first row supplies `vibgrate:project`,
+`vibgrate:currentSpec`, `vibgrate:drift`, `vibgrate:majorsBehind`, and the
+declared license.
+`vibgrate:projects` (SPDX: `projects=` on the package annotation) lists every
+contributing project, sorted. A later project with the same identity is not an
+error and is not a warning when its manifest fields match the kept row.
+
+When a later direct row differs in `currentSpec`, drift, majors-behind, or
+declared license, the kept row wins and the difference is reported. CycloneDX adds
+`vibgrate:mergeWarning`. SPDX adds an annotation with the same text.
+`vg sbom export` prints it on stderr. The component is still one row.
 
 `vibgrate:scope` (SPDX: `scope=` on the package annotation) is `direct` when a
-scanned manifest declared that exact `name@version`, and `transitive` when the
+scanned manifest declared that exact identity, and `transitive` when the
 version appears only in a lockfile. The manifest row wins, so a version that is
 both declared and locked is `direct`. The lockfile copy of that same version
-is omitted. A second version that the lockfile resolved and no manifest
+is omitted as a duplicate row; its project is still listed in
+`vibgrate:projects`. A second version that the lockfile resolved and no manifest
 declared stays in the document as `transitive`. On a transitive row,
-`vibgrate:project` is the scan root's name.
+`vibgrate:project` is the project whose lockfile contributed it — the earliest
+project path, when several lockfiles contain that identity.
 
 That value is `direct` or `transitive`. Production, development, and optional
 are recorded or dropped before export, and the CycloneDX `scope` member is
@@ -1735,9 +1755,11 @@ package are still in the full document, marked `transitive`.
 project they follow that project's `dependencies` array. The npm scanner sorts
 each project's array by drift, then by package name, before it writes the
 artifact. Lockfile-only rows are appended after the direct rows, sorted by
-package name and then by version. That combined list is the order of CycloneDX
-`components`, CycloneDX `dependencies`, and SPDX `packages`. `dependsOn` entries
-and the names inside one lockfile edge are sorted on their own.
+package name, then by version, then by ecosystem. That combined list is the
+order of CycloneDX `components`, CycloneDX `dependencies`, and SPDX `packages`.
+`dependsOn` entries and the names inside one lockfile edge are sorted on their
+own. `vibgrate:projects` is sorted on its own, so two runs and two project
+orders that contribute the same set list the same projects.
 
 **Same inputs, same document.** For one scan artifact and the lockfiles under
 `--root`, `vg sbom export` writes the same JSON on every run, including the
@@ -1747,25 +1769,29 @@ list, declared licenses, license-parse notes, and edges. A later scan of the
 same tree records a new timestamp, so the document id changes. Purls and
 CycloneDX `bom-ref` values do not.
 
-**Known limitations** (the exporters are unchanged):
+**Known limitations:**
 
-- Direct-row order, and which project's attribution is kept for a shared
-  `name@version`, follow the scan artifact. Reordering projects changes
-  `vibgrate:project` on that row, reassigns SPDX `SPDXID` values to match the
-  new positions, retargets SPDX `DEPENDS_ON` relationships (they point at
-  SPDX IDs), and changes the document serial number and namespace. CycloneDX `bom-ref` stays on the purl,
-  so a scanner that stored the purl still matches.
+- Direct-row order, and which project's manifest fields are kept for a shared
+  identity, follow the scan artifact. Reordering projects can change
+  `vibgrate:project` on that row, reassign SPDX `SPDXID` values to match the
+  new positions, retarget SPDX `DEPENDS_ON` relationships (they point at
+  SPDX IDs), and change the document serial number and namespace.
+  `vibgrate:projects` stays the sorted set. CycloneDX `bom-ref` stays on the
+  purl, so a scanner that stored the purl still matches.
 - npm `package-lock.json` v2/v3 collapses two install paths of the same
-  `name@version` into one component. When those paths declare different
-  dependencies, the edge list is the path that appears last in the lockfile
-  `packages` object. The other path's dependencies remain components when they
-  are different versions, and they are omitted from that parent's `dependsOn`.
+  `name@version` inside one lockfile into one component. When those paths
+  declare different dependencies, the edge list is the path that appears last
+  in the lockfile `packages` object. The other path's dependencies remain
+  components when they are different versions, and they are omitted from that
+  parent's `dependsOn`.
 - In a multi-project scan the component list is the union of every scanned
-  project's lockfile, still keyed by `name@version`. The CycloneDX
+  project's lockfile, keyed by ecosystem + name + version. The CycloneDX
   `dependencies` array and the SPDX `DEPENDS_ON` relationships describe the
-  lockfile at the scan root (the first lockfile found, when the root has none).
-  A version that exists only in a nested lockfile is still a component. Its
-  `dependsOn` is empty when the root lockfile has no edge for it.
+  lockfile at the scan root (the first lockfile in sorted project-path order,
+  when the root has none). A component from another ecosystem keeps that
+  ecosystem's purl. A version that exists only in a nested lockfile is still a
+  component. Its `dependsOn` is empty when the root lockfile has no edge for
+  it.
 - PyPI purl names are normalized (PEP 503: lowercase, runs of `-_.` folded to
   one `-`). Deduplication uses the name string the scan recorded, before that
   normalization. `Flask@3.0.0` and `flask@3.0.0` are therefore two components
@@ -1909,7 +1935,8 @@ SBOM also carries the resolved dependency graph: CycloneDX's top-level `dependen
 array, or SPDX `DEPENDS_ON` relationships. Where edges aren't resolvable, that section
 is left out entirely rather than shipping a graph that claims "no dependencies" when
 the truth is "not tracked". In a multi-project scan those edges are the root
-lockfile's edges, as described above.
+lockfile's edges, as described above. Component purls still follow each
+component's own ecosystem.
 
 `vg sbom vex` is input-agnostic: it assembles a complete OpenVEX document from the statements you supply (`--from <file>` and/or repeatable `--statement`), so it works regardless of which scanner flagged the components. A zero-statement document is valid and honest — it asserts no known affected components.
 

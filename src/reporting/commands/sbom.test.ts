@@ -2,7 +2,7 @@ import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { toCycloneDx, toSpdx, formatDeltaText, npmPurl, purlFor, collectLockfileGraph, collectPurlWarnings, collectLicenseWarnings, describeUnavailablePurl, describeUnrepresentableLicense } from './sbom.js';
+import { toCycloneDx, toSpdx, formatDeltaText, npmPurl, purlFor, collectLockfileGraph, collectPurlWarnings, collectMergeWarnings, collectLicenseWarnings, describeUnavailablePurl, describeUnrepresentableLicense } from './sbom.js';
 import { LICENSE_PARSE_FAILED, licenseParseDiagnostic } from '../../core-open/licenses/diagnostic.js';
 import { buildDependencyLicense } from '../../core-open/licenses/dependency-license.js';
 import { componentLicense, EXTRACTED_LICENSE_TEXT } from './sbom-license.js';
@@ -252,8 +252,54 @@ describe('sbom helpers', () => {
   it('dedupes a direct dependency shared by several scanned projects (a Cargo/npm workspace or Gradle multi-module repo) into one component', () => {
     const artifact = makeArtifact('5.3.0', 90);
     artifact.projects.push({ ...artifact.projects[0]!, name: 'other-workspace-member' } as ProjectScan);
-    const sbom = toCycloneDx(artifact) as { components: Array<{ name: string }> };
+    const sbom = toCycloneDx(artifact) as {
+      components: Array<{ name: string; properties: Array<{ name: string; value: string }> }>;
+    };
     expect(sbom.components).toHaveLength(1);
+    expect(sbom.components[0]!.properties.find((p) => p.name === 'vibgrate:projects')?.value).toBe('app,other-workspace-member');
+    expect(collectMergeWarnings(artifact)).toEqual([]);
+  });
+
+  it('keeps an npm purl for a TypeScript project', () => {
+    const artifact = makeArtifact('5.3.0', 90);
+    artifact.projects[0]!.type = 'typescript';
+    const sbom = toCycloneDx(artifact) as { components: Array<{ purl: string }> };
+    expect(sbom.components[0]!.purl).toBe('pkg:npm/chalk@5.3.0');
+    expect(collectPurlWarnings(artifact)).toEqual([]);
+  });
+
+  it('omits the purl and warns when the project type has no Package URL ecosystem', () => {
+    const artifact = makeArtifact('1.7.0', 90);
+    artifact.projects[0]!.type = 'elixir';
+    artifact.projects[0]!.dependencies[0]!.package = 'phoenix';
+    artifact.projects[0]!.dependencies[0]!.currentSpec = '1.7.0';
+    artifact.projects[0]!.dependencies[0]!.resolvedVersion = '1.7.0';
+    const warning =
+      'Ecosystem could not be determined for project type "elixir" package "phoenix@1.7.0"; no Package URL was guessed. The component is included without a purl.';
+
+    const cyclone = toCycloneDx(artifact) as {
+      components: Array<{
+        name: string;
+        purl?: string;
+        'bom-ref': string;
+        properties: Array<{ name: string; value: string }>;
+      }>;
+    };
+    expect(JSON.stringify(toCycloneDx(artifact))).toBe(JSON.stringify(cyclone));
+    expect(cyclone.components[0]!.purl).toBeUndefined();
+    expect(cyclone.components[0]!['bom-ref']).toBe('vibgrate:unknown:phoenix@1.7.0');
+    expect(cyclone.components[0]!.properties.find((p) => p.name === 'vibgrate:purlStatus')?.value).toBe('unavailable');
+    expect(cyclone.components[0]!.properties.find((p) => p.name === 'vibgrate:purlWarning')?.value).toBe(warning);
+    expect(JSON.stringify(cyclone)).not.toContain('pkg:npm/phoenix');
+    expect(collectPurlWarnings(artifact)).toEqual([warning]);
+    expect(collectMergeWarnings(artifact)).toEqual([]);
+
+    const spdx = toSpdx(artifact) as {
+      packages: Array<{ externalRefs?: unknown; annotations: Array<{ comment: string }> }>;
+    };
+    expect(spdx.packages[0]!.externalRefs).toBeUndefined();
+    expect(spdx.packages[0]!.annotations[0]!.comment).toContain('purlStatus=unavailable');
+    expect(spdx.packages[0]!.annotations[1]!.comment).toBe(warning);
   });
 
   it('dedupes a Go direct dependency against its own go.sum-derived transitive entry despite the `v` prefix mismatch', () => {
@@ -427,8 +473,10 @@ describe('sbom helpers', () => {
       artifact.projects.push({ ...artifact.projects[0]!, name: 'docs', path: 'docs', dependencies: [] } as ProjectScan);
 
       const graph = collectLockfileGraph(artifact, root);
-      expect(graph?.components).toContainEqual({ package: 'chalk', version: '5.3.0' });
-      expect(graph?.components).toContainEqual({ package: 'vitepress', version: '1.6.4' });
+      expect(graph?.components).toEqual([
+        { package: 'chalk', version: '5.3.0', ecosystem: 'npm', project: 'app', projects: ['app'] },
+        { package: 'vitepress', version: '1.6.4', ecosystem: 'npm', project: 'docs', projects: ['docs'] },
+      ]);
     });
 
     it('returns undefined when no scanned project path has a lockfile', () => {
