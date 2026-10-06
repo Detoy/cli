@@ -23,6 +23,7 @@ For a quick overview, see the [README](./README.md). This document covers everyt
   - [vg sbom](#vg-sbom)
     - [Choosing CycloneDX or SPDX](#choosing-cyclonedx-or-spdx)
     - [Component identity](#component-identity)
+    - [Package digests](#package-digests)
     - [CycloneDX type and SPDX primaryPackagePurpose](#cyclonedx-type-and-spdx-primarypackagepurpose)
     - [Component type](#component-type)
     - [Production, development, and optional scope](#production-development-and-optional-scope)
@@ -1621,6 +1622,9 @@ above are the identity a scanner should store. [Component identity](#component-i
 names the fields to key on, including scan JSON and a local advisory match.
 The rest of this section says how that identity behaves when one package is
 installed more than once, and when several projects are merged.
+Package content digests are omitted from the SBOM and from scan JSON.
+[Package digests](#package-digests) names the fields each format leaves out,
+the identifiers that are not digests, and the purl to consume offline.
 
 #### Component identity
 
@@ -1763,6 +1767,135 @@ package `left-pad`, and version `1.3.0`, which the SBOM records as
 `pkg:npm/left-pad@1.3.0`.
 `vg sbom export --format spdx` writes that purl as `externalRefs[].referenceLocator`
 with `referenceType` `purl`.
+
+#### Package digests
+
+`vg sbom export` and `vg scan --format json` omit package content digests.
+Key a component on its purl, as [Component identity](#component-identity)
+describes. On the scan artifact, key the same package on ecosystem, package
+name, and installed version. The CLI copies no lockfile integrity string into
+either document. When a digest is absent, the field stays absent: the export
+does not write an empty list, a zero digest, a placeholder algorithm, or a
+hash of the name, the document id, or the project id.
+
+##### SBOM fields
+
+| Format | Digest field | What `vg sbom export` writes |
+| --- | --- | --- |
+| CycloneDX 1.5 | `components[].hashes` | Omitted on every component, including the metadata root (`bom-ref` `vibgrate-root`). |
+| SPDX 2.3 | `packages[].checksums` | Omitted on every package. `filesAnalyzed` is `false`. |
+
+A CycloneDX `hashes` entry would be `{ "alg": "<algorithm>", "content": "<hex>" }`
+(`alg` values such as `SHA-256` and `SHA-512`). An SPDX `checksums` entry would
+be `{ "algorithm": "<algorithm>", "checksumValue": "<hex>" }` (`algorithm`
+values such as `SHA256` and `SHA512`). The property names differ. Neither
+array is written: one hash in the lockfile, several hashes, or none all leave
+the same gap. There is no array whose order could change between runs.
+Repeating the export on the same scan artifact and the same lockfiles omits
+the fields again.
+
+Two values on the document are identifiers. They are stable for a given input,
+and they are not a digest of package bytes:
+
+| Field | Shape | What it identifies |
+| --- | --- | --- |
+| CycloneDX `serialNumber` | `urn:uuid:` and an RFC 9562 version-8 UUID (the third group starts with `8`) | This SBOM document. The UUID is derived from the export format, the scan root, the scan timestamp, the tool version, and the ordered component list, including declared licenses, license-parse notes, and edges. |
+| SPDX `documentNamespace` | `https://vibgrate.com/spdx/<rootPath>/<uuid>` | This SPDX document. `<rootPath>` is the scan root as recorded on the artifact. The UUID uses the same derivation with the SPDX seed. |
+
+A later scan of the same tree records a new timestamp, so the UUID changes.
+Purls and CycloneDX `bom-ref` values stay on the package coordinates.
+The rest of the document's stability rule is under
+[Several versions of one package](#several-versions-of-one-package).
+
+##### Scan JSON fields
+
+`vg scan --format json` writes the scan artifact. The same document is
+`.vibgrate/scan_result.json` when local artifacts are written. A dependency
+row (`projects[].dependencies[]`) has `package`, `section`, `currentSpec`,
+`resolvedVersion`, `latestStable`, `majorsBehind`, `drift`, and an optional
+`license`. An advisory hit (`extended.vulnerabilities.packages[]`) has
+`ecosystem`, `package`, and `version`. None of those objects has `hashes`,
+`checksums`, `integrity`, or a package `sha256`.
+
+Hex strings elsewhere on the artifact identify projects, solutions, findings,
+or the git revision. They are not package content digests.
+
+| Field | Shape | Input |
+| --- | --- | --- |
+| `projects[].projectId` | 16 lowercase hex characters, the leading 16 of SHA-256 | `path:name` from that project. When the scan has a workspace id, the input is `path:name:workspaceId`. |
+| `solutions[].solutionId` | the same 16 hex characters | `path:name` from that solution (a `.sln` file). The workspace id is appended the same way when the scan has one. |
+| `projects[].solutionId` | that solution id | Present when the project belongs to a discovered solution. The value is `solutions[].solutionId` for that solution. |
+| `baselineComparison.suppressed[].id` | 32 lowercase hex characters, the leading 32 of SHA-256 | Present after `vg scan --baseline`. Derived from the finding rule id and location. |
+| `vcs.sha` | the git commit recorded for the scan | The repository revision. `vcs.shortSha` is the short form. |
+
+`projectId` is computed on every scan. A later scan reuses `solutionId` when
+`.vibgrate/solutions.json` already stores an id for that solution path. A
+local scan with no workspace id hashes path and name only. Changing the path,
+the name, or the workspace id changes a newly computed id. Replacing a
+dependency tarball does not.
+
+##### Lockfile integrity stays in the lockfile
+
+The lockfiles `vg sbom export` reads can record integrity. The component list
+keeps the package name and version. The digest text is left on disk.
+
+| Lockfile | Integrity on disk | What the component list keeps |
+| --- | --- | --- |
+| npm `package-lock.json` | `integrity` (Subresource Integrity, commonly `sha512-<base64>`). A value may list more than one algorithm, separated by spaces. | name and version |
+| `pnpm-lock.yaml` | `resolution.integrity` (the same Subresource Integrity string) | name and version from the `packages:` key |
+| `yarn.lock` | `integrity` (the same Subresource Integrity string) | name and version |
+| `Cargo.lock` | `checksum` (sha256 hex of the crate) | name and version from each `[[package]]` |
+| `poetry.lock` | per-file `hash`, and the lock `content-hash` | name and version from each `[[package]]` |
+| `uv.lock` | `hash` on `sdist` and on each `wheels` entry (commonly `sha256:<hex>`) | name and version from each `[[package]]` |
+| `go.sum` | `h1:<base64>` on the module zip line and on the `version/go.mod` line | module path and version from the zip line |
+
+`go.sum` lists two hashes for one module. The export keeps one component.
+Both `h1:` values are omitted. The `/go.mod` line is not a second package.
+`uv.lock` can list a hash for the sdist and a hash for each wheel. Those
+values are omitted, and the package is still one component. An npm or pnpm
+integrity string that names more than one algorithm is omitted in full. A
+package whose lockfile line has no integrity is written the same way as a
+package whose lockfile line has one.
+
+##### Example
+
+Both commands stay on the machine. `./app` is the project directory. No
+registry token is required.
+
+```bash
+vg scan ./app --offline --no-graph --format json --out scan.json
+vg sbom export --in scan.json --root ./app --format cyclonedx --out sbom.cdx.json
+```
+
+Read the component from `sbom.cdx.json`:
+
+```json
+{
+  "name": "left-pad",
+  "version": "1.3.0",
+  "purl": "pkg:npm/left-pad@1.3.0",
+  "bom-ref": "pkg:npm/left-pad@1.3.0"
+}
+```
+
+`hashes` is absent on that object. The document `serialNumber` is
+`urn:uuid:` followed by a version-8 UUID. Match the installed package in
+`scan.json` on `projects[].dependencies[]`:
+
+```json
+{
+  "package": "left-pad",
+  "resolvedVersion": "1.3.0"
+}
+```
+
+That object has no integrity field. Join it to the SBOM on the purl in
+[Component identity](#component-identity). When the purl was omitted, match
+ecosystem, package name, and version from that section.
+`vg sbom export --format spdx` writes the same purl as
+`externalRefs[].referenceLocator` (`referenceType` `purl`) and omits
+`checksums`. `projects[].projectId` in `scan.json` is 16 hex characters
+identifying the project path and name. Leave it out of the package match.
 
 #### Declared licenses
 
@@ -2063,13 +2196,14 @@ orders that contribute the same set list the same projects.
 
 **Same inputs, same document.** For one scan artifact and the lockfiles under
 `--root`, `vg sbom export` writes the same JSON on every run, including the
-CycloneDX `serialNumber` and the SPDX `documentNamespace`. Those document ids
-are a hash of that artifact — timestamp included — and of the ordered component
-list, declared licenses, license-parse notes, and edges. The format name is
-part of that hash, so the two files do not share a UUID. A later scan of the
-same tree records a new timestamp, so the document id changes. Purls and
-CycloneDX `bom-ref` values do not. Field placement is
-[Choosing CycloneDX or SPDX](#choosing-cyclonedx-or-spdx).
+CycloneDX `serialNumber` and the SPDX `documentNamespace`. Those values are
+document identifiers, derived from that artifact — timestamp included — and
+from the ordered component list, declared licenses, license-parse notes, and
+edges. They are not package content digests. [Package digests](#package-digests)
+describes both fields. The format name is part of that derivation, so the two
+files do not share a UUID. A later scan of the same tree records a new timestamp,
+so the document id changes. Purls and CycloneDX `bom-ref` values do not. Field
+placement is [Choosing CycloneDX or SPDX](#choosing-cyclonedx-or-spdx).
 
 **Known limitations:**
 
@@ -4950,7 +5084,7 @@ The default output. A coloured, human-readable report showing:
 
 ### JSON Artifact
 
-The full scan artifact in JSON format. Contains all raw data, scores, findings, and VCS metadata. Stable schema (`schemaVersion: "1.0"`). This is the same artifact saved to `.vibgrate/scan_result.json`. Dependency identity is `projects[].type` plus `dependencies[].package` and `resolvedVersion`. An advisory match is `extended.vulnerabilities.packages[]` (`ecosystem`, `package`, `version`). The artifact has no `purl` and no `cpe`. `vg sbom export` writes those coordinates as a package URL. See [Component identity](#component-identity).
+The full scan artifact in JSON format. Contains all raw data, scores, findings, and VCS metadata. Stable schema (`schemaVersion: "1.0"`). This is the same artifact saved to `.vibgrate/scan_result.json`. Dependency identity is `projects[].type` plus `dependencies[].package` and `resolvedVersion`. An advisory match is `extended.vulnerabilities.packages[]` (`ecosystem`, `package`, `version`). The artifact has no `purl` and no `cpe`, and it has no package content digest. `projectId` and `solutionId` are project and solution identifiers. `vg sbom export` writes the package coordinates as a package URL and also omits component digests. See [Component identity](#component-identity) and [Package digests](#package-digests).
 
 ### SARIF
 

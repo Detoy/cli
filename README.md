@@ -629,7 +629,7 @@ CycloneDX `type` and SPDX `primaryPackagePurpose` (omitted on every package) are
 
 Each exported component is labeled `direct` or `transitive` (CycloneDX property `vibgrate:scope`, SPDX annotation `scope=`). Production, development, and optional manifest sections are not copied into those fields. The mapping, a fixture, and the ecosystems where that scope is omitted: [Production, development, and optional scope](./DOCS.md#production-development-and-optional-scope). How those dependencies are written in CycloneDX and SPDX, including fields the export omits, is also in [Dependency scope](./docs/sbom-dependency-scope.md).
 
-Component identity in the SBOM is the Package URL on each component (CycloneDX `purl` and `bom-ref`, SPDX purl `externalRef`). `vg scan --format json` records the same package as ecosystem, name, and installed version. Neither output includes a CPE. The fields to key on, including a local advisory match, are in [DOCS.md](./DOCS.md#component-identity).
+Component identity in the SBOM is the Package URL on each component (CycloneDX `purl` and `bom-ref`, SPDX purl `externalRef`). `vg scan --format json` records the same package as ecosystem, name, and installed version. Neither output includes a CPE. Neither output includes a package content digest (no CycloneDX `hashes`, no SPDX `checksums`, no scan-artifact integrity field). The fields to key on, including a local advisory match, are in [DOCS.md](./DOCS.md#component-identity). Digest fields that are omitted, and the ids that are not content digests, are in [Package digests](./DOCS.md#package-digests).
 
 ## Review a change
 
