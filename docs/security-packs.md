@@ -73,6 +73,11 @@ to any output.
 The rule set grows behind the gold gate, never on count. Every rule ships with
 a positive, a negative and an abstain fixture.
 
+GitHub Actions `uses:` pins are outside this catalogue. A commit SHA, a tag, a
+branch, a local path, and a `docker://` image are recorded on the code map,
+and `actions.lock` is not read. See
+[Action references in the code map](./ci/github-actions.md#action-references-in-the-code-map).
+
 ## Finding identity
 
 Each finding's `id` is derived from the pack, the rule, the resource address,

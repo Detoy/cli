@@ -2973,6 +2973,8 @@ That generated ignore file does not list the signing key or `attestation.intoto.
 
 `vg build --attest` signs the graph that build just produced. `vg build --verify` checks an attestation file against the map already on disk, and it re-checks that rebuilding this tree is deterministic. Pass one of those flags. When both are set, `--verify` runs and the build that would sign does not.
 
+The signed subject is that code map. A GitHub Actions `uses:` string is an ordinary node in the map when a workflow was built; the attestation does not classify the pin. How SHA, tag, branch, local path, `docker://`, and `actions.lock` are recorded: [Action references in the code map](./docs/ci/github-actions.md#action-references-in-the-code-map).
+
 `attest-actions` is not a command. The older verbs are usage errors (exit 5), and they name the flag to run instead:
 
 ```text
@@ -5187,7 +5189,7 @@ Use the maintained templates in this package for copy-paste setup:
 - `examples/github-actions/driftscore-ci.yml` (JSON artifact + drift gate)
 - `examples/github-actions/driftscore-sarif.yml` (SARIF upload to code scanning)
 - `examples/github-actions/vulnerabilities-sarif.yml` (vulnerability gate + SARIF upload)
-- `docs/ci/github-actions.md` (integration notes)
+- `docs/ci/github-actions.md` (integration notes, and [how a step `uses:` pin is recorded](./docs/ci/github-actions.md#action-references-in-the-code-map))
 
 ```yaml
 steps:

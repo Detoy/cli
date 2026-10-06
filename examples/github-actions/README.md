@@ -226,6 +226,10 @@ unchanged. See [JUnit](../../DOCS.md#junit).
 job time. The gate then moves between runs. Pin the release you tested. Do
 not use `@latest` on a gate.
 
+These rows are the releases to write into a workflow you copy. What `vg`
+records when it reads a `uses:` line is
+[Action references in the code map](../../docs/ci/github-actions.md#action-references-in-the-code-map).
+
 | Surface | Pin | What floats if you skip it |
 | --- | --- | --- |
 | Node.js | `actions/setup-node@v4` with `node-version: 22` (22 or newer) | — |
