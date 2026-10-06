@@ -11,6 +11,7 @@ export { VERSION } from './version.js';
 export { buildGraph } from './engine/build.js';
 export type { BuildOptions, BuildResult } from './engine/build.js';
 export { resolveLimits, ResourceLimitError } from './engine/limits.js';
+export { UnsafeRootError } from './core-open/utils/root-safety.js';
 export type { ResourceLimits } from './engine/limits.js';
 
 export { loadGraph } from './engine/load.js';

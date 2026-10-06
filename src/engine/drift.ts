@@ -1,5 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { assertSafeWalkRoot } from '../core-open/utils/root-safety.js';
 
 /**
  * Dependency currency (VG-LOCAL-MODELS §9 / VG-DEVELOPMENT-PLAN Phase 2.4).
@@ -88,6 +89,7 @@ const MANIFEST_BY_FILE: Record<string, Ecosystem> = {
  * the repo root. Results are path-sorted for determinism.
  */
 function findManifests(root: string): ManifestSet {
+  assertSafeWalkRoot(root);
   const set = Object.fromEntries(ECOSYSTEMS.map((e) => [e, [] as string[]])) as ManifestSet;
   const MAX_ENTRIES = 20000;
   let scanned = 0;

@@ -6,6 +6,7 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import type { VcsInfo } from '../types.js';
 import { detectVcs } from './vcs.js';
+import { assertSafeWalkRoot, createWalkBudget, noteWalkEntry, UnsafeRootError } from './root-safety.js';
 
 const SKIP_DIRS = new Set([
   'node_modules',
@@ -74,8 +75,17 @@ export async function computeTreeMetadataHash(
 ): Promise<string | undefined> {
   const maxFiles = options?.maxFilesPerDirectory ?? 500;
   const leaves: string[] = [];
+  const root = path.resolve(rootDir);
+  assertSafeWalkRoot(root);
+  const budgetState = createWalkBudget(root);
+  let budgetError: UnsafeRootError | null = null;
+  const note = (): void => {
+    if (budgetError) return;
+    budgetError = noteWalkEntry(budgetState);
+  };
 
   async function walk(absDir: string, relDir: string): Promise<void> {
+    if (budgetError) return;
     let entries;
     try {
       entries = await fs.readdir(absDir, { withFileTypes: true });
@@ -90,6 +100,9 @@ export async function computeTreeMetadataHash(
     }
 
     for (const entry of entries) {
+      if (budgetError) break;
+      note();
+      if (budgetError) break;
       if (entry.isDirectory()) {
         if (SKIP_DIRS.has(entry.name)) continue;
         const childRel = relDir ? `${relDir}/${entry.name}` : entry.name;
@@ -109,7 +122,8 @@ export async function computeTreeMetadataHash(
     }
   }
 
-  await walk(path.resolve(rootDir), '');
+  await walk(root, '');
+  if (budgetError) throw budgetError;
   if (leaves.length === 0) return undefined;
 
   leaves.sort();

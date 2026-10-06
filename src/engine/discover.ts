@@ -5,6 +5,7 @@ import { langForExtension, langById, type LanguageDef } from './languages.js';
 import { requireDataConfig } from '../core-open/config.js';
 import { dropBlankPatterns, gitignoreWithoutBlankLines } from '../core-open/utils/glob.js';
 import { assertLockfileFile, lockfileKind } from '../core-open/utils/lockfile-parse.js';
+import { assertSafeWalkRoot, createWalkBudget, noteWalkEntry } from '../core-open/utils/root-safety.js';
 
 /**
  * Deterministic file discovery.
@@ -160,6 +161,11 @@ export interface DiscoverOptions {
   exclude?: string[];
   /** Explicit sub-paths to scope to (relative or absolute). */
   paths?: string[];
+  /**
+   * Ceiling on files and directories visited. `0` disables.
+   * Default: `VG_MAX_FILES`, else 100000.
+   */
+  maxEntries?: number;
 }
 
 export interface DiscoveredFile {
@@ -241,6 +247,7 @@ export function discover(options: DiscoverOptions): DiscoveredFile[] {
   ).filter((p) => fs.existsSync(p));
 
   const found = new Map<string, DiscoveredFile>();
+  const budget = createWalkBudget(root, options.maxEntries);
 
   const considerFile = (abs: string): void => {
     const rel = toPosix(path.relative(root, abs));
@@ -270,8 +277,13 @@ export function discover(options: DiscoverOptions): DiscoveredFile[] {
       if (entry.isDirectory()) {
         if (isSkippedDirName(entry.name)) continue;
         if (rel && rootIg.ignores(`${rel}/`)) continue;
+        const over = noteWalkEntry(budget);
+        if (over) throw over;
         walk(abs);
       } else if (entry.isFile()) {
+        if (rel && rootIg.ignores(rel)) continue;
+        const over = noteWalkEntry(budget);
+        if (over) throw over;
         considerFile(abs);
       }
     }
@@ -279,8 +291,10 @@ export function discover(options: DiscoverOptions): DiscoveredFile[] {
 
   for (const scope of scopeAbs) {
     const stat = fs.statSync(scope);
-    if (stat.isDirectory()) walk(scope);
-    else if (stat.isFile()) considerFile(scope);
+    if (stat.isDirectory()) {
+      assertSafeWalkRoot(scope);
+      walk(scope);
+    } else if (stat.isFile()) considerFile(scope);
   }
 
   return [...found.values()].sort((a, b) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0));

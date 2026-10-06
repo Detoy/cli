@@ -23,6 +23,7 @@ import * as path from 'node:path';
 import { redactSecrets } from '../core-open/utils/redact.js';
 import { nodeId } from './ids.js';
 import { isSkippedDirName, loadRootIgnore, SKIP_FILES } from './discover.js';
+import { assertSafeWalkRoot, createWalkBudget, noteWalkEntry, UnsafeRootError } from '../core-open/utils/root-safety.js';
 import type { GraphNode } from '../schema.js';
 
 /** Soft cap on characters stored/embedded per document (keeps index snappy). */
@@ -54,6 +55,8 @@ export interface DiscoverDocsOptions {
   exclude?: string[];
   paths?: string[];
   maxFiles?: number;
+  /** Walk-entry ceiling. `0` disables. Default: `VG_MAX_FILES`, else 100000. */
+  maxEntries?: number;
 }
 
 export interface DiscoveredDoc {
@@ -372,6 +375,7 @@ export function discoverDocs(options: DiscoverDocsOptions): DiscoveredDoc[] {
   );
 
   const found = new Map<string, DiscoveredDoc>();
+  const budget = createWalkBudget(root, options.maxEntries);
 
   const consider = (abs: string): void => {
     if (found.size >= maxFiles) return;
@@ -408,8 +412,13 @@ export function discoverDocs(options: DiscoverDocsOptions): DiscoveredDoc[] {
         if (isSkippedDirName(entry.name)) continue;
         // Workflows / .github must be walked even if other tools ignore them
         if (rel && rootIg.ignores(`${rel}/`) && !rel.startsWith('.github')) continue;
+        const over = noteWalkEntry(budget);
+        if (over) throw over;
         walk(abs, depth + 1);
       } else if (entry.isFile()) {
+        if (rel && rootIg.ignores(rel) && !rel.startsWith('.github')) continue;
+        const over = noteWalkEntry(budget);
+        if (over) throw over;
         consider(abs);
       }
     }
@@ -418,10 +427,13 @@ export function discoverDocs(options: DiscoverDocsOptions): DiscoveredDoc[] {
   for (const scope of scopeAbs) {
     try {
       const st = fs.statSync(scope);
-      if (st.isDirectory()) walk(scope, 0);
-      else if (st.isFile()) consider(scope);
-    } catch {
-      /* skip */
+      if (st.isDirectory()) {
+        assertSafeWalkRoot(scope);
+        walk(scope, 0);
+      } else if (st.isFile()) consider(scope);
+    } catch (err) {
+      // A refused root is the result, not a skippable unreadable directory.
+      if (err instanceof UnsafeRootError) throw err;
     }
   }
 

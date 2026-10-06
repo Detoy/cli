@@ -58,6 +58,7 @@ import { writeSnapshot } from '../../engine/freshness.js';
 import { detectAiAssistant, printAiContextPrompt } from '../ai-context-prompt.js';
 import { resolveCliInvocation } from '../../util/cli-invocation.js';
 import { CliError, ExitCode, usageError } from '../../util/exit.js';
+import { assertSafeWalkRoot, UnsafeRootError } from '../../core-open/utils/root-safety.js';
 import { loadPackageVersionManifest, PackageManifestError } from '../package-version-manifest.js';
 import { runSecurityPacks, type SecurityRunResult } from '../../security/run-packs.js';
 import { evaluateSecurityGate, lowestThreshold, parseFailOn } from '../../security/gate.js';
@@ -462,6 +463,15 @@ export const scanCommand = new Command('scan')
     if (!(await pathExists(rootDir))) {
       console.error(chalk.red(`Path does not exist: ${rootDir}`));
       process.exit(1);
+    }
+
+    // Before preflight, fingerprinting, or the file walk. The walk budget is
+    // enforced inside the walkers; this catches filesystem root and OS images.
+    try {
+      assertSafeWalkRoot(rootDir);
+    } catch (err) {
+      if (err instanceof UnsafeRootError) throw new CliError(err.message, ExitCode.ERROR);
+      throw err;
     }
 
     // Fail closed before any scan work. A missing, unreadable, or unusable
