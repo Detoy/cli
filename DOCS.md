@@ -19,6 +19,7 @@ For a quick overview, see the [README](./README.md). This document covers everyt
   - [vg init](#vg-init)
   - [vg report](#vg-report)
   - [vg review](#vg-review)
+    - [Findings JSON contract](#findings-json-contract)
   - [vg sbom](#vg-sbom)
     - [Component identity](#component-identity)
     - [CycloneDX type and SPDX primaryPackagePurpose](#cyclonedx-type-and-spdx-primarypackagepurpose)
@@ -851,7 +852,7 @@ does not apply to your repository; that is the only way to stop it gating.
 | `unguarded_entrypoint` | **Protected.** A mutating route has no authorization guard, where its peers do |
 | `guard_removed` | **Protected.** A guard was deleted and nothing equivalent remains |
 | `known_vulnerable_dependency` | **Protected.** A changed manifest declares a package with a known advisory |
-| `correctness` (producer `blast_radius`) | Blast-radius fact: a changed symbol has cross-file callers or dependents — the same reverse-reachability `vg impact` reports. Severity stays at or below medium. Stable `id` (`blast:{node_id}` / `blast:{path}:{name}`) is the finding_key. |
+| `correctness` (producer `blast_radius`) | Blast-radius fact: a changed symbol has cross-file callers or dependents — the same reverse-reachability `vg impact` reports. Severity stays at or below medium. The stable `id` this command emits is `blast:{node_id}` (the finding_key). |
 | `correctness` (producer `architecture`) | Architecture-policy on a changed file (layer skip / boundary, peer deviation, duplicate implementation, uncovered change). Stable `id` is `arch:{rule}:{path}` using the architecture pack's rule string when one exists. Severity is `low`, `medium`, or `high` — never `critical` from version lag. |
 
 Two of these deserve a note, because they are what a linter cannot do:
@@ -888,248 +889,164 @@ vg review findings-from-diff --diff pr.patch --format json
 ```
 
 `--diff` reads a unified diff (`-` is stdin). The patch names the files and
-hunks. Scanners still read file text from the working tree, and they still
-need the code map. This command builds a missing map the same way `vg review`
-does (`vg build` is the explicit map command). `--format json`, and the global
-`--json` flag, write one document: the findings object plus a `publishable`
-array. Text output is a different shape and is not this contract.
+hunks. The code map is the working tree's map: if it is missing, this command
+builds it (see [Failures](#findings-json-failures)). `--format json` and the
+global `--json` flag write the same stdout document. The contract is below.
 
-| Field | Blast-radius | Architecture-policy |
-| --- | --- | --- |
-| `kind` | `correctness` (top-level only) | `correctness` (top-level only) |
-| `id` / `finding_key` | `blast:{node_id}` or `blast:{path}:{name}` | `arch:{rule}:{path}` |
-| `source` | `scanner` | `scanner` |
-| producer / `scanner_kind` | `blast_radius` | `architecture` |
-| severity | `low` or `medium` | `low`, `medium`, or `high` — never `critical` from version lag |
-| `receipts` | existing capsule `verify:` / `scan:` / `attest:` ids when those facts already exist | same |
-
-Ids for those two rows are stable across head SHAs: the same symbol, or the
-same rule and path, keeps the same key. No spaces. Suggested-fix on publishable
-rows is an honest skip (`null` / `skipped_no_patch`) — there is no computed
-PatchIR for blast-radius or architecture-policy rows. Each run also writes
-`.vibgrate/review-propose-handoff.json` (`vg.review.propose-handoff.v1`) so
-`vg review propose` can resolve those ids without a second findings loop.
-That file is not the stdout document. This path does not post a comment or a
-check run.
-
-The field list, every `kind`, the sort, a captured example, and the failure
-exits are in [Findings JSON contract](#findings-json-contract).
+Each run also writes `.vibgrate/review-propose-handoff.json`
+(`vg.review.propose-handoff.v1`) so `vg review propose` can resolve those ids
+without a second findings loop. That file is a side effect. It carries git
+SHAs and a repo pseudonym; the stdout document does not. This path does not
+post a comment or a check run, and it has no `--fail-on`. A document that
+prints exits `0`, findings or none.
 
 #### Findings JSON contract
 
-`vg review findings-from-diff --format json` prints a single JSON object to
-stdout and a trailing newline. Errors go to stderr. The object is
-`JSON.stringify` of the findings value with `publishable` added, indented by
-two spaces. Keys stay in the order below.
+Stdout of `vg review findings-from-diff --format json` is one JSON document,
+pretty-printed with a two-space indent and a trailing newline
+(`JSON.stringify` in `src/commands/review.ts`). The schema identifier is the
+`schema_version` string `vg.review.findings.v1`. There is no `decision` field
+on this document. The decision is only on `vg review --format json`
+(`vg.review.receipt.v1`).
 
-##### Top-level fields
+Top-level fields, in this order:
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `schema_version` | string | Schema identifier. Always `vg.review.findings.v1`. |
-| `change_class` | string[] | `architecture`, then `security`, when those classes apply. Otherwise `["none"]`. |
-| `architecture_findings` | object[] | Architecture-policy rows and blast-radius rows. May be empty. |
-| `security_findings` | object[] | Security-control rows. May be empty. |
-| `unknowns` | string[] | Facts the scanners could not establish. May be empty. Not sorted. |
-| `required_checks` | string[] | Check names, unique, then sorted by UTF-16 code unit. |
-| `publishable` | object[] | Blast-radius and architecture-policy rows only, sorted by `finding_key`. Always present. |
+| `schema_version` | string | Always `vg.review.findings.v1`. |
+| `change_class` | string[] | `architecture`, then `security`, when that class applies. Otherwise `["none"]`. |
+| `architecture_findings` | finding[] | Blast-radius rows and architecture-policy rows. |
+| `security_findings` | finding[] | Guard and advisory rows. |
+| `unknowns` | string[] | Facts the scanners could not establish. Insertion order; duplicates dropped. |
+| `required_checks` | string[] | Check ids the scanners recorded, sorted. The scanners add zero or more of `authz-test`, `changed-call-path-test`, and `dependency-advisory-check`. |
+| `publishable` | object[] | Correctness rows only, sorted by `finding_key`. Security rows are left off. |
 
-`change_class` pushes `architecture` when an architecture finding remains, a
-cross-file edge was added, or a changed path is architectural. It then pushes
-`security` when a security finding remains, a security fact is on the capsule,
-or a dependency manifest changed. With neither, the array is `["none"]`.
-
-There is no `decision`, receipt id, timestamp, digest, signature, or git SHA
-on this object. Those live on `vg review --format json`
-(`vg.review.receipt.v1`), not here.
+`publishable` is not part of `vg.review.findings.v1` itself. The command adds
+it beside the findings fields so a consumer can read the correctness rows
+without a second schema. Each publishable object has, in this order: `id`,
+`finding_key`, `kind` (`correctness`), `scanner_kind` (`blast_radius` or
+`architecture`), `review_check` (`vibgrate/review`), `severity`, `confidence`,
+`claim`, `paths`, `source` (`scanner`), `receipts`, `evidence_ids`,
+`suggested_fix` (`null`), `suggested_fix_status` (`skipped_no_patch`),
+`suggested_fix_note`. Severity on a blast-radius publishable row is `low` or
+`medium`. On an architecture-policy row it is `low`, `medium`, or `high`.
+There is no computed patch for either row.
 
 ##### Finding object
 
-Architecture and blast-radius rows are written with these keys, in this order:
+Correctness rows (blast-radius and architecture-policy) carry these fields, in
+this order:
 
-| Field | Type | Meaning |
-| --- | --- | --- |
-| `id` | string | Stable key. Same value as `finding_key` on these rows. |
-| `kind` | string | See [kind values](#finding-kind-values). |
-| `finding_key` | string | Same as `id` for blast-radius and architecture-policy rows. |
-| `producer` | string | `blast_radius` or `architecture`. Not a second `kind`. |
-| `severity` | string | `low`, `medium`, or `high`. |
-| `confidence` | number | `0..1`. Blast-radius confidence is rounded to three decimal places. |
-| `claim` | string | One sentence (sometimes two) stating the fact. |
-| `evidence_ids` | string[] | Ids that exist on the capsule. Order is emission order, then any `verify:` / `scan:` / `attest:` ids that were not already listed. |
-| `target_alignment` | string | `regression`, `legacy_consistent`, `approved_exception`, or `unknown` from these scanners. |
-| `remediation` | string | What to do next. |
-| `paths` | string[] | Repo-relative paths. Blast-radius lists the changed file, then affected files, de-duplicated, at most eight. |
-| `protected_finding` | boolean | `false` on blast-radius and architecture-policy rows. |
-| `source` | string | `scanner`. This command does not call a model. |
-| `receipts` | string[] | Existing `verify:` / `scan:` / `attest:` ids for the finding's paths, sorted with `localeCompare`. `[]` when none exist. |
-
-Security rows use the same keys except they omit `finding_key`, `producer`,
-and `receipts`. Their `id` is `sec-01`, `sec-02`, … in emission order. That
-counter is not a content hash: it stays put for a fixed input and renumbers
-when an earlier security row appears or disappears.
-
-`target_alignment` on the type also includes `target`. These scanners do not
-write `target`. Severity on the type also includes `critical`. These scanners
-do not write `critical`.
-
-##### Finding `kind` values
-
-`kind` is the top-level classification. Blast-radius is not its own `kind`.
-
-| `kind` | Where | How you tell the rows apart |
-| --- | --- | --- |
-| `correctness` | `architecture_findings` | `producer` is `blast_radius` or `architecture`. |
-| `guard_removed` | `security_findings` | A guard was deleted and none remains. `protected_finding` is `true` when the rule is on. |
-| `unguarded_entrypoint` | `security_findings` | A changed mutating route has no guard while peers do. `protected_finding` is `true` only when the peer group is large enough. |
-| `known_vulnerable_dependency` | `security_findings` | A changed manifest declares a package named in `.vibgrate/scan_result.json`. `protected_finding` is `true`. |
-
-**Blast-radius** (`producer: "blast_radius"`, `scanner_kind: "blast_radius"` on
-`publishable`): a changed symbol has at least one dependent in another file,
-the same reverse reachability as `vg impact` (depth 4). `id` is
-`blast:{node_id}` when the graph node is known, otherwise
-`blast:{path}:{name}` with whitespace stripped. Severity is `medium` when
-three or more direct cross-file dependents exist, otherwise `low`. At most
-eight blast-radius rows are emitted, highest fan-out first. Same-file-only
-fan-out is omitted.
-
-**Architecture-policy** (`producer: "architecture"`, `scanner_kind:
-"architecture"` on `publishable`): `kind` is still `correctness`. The rule
-lives in the id, `arch:{rule}:{path}`, with an optional extra segment
-(`arch:{rule}:{path}:{extra}`) and whitespace stripped. Rules this command
-emits:
-
-| Rule in the id | When |
+| Field | Meaning |
 | --- | --- |
-| `peer_deviation` | A changed file steps away from a peer majority. |
-| `duplicate_implementation` | A changed function matches an existing one. Extra segment is the function name. |
-| `unverified_change` | No test edge reaches the changed file. |
-| `{profile}:skip:{from}→{to}` | Declared `layered`, `mvc`, or `mvvm` target, and the new edge skips a tier. Extra segment is the destination path. |
-| `{profile}:outer-ring:{from}→{to}` | Declared `clean`, `hexagonal`, or `onion` target, and an outer layer touches persistence directly. |
-| `{profile}:domain→{to}` | Domain depends on data-access or infrastructure. |
-| `{profile}:upward:{from}→{to}` | A dependency points up the layered stack. |
-| `vertical-slice:cross-slice-internal` | A vertical-slice edge reaches into another slice. |
-| `layer-skip` or `boundary_bypass` | Fallback ids used only when the scanner's rule string is empty. |
+| `id` | Stable key. Same string as `finding_key`. |
+| `kind` | `correctness`. |
+| `finding_key` | Same string as `id`. |
+| `producer` | `blast_radius` or `architecture`. |
+| `severity` | `low`, `medium`, or (architecture-policy only) `high`. |
+| `confidence` | Number in `0..1`. |
+| `claim` | One sentence of scanner text. |
+| `evidence_ids` | Ids that resolve against the analysis capsule. |
+| `target_alignment` | `regression`, `target`, `legacy_consistent`, `approved_exception`, or `unknown`. |
+| `remediation` | What to do next. |
+| `paths` | Repo-relative paths, the changed file first. |
+| `protected_finding` | `false` on these rows. |
+| `source` | `scanner`. |
+| `receipts` | Capsule ids that already start with `verify:`, `scan:`, or `attest:`. Present on every correctness row; `[]` when none match. |
 
-Layer and skip rows are emitted only when a profile exists (a declared target,
-or an observed majority). A skip is emitted only against a declared target.
-Severity on these rows is `low`, `medium`, or `high`, never `critical`.
+Security rows omit `finding_key`, `producer`, and `receipts`. The fields they
+do carry, in order, are `id`, `kind`, `severity`, `confidence`, `claim`,
+`evidence_ids`, `target_alignment`, `remediation`, `paths`,
+`protected_finding`, `source`.
 
-**Gap:** `validated_taint` is a protected kind the review policy understands,
-and older notes list it next to the other security kinds. This command does
-not emit a finding with `kind: "validated_taint"`. When the rule is on and the
-change touches an entrypoint or a cross-layer path, the scanner appends one
-`unknowns` string instead and does not confirm or exclude tainted input.
+##### `kind`
 
-##### `publishable` rows
+Every `kind` this command's scanners assign:
 
-Only blast-radius and architecture-policy rows are copied here. A row is
-dropped when its key is empty, contains whitespace, or lacks the `blast:` /
-`arch:` prefix. Other `kind` values stay on `architecture_findings` or
-`security_findings` and are absent from `publishable`.
-
-| Field | Type | Meaning |
+| `kind` | Where it lands | How to tell the rows apart |
 | --- | --- | --- |
-| `id` | string | Same as `finding_key`. |
-| `finding_key` | string | The stable id. |
-| `kind` | string | Always `correctness`. |
-| `scanner_kind` | string | `blast_radius` or `architecture`. |
-| `review_check` | string | Always `vibgrate/review`. |
-| `severity` | string | Blast-radius is clamped to `low` or `medium` (`medium` stays; anything else becomes `low`). Architecture stays `low`, `medium`, or `high`. Never `critical`. |
-| `confidence` | number | Copied from the finding. |
-| `claim` | string | Copied. |
-| `paths` | string[] | Copied, same order. |
-| `source` | string | `scanner`. |
-| `receipts` | string[] | Copied, then sorted with `localeCompare`. |
-| `evidence_ids` | string[] | Copied, same order. |
-| `suggested_fix` | null | Always `null`. |
-| `suggested_fix_status` | string | Always `skipped_no_patch`. |
-| `suggested_fix_note` | string | The blast-radius note or the architecture-policy note below. |
+| `correctness` | `architecture_findings` | `producer: "blast_radius"`, `id` `blast:{node_id}`. A changed symbol with at least one cross-file dependent. Severity is `low`, or `medium` when three or more of those dependents are direct. |
+| `correctness` | `architecture_findings` | `producer: "architecture"`, `id` `arch:{rule}:{path}` or `arch:{rule}:{path}:{extra}`. Architecture-policy on a changed file. `rule` is `unverified_change`, `peer_deviation`, `duplicate_implementation`, or a layer-boundary rule from the architecture pack (that rule string can contain `→`). `extra` is the other path for a boundary edge, or the function name for a duplicate. Severity is `low`, `medium`, or `high`. |
+| `guard_removed` | `security_findings` | An authorization or validation guard was deleted and the file no longer contains one. `id` is `sec-01`, `sec-02`, … in emission order. `protected_finding` is `true`. Severity `high`. |
+| `unguarded_entrypoint` | `security_findings` | A changed mutating route has no authorization guard, voted against its peers. `protected_finding` is `true` only when the peer group is large enough to gate; otherwise severity is `medium` and `protected_finding` is `false`. |
+| `known_vulnerable_dependency` | `security_findings` | A changed manifest names a package listed on a `vibgrate/vulnerability` row in an existing `.vibgrate/scan_result.json`. `protected_finding` is `true`. Severity `high`. |
 
-Blast-radius note, exactly:
+Blast-radius is a `producer` and a `scanner_kind`, and the `blast:` prefix of
+`id`. It is the same `kind` as an architecture-policy row.
+
+The schema verifier also accepts severity `critical`. These scanners do not
+emit it. **Gap:** `validated_taint` is a kind the policy layer recognizes, and
+it is not a `kind` this command emits. When the change touches an entrypoint
+or a cross-layer path and that check is enabled (the default), the command
+pushes this `unknowns` string instead:
 
 ```text
-No automatic patch — blast-radius facts have no computed edit. `vg review propose` is a model-backed dry-run, not a deterministic bump.
+This change touches an entrypoint or a cross-layer path and taint validation was not run — dataflow analysis is not part of this review slice, so tainted-input findings are neither confirmed nor excluded.
 ```
 
-Architecture-policy note, exactly:
-
-```text
-No automatic patch — architecture-policy facts have no computed edit. `vg review propose` is a model-backed dry-run, not a deterministic bump.
-```
+`blastFindingKey` can also build `blast:{path}:{name}` for a symbol with no
+graph node id. **Gap:** `collectBlastRadiusFindings` skips those symbols, so
+`vg review findings-from-diff` does not emit that form.
 
 ##### Ordering
 
-The same map, the same change, the same review policy, and the same
-`.vibgrate/scan_result.json` (or its absence) produce byte-identical stdout.
-Two runs of the fixture below matched. The sorts that fix that order:
+The same tree and the same diff or base produce the same stdout bytes, on the
+same build of `vg`. Two runs of the fixture below were byte-identical, and a
+third run after the code map was refreshed was byte-identical to those. The
+global `--generated-at` flag does not change this document (it pins a receipt
+timestamp, and this document has no timestamp).
 
-1. **`publishable`** is sorted by `finding_key` with `String.prototype.localeCompare`
-   (`exportCorrectnessPublishRows` in `src/review/finding-publish.ts`). This
-   sort is not the order of `architecture_findings`. In the fixture below the
-   two orders happen to agree (`arch:` before `blast:`).
-2. **Blast-radius rows inside `architecture_findings`** follow `compareRanked`
-   in `collectBlastRadiusFindings` (`src/review/impact-findings.ts`): more
-   depth-1 cross-file dependents first, then more cross-file dependents, then
-   `path`, `name`, and `node_id` with `localeCompare`. Symbols are sorted by
-   that same path / name / node id before impact is computed. The list is then
-   cut at eight. Named callers inside one claim follow `impactOf`: depth
-   ascending, confidence descending, then `name` with `localeCompare`.
-3. **Architecture-policy rows** are appended in scanner pass order, before the
-   blast-radius rows, and are not re-sorted as one list:
-   - layer and skip rows, in code-map edge order (edges are sorted by kind, then source, then destination);
-   - `peer_deviation`, peer groups ordered by group id with code-unit `<`, deviator paths with the default array sort;
-   - `duplicate_implementation`, one row per changed function, in graph node id order (`localeCompare` on the node id);
-   - `unverified_change`, by path with `localeCompare`.
-4. **`security_findings`**: `guard_removed` (removed-line entries, default array sort), then `unguarded_entrypoint` (route directories ordered with code-unit `<`), then `known_vulnerable_dependency` in the order those findings appear in `.vibgrate/scan_result.json`.
-5. **`required_checks`**: insertion order, duplicates removed, then the default array sort (UTF-16 code units, not `localeCompare`).
-6. **`receipts`**: `localeCompare`.
-7. **`unknowns`**: first-seen order (capsule unknowns, then scanner unknowns). Not sorted.
-8. **`change_class`**: `architecture` then `security`, or `["none"]`. Not alphabetical.
+What is sorted, and what is left in pipeline order:
 
-Paths inside a unified `--diff` are collected with code-unit `<` before any
-finding is built.
+- Changed files are sorted by path before anything is scanned (`mergeFiles` and `filesFromUnifiedDiff` in `src/review/git.ts`).
+- `runScanners` (`src/review/scanners.ts`) walks removed lines and file text in sorted path order. Untested files are sorted with `path.localeCompare` before the `unverified_change` rows. `required_checks` is a sorted unique list.
+- Blast-radius rows are sorted inside `collectBlastRadiusFindings` (`src/review/impact-findings.ts`): symbols by path, name, then node id; then by direct dependents (most first), total dependents (most first), then path, name, node id. At most eight are kept.
+- `architecture_findings` keeps that pipeline order: boundary edges, peer deviations, duplicates, unverified changes, then blast-radius. The array is not sorted again.
+- `security_findings` keep scanner order (removed guards, then unguarded routes, then vulnerable packages). Their `id`s are `sec-01` upward in that order.
+- `unknowns` keeps insertion order from the capsule compiler, then the scanners (`runReview` in `src/review/run.ts`).
+- `publishable` is sorted by `finding_key` with `localeCompare` (`exportCorrectnessPublishRows` in `src/review/finding-publish.ts`). That order can differ from `architecture_findings` when two architecture rules sort differently as keys than they were emitted.
+- `receipts` on a publishable row are sorted with `localeCompare`.
 
-##### What varies
+`id` on a correctness row is a content key: the same symbol (graph node id) or
+the same rule and path keeps the same key across head SHAs. The node id is
+`nodeId` in `src/engine/ids.ts` (kind, qualified name, file, signature). A
+one-line body edit in the fixture that left the signature unchanged kept
+`blast:b933cbcf5ebdc56a506c527c64ae9088`. Parts of the key are stripped of
+whitespace.
 
-Stdout does not include a clock, a receipt id, a signature, a digest, or a git
-SHA, so those cannot change this document.
+These fields are ordinal, so they stay put for the same inputs and move when
+an earlier row in that sorted list appears or disappears:
 
-These change when the inputs change, and they are not stable identifiers:
+- security `id` (`sec-01`, …)
+- verification evidence ids (`verify:{kind}:{n}`, numbered over changed files in path order)
 
-- `claim`, `confidence`, `severity`, and `paths` follow the map and the change. Blast-radius `confidence` is rounded to three decimals. Peer-deviation and duplicate-implementation confidence are not rounded to a fixed scale before they are printed.
-- Security `id` (`sec-NN`) is an emission counter.
-- An evidence id of the form `source_span:<n>` uses the capsule evidence length at the moment it is inserted, so it moves when earlier evidence is added.
+Nothing in the stdout document is a wall-clock time, a random id, an absolute
+path, or a git SHA. Stderr is separate. When the command builds or refreshes
+the map and you did not pass `--quiet` or global `--json`, stderr includes a
+line whose duration changes between runs, for example `  code map built — 2 files in 0.5s`. That line is not in the JSON. `--quiet` leaves stderr empty on success.
 
-The same `--diff` text on two different trees can differ, because file text is
-read from disk. A missing `.vibgrate/scan_result.json` is not "no
-vulnerabilities": dependency-manifest changes become an `unknowns` entry and
-`required_checks` gains `dependency-advisory-check`.
-
-stderr is not part of the document. Without `--quiet` or `--json`, a map build
-or refresh prints a line whose elapsed seconds vary (`code map built — N files
-in X.Xs`, or the refreshed form). `--format json` alone does not hide that
-line. `--json` does.
-
-`.vibgrate/review-propose-handoff.json` is a side file
-(`vg.review.propose-handoff.v1`). Its capsule carries `base_sha`, `head_sha`,
-`dirty_tree_hash`, and a path-derived `repo_pseudonym`. A failed write of that
-file does not fail the command.
+The handoff file's capsule includes `base_sha`, `head_sha`, and
+`repo_pseudonym`. With no git remote, the pseudonym hashes `local:` plus the
+absolute checkout path, so the handoff file changes if the checkout moves.
+Stdout does not.
 
 ##### Example
 
-Captured stdout, twice, byte-identical, from a two-file git repository. `src/app.ts`
-imports `add` from `src/lib.ts`. After the first commit, `add`'s return was
-edited to `a + b + 0` and left unstaged. The command was:
+Complete stdout of `vg review findings-from-diff --format json` (exit `0`) on
+a two-file git tree. `src/app.ts` was committed as:
 
-```bash
-vg review findings-from-diff --format json --quiet
+```ts
+import { greet } from './greet.js';
+
+export function main(): string {
+  return greet('world');
+}
 ```
 
-The map was built by the command. Both rows have `kind: "correctness"`. The
-first is architecture-policy (`unverified_change`: no test edge). The second
-is blast-radius (`main` in `src/app.ts` depends on `add`). `publishable` lists
-the `arch:` key before the `blast:` key.
+`src/greet.ts` was committed returning `` `hello ${name}` `` and the working
+tree changed that to `` `hi ${name}` ``. Only `src/greet.ts` was dirty. The
+same bytes came back from a second run, and from
+`vg review findings-from-diff --diff <that git diff> --format json`.
 
 ```json
 {
@@ -1139,20 +1056,20 @@ the `arch:` key before the `blast:` key.
   ],
   "architecture_findings": [
     {
-      "id": "arch:unverified_change:src/lib.ts",
+      "id": "arch:unverified_change:src/greet.ts",
       "kind": "correctness",
-      "finding_key": "arch:unverified_change:src/lib.ts",
+      "finding_key": "arch:unverified_change:src/greet.ts",
       "producer": "architecture",
       "severity": "medium",
       "confidence": 0.7,
-      "claim": "src/lib.ts has no test edge reaching it in the code map.",
+      "claim": "src/greet.ts has no test edge reaching it in the code map.",
       "evidence_ids": [
         "verify:no_test_covering_change:1"
       ],
       "target_alignment": "unknown",
       "remediation": "Add a test that exercises the changed call path, or point `vg build` at the coverage report that already covers it.",
       "paths": [
-        "src/lib.ts"
+        "src/greet.ts"
       ],
       "protected_finding": false,
       "source": "scanner",
@@ -1161,22 +1078,22 @@ the `arch:` key before the `blast:` key.
       ]
     },
     {
-      "id": "blast:1fc1f7fc442e388dcdf2eb08b60759d9",
+      "id": "blast:b933cbcf5ebdc56a506c527c64ae9088",
       "kind": "correctness",
-      "finding_key": "blast:1fc1f7fc442e388dcdf2eb08b60759d9",
+      "finding_key": "blast:b933cbcf5ebdc56a506c527c64ae9088",
       "producer": "blast_radius",
       "severity": "low",
       "confidence": 0.75,
-      "claim": "Changing add in src/lib.ts reaches 1 direct and 0 transitive dependents across 1 file(s): main in src/app.ts. No test edge reaches this file in the map.",
+      "claim": "Changing greet in src/greet.ts reaches 1 direct and 0 transitive dependents across 1 file(s): main in src/app.ts. No test edge reaches this file in the map.",
       "evidence_ids": [
-        "impact:1fc1f7fc442e388dcdf2eb08b60759d9",
-        "impact:1fc1f7fc442e388dcdf2eb08b60759d9:dep:24636616b8372e46cd4c85a83253282c",
+        "impact:b933cbcf5ebdc56a506c527c64ae9088",
+        "impact:b933cbcf5ebdc56a506c527c64ae9088:dep:55e90dba23ed71f8c352d086284fe692",
         "verify:no_test_covering_change:1"
       ],
       "target_alignment": "unknown",
-      "remediation": "Add a test that exercises the highest-fan-out caller (main) before merging, or keep the exported contract of add compatible with those callers.",
+      "remediation": "Add a test that exercises the highest-fan-out caller (main) before merging, or keep the exported contract of greet compatible with those callers.",
       "paths": [
-        "src/lib.ts",
+        "src/greet.ts",
         "src/app.ts"
       ],
       "protected_finding": false,
@@ -1193,16 +1110,16 @@ the `arch:` key before the `blast:` key.
   ],
   "publishable": [
     {
-      "id": "arch:unverified_change:src/lib.ts",
-      "finding_key": "arch:unverified_change:src/lib.ts",
+      "id": "arch:unverified_change:src/greet.ts",
+      "finding_key": "arch:unverified_change:src/greet.ts",
       "kind": "correctness",
       "scanner_kind": "architecture",
       "review_check": "vibgrate/review",
       "severity": "medium",
       "confidence": 0.7,
-      "claim": "src/lib.ts has no test edge reaching it in the code map.",
+      "claim": "src/greet.ts has no test edge reaching it in the code map.",
       "paths": [
-        "src/lib.ts"
+        "src/greet.ts"
       ],
       "source": "scanner",
       "receipts": [
@@ -1216,16 +1133,16 @@ the `arch:` key before the `blast:` key.
       "suggested_fix_note": "No automatic patch — architecture-policy facts have no computed edit. `vg review propose` is a model-backed dry-run, not a deterministic bump."
     },
     {
-      "id": "blast:1fc1f7fc442e388dcdf2eb08b60759d9",
-      "finding_key": "blast:1fc1f7fc442e388dcdf2eb08b60759d9",
+      "id": "blast:b933cbcf5ebdc56a506c527c64ae9088",
+      "finding_key": "blast:b933cbcf5ebdc56a506c527c64ae9088",
       "kind": "correctness",
       "scanner_kind": "blast_radius",
       "review_check": "vibgrate/review",
       "severity": "low",
       "confidence": 0.75,
-      "claim": "Changing add in src/lib.ts reaches 1 direct and 0 transitive dependents across 1 file(s): main in src/app.ts. No test edge reaches this file in the map.",
+      "claim": "Changing greet in src/greet.ts reaches 1 direct and 0 transitive dependents across 1 file(s): main in src/app.ts. No test edge reaches this file in the map.",
       "paths": [
-        "src/lib.ts",
+        "src/greet.ts",
         "src/app.ts"
       ],
       "source": "scanner",
@@ -1233,8 +1150,8 @@ the `arch:` key before the `blast:` key.
         "verify:no_test_covering_change:1"
       ],
       "evidence_ids": [
-        "impact:1fc1f7fc442e388dcdf2eb08b60759d9",
-        "impact:1fc1f7fc442e388dcdf2eb08b60759d9:dep:24636616b8372e46cd4c85a83253282c",
+        "impact:b933cbcf5ebdc56a506c527c64ae9088",
+        "impact:b933cbcf5ebdc56a506c527c64ae9088:dep:55e90dba23ed71f8c352d086284fe692",
         "verify:no_test_covering_change:1"
       ],
       "suggested_fix": null,
@@ -1245,60 +1162,61 @@ the `arch:` key before the `blast:` key.
 }
 ```
 
-The `blast:` id is the graph node id from that map. It is a content id, not a
-secret. A different grammar or a different node-id algorithm would change it;
-the rest of the shape would not.
+A second fixture deleted `authorize();` from `src/routes/admin.ts`. This is the
+`security_findings` element from that stdout, with the rest of the document
+left out:
+
+```json
+{
+  "id": "sec-01",
+  "kind": "guard_removed",
+  "severity": "high",
+  "confidence": 0.9,
+  "claim": "An authorization or validation guard was removed from src/routes/admin.ts and no equivalent guard remains in the file.",
+  "evidence_ids": [
+    "role:routing:1"
+  ],
+  "target_alignment": "regression",
+  "remediation": "Restore the guard, or move it to a middleware the changed path provably passes through.",
+  "paths": [
+    "src/routes/admin.ts"
+  ],
+  "protected_finding": true,
+  "source": "scanner"
+}
+```
 
 ##### Failures
 
-Stdout is empty on every failure below. The `error:` line is stderr. The
-text here was captured with `--no-color`.
+<a id="findings-json-failures"></a>
 
-| Case | Exit | Stderr |
-| --- | --- | --- |
-| No code map, and this run did not leave one | `6` | see below |
-| `--graph <file>` does not exist | `6` | the missing-map line, then ` (looked at <file>)` |
-| `--graph <file>` exists but is not valid JSON | `1` | see below |
-| `--diff <file>` does not exist | `3` | see below |
-| Not a git repository (or git is not on `PATH`) | `5` | see below |
-| `--format` is not `text` or `json` | `5` | `error: unknown --format (expected text \| json)` |
+**Missing code map.** With no map and no `--graph`, the command builds one and
+then prints the document (exit `0`). Stderr is the progress line above.
 
-No code map:
+When `--graph` names a file that is not a map, nothing is built in its place.
+This is stderr from `vg review findings-from-diff --format json --graph /tmp/no-such-graph.json`, and the exit code is `6`. Stdout is empty.
 
 ```text
-error: no code map found — run `vg` in this repository first, then `vg review`
+  code map not built: an explicit --graph path was given
+error: no code map found — run `vg` in this repository first, then `vg review` (looked at /tmp/no-such-graph.json)
 ```
 
-`--graph` file present but not JSON (exit `1`):
+**Gap:** `--no-auto-build` is a flag of `vg review`, and `findings-from-diff`
+does not read it. `vg review findings-from-diff --no-auto-build` exits `1`
+with `error: unknown option '--no-auto-build'`. Putting `--no-auto-build`
+before the subcommand does not turn the build off either; the map is still
+built.
 
-```text
-error: The code map is truncated or not valid JSON. Rebuild it with `vg build`.
-```
-
-Missing `--diff` file (`<file>` is the path you passed):
-
-```text
-error: no diff at <file> — pass a unified-diff file or `-` to read stdin
-```
-
-Not a git repository (`<root>` is the directory `vg` resolved):
-
-```text
-error: `vg review` needs a git repository — <root> is not one (or git is not on PATH)
-```
-
-The missing-diff check runs after map prep and before the missing-map check.
-A missing `--diff` path exits `3` even when the map was not built. With neither
-`--quiet` nor `--json`, a skipped build also prints `  code map not built: <reason>`
-before the `error:` line. One verified reason is `another vg process is building the map`.
-
-**Gap — empty diff.** An empty file, a blank file, or text that is not a
-unified diff is not an error. Exit is `0`. The document is:
+**Empty diff.** An empty `--diff` file, a whitespace-only `--diff` file, and a
+clean working tree with no `--diff` all exit `0` and print this document.
+Stdout:
 
 ```json
 {
   "schema_version": "vg.review.findings.v1",
-  "change_class": ["none"],
+  "change_class": [
+    "none"
+  ],
   "architecture_findings": [],
   "security_findings": [],
   "unknowns": [],
@@ -1307,19 +1225,16 @@ unified diff is not an error. Exit is `0`. The document is:
 }
 ```
 
-A clean working tree with no `--diff` prints the same document. Callers that
-need a failure on an empty patch have to test `change_class` and the finding
-arrays themselves.
+**Gap:** empty diff content is not a failure. There is no empty-diff error
+string and the exit code is `0`.
 
-**Gap — `--no-auto-build`.** That flag belongs to `vg review`. On
-`findings-from-diff` it is an unknown option and the process exits `1` with
-`error: unknown option '--no-auto-build'`. Placing it before the subcommand
-(`vg review --no-auto-build findings-from-diff`) does not stop the build: the
-subcommand never reads the flag, builds a missing map, and exits `0` when the
-review itself succeeds. Exit `6` on this subcommand is the case where prep did
-not leave a map (`--graph` pointing at nothing, a build error that is not a
-config-file error, or a refresh lock held by another `vg` process). A broken
-project config is thrown as its own error and is not this exit `6` message.
+A `--diff` path that does not exist is a failure. Stderr from
+`vg review findings-from-diff --diff /tmp/no-such.diff --format json`, exit `3`.
+Stdout is empty.
+
+```text
+error: no diff at /tmp/no-such.diff — pass a unified-diff file or `-` to read stdin
+```
 
 #### Propose a PatchIR dry-run — `vg review propose`
 
