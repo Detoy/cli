@@ -582,7 +582,7 @@ vg scan --format sarif --out vibgrate.sarif --junit vibgrate.junit.xml --fail-on
 ```
 - A scan with `--baseline` also records findings that already appear in the snapshot (rule, location, and id). The text report prints the count, SARIF lists the same ids as suppressions, and those findings stay in the report.
 
-Copy-paste CI templates live in `examples/github-actions/`. When the job fails, when warn mode stays green, which versions to pin, and how a DriftScore badge is filled in: [`examples/github-actions/README.md`](./examples/github-actions/README.md). Azure DevOps and GitLab CI snippets are in [DOCS.md](./DOCS.md#ci-integration).
+Copy-paste CI templates live in `examples/github-actions/`. When the job fails, when warn mode stays green, which release to pin, and how a DriftScore badge is filled in: [`examples/github-actions/README.md`](./examples/github-actions/README.md). Azure DevOps and GitLab CI snippets are in [DOCS.md](./DOCS.md#ci-integration).
 
 ---
 

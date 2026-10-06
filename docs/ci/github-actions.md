@@ -39,7 +39,7 @@ JSON report (`format: json`) if a later step needs the number.
 - SARIF upload template: `examples/github-actions/driftscore-sarif.yml`
 - Vulnerability gate + SARIF template: `examples/github-actions/vulnerabilities-sarif.yml`
 
-Copy any template into your repository under `.github/workflows/`. The README is enough to add the basic gate: the workflow, when the job fails, and how a README badge is filled in.
+Copy any template into your repository under `.github/workflows/`. The drift-gate README is enough to add the basic gate to an empty repository: the workflow, when the job fails, which release to pin, and how a README badge is filled in.
 
 ## Vulnerability gate (`--vulns`)
 
@@ -115,6 +115,8 @@ Do not set `continue-on-error` on the gate step. Exit 2 is what blocks the merge
 ```bash
 vg scan --format json --out vibgrate-report.json --fail-on error --drift-budget 40
 ```
+
+An unpinned `npx @vibgrate/cli` installs npm `latest` on every run. The pinned workflow in [`examples/github-actions/README.md`](../../examples/github-actions/README.md) is the copy-paste gate.
 
 Other scan-time gates on the same command:
 
