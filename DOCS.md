@@ -42,6 +42,7 @@ For a quick overview, see the [README](./README.md). This document covers everyt
 - [Code Graph Commands](#code-graph-commands)
   - [vg ask](#vg-ask)
   - [vg build](#vg-build)
+    - [Signing and verifying the graph](#signing-and-verifying-the-graph)
     - [Maven and Gradle manifests](#maven-and-gradle-manifests)
   - [vg watch](#vg-watch)
   - [vg bundle](#vg-bundle)
@@ -2956,10 +2957,232 @@ Maps source code into a graph artifact, enabling all downstream queries (`vg sho
 | `--no-warm` | — | Do not warm the semantic index after building |
 | `--grammars <dir>` | — | Grammar `.wasm` directory for offline/air-gapped use |
 | `-o, --export <file>` | — | Also write the map to a file (format from extension) |
+| `--attest` | — | Sign the built graph into `.vibgrate/attestation.intoto.jsonl` |
+| `--verify` | — | Check an attestation against the on-disk graph, and re-check determinism in memory. Leaves the stored map as it is |
+| `--attest-key <path>` | `$VG_ATTEST_KEY`, else `.vibgrate/attest-key.pem` | Ed25519 private key PEM for `--attest` |
+| `--attestation <file>` | `.vibgrate/attestation.intoto.jsonl` | Where `--attest` writes, and where `--verify` reads |
+| `--pub <path>` | — | Public key PEM that pins the signer for `--verify` |
 
 **Local by default — no git churn.** The first time vg writes into `.vibgrate/` it also creates `.vibgrate/.gitignore`, keeping the graph artifacts (`graph.json`, `graph.html`, `GRAPH_REPORT.md`, `facts.jsonl`, `mcp-navigation.json`) and the cache out of git — so builds, auto-refreshes, and MCP use never leave your branch dirty. Run `vg share` when you want the map committed for your team (it rewrites that ignore file). vg never touches an existing `.vibgrate/.gitignore`, so edit it (or leave it empty) to manage the ignores yourself.
 
+That generated ignore file does not list the signing key or `attestation.intoto.jsonl`. See [Signing and verifying the graph](#signing-and-verifying-the-graph).
+
 **Maven and Gradle.** A `pom.xml` becomes a `package` node, and each top-level `<dependency>` becomes an `import` edge to `groupId:artifactId`. Gradle build scripts do not add those edges. Profiles, scopes, and Gradle configurations are spelled out in [Maven and Gradle manifests](#maven-and-gradle-manifests).
+
+### Signing and verifying the graph
+
+`vg build --attest` signs the graph that build just produced. `vg build --verify` checks an attestation file against the map already on disk, and it re-checks that rebuilding this tree is deterministic. Pass one of those flags. When both are set, `--verify` runs and the build that would sign does not.
+
+`attest-actions` is not a command. The older verbs are usage errors (exit 5), and they name the flag to run instead:
+
+```text
+error: `vg attest` has moved to `vg build --attest`
+error: `vg verify` has moved to `vg build --verify`
+```
+
+#### What `--attest` writes
+
+The output is a DSSE envelope around an in-toto Statement (`_type` is `https://in-toto.io/Statement/v1`), one JSON object plus a trailing newline, at `.vibgrate/attestation.intoto.jsonl`. `--attestation <file>` selects another path. Payload type is `application/vnd.in-toto+json`. Predicate type is `https://vibgrate.com/attestation/code-graph/v1`.
+
+The statement subject is named `graph.json`. The map file itself usually lives in the global store; `.vibgrate/graph.json` is the in-repo layout. The `sha256` is the canonical graph with the volatile `generatedAt` field left out, so two builds of the same content share a digest. The predicate records the `vg` version, the toolchain fingerprint, the corpus hash, and the node, edge, area, and test counts. When local `git` can answer, it also records HEAD (`sha` and a 7-character `shortSha`), the branch name (omitted on a detached HEAD), and `dirty`. No timestamp is written. A different `vg` version changes the predicate even when the graph digest stays the same, so the file is stable for a given tool version, key, graph, and git state.
+
+The envelope signature includes a 16-hex `keyid` and the public key. A later check can use that embedded key to confirm the file is intact. Pinning a key you hold is what `--pub` is for.
+
+On success the text report adds a line of this shape (`<keyid>` and the digest prefix stand in for the values of that run):
+
+```text
+  attested · keyid <keyid> · digest <16 hex chars>… → .vibgrate/attestation.intoto.jsonl
+```
+
+`--json` puts the same facts on stdout under `attestation`: `keyid`, `graphDigest`, `fingerprint`, `out`, `commit` when git answered, and `keyGeneratedAt` when this run created a key. The private key is not part of that object, and it is not printed.
+
+#### Signing key
+
+The key is the first of these that is set:
+
+1. `--attest-key <path>`
+2. `VG_ATTEST_KEY`
+3. `.vibgrate/attest-key.pem`
+
+`vg evidence` and `vg review` use this same default key.
+
+When the default path is missing, the first `vg build --attest` mints an Ed25519 key, writes it with mode `0600`, and writes the public half next to it as `.vibgrate/attest-key.pem.pub` (mode follows the process umask, usually `0644`). Text mode prints:
+
+```text
+minted a new Ed25519 signing key at .vibgrate/attest-key.pem (keyid <keyid>) — keep it, add it to .gitignore, and reuse it to re-sign reproducibly
+```
+
+Keep the private key, and keep it out of git. The examples in this section never include PEM contents. Add both of these lines to `.gitignore` (and commit that ignore file) before the first sign when you need the statement to record a clean tree:
+
+```text
+.vibgrate/attest-key.pem
+.vibgrate/attest-key.pem.pub
+```
+
+The key file is created before `git status` runs. `dirty` follows `git status --porcelain`, so untracked files count. A new key that is still untracked makes that first statement `dirty: true`. An explicit path that does not exist — the flag or `VG_ATTEST_KEY` — is a usage error, and no key is created. A key that is not Ed25519 is rejected. The type named in the error is the type of the file (`rsa`, `ec`, or `unknown`).
+
+#### What `--verify` reports
+
+`--verify` loads the attestation, rebuilds the graph in memory three times for the determinism lines (two full builds and one cached build), and compares the attestation to the map already on disk. That map is the global store by default, or `.vibgrate/graph.json` when the in-repo layout is in use. The stored map is left in place. The graph and the attestation stay on this machine.
+
+`--pub <path>` requires the signature to match that public key. Without `--pub`, the check uses the public key embedded in the file. That is an integrity check of the file against the key it carries.
+
+Text mode prints the determinism lines, then one attestation outcome. These are the lines, with placeholders where a run-specific id appears:
+
+```text
+  ✔ attestation verified · keyid <keyid>
+    signature valid, signer trusted, graph digest matches
+```
+
+```text
+  ~ attestation signature valid · keyid <keyid>
+    signature valid but signer not pinned — pass --pub to establish trust
+```
+
+```text
+  ~ attestation signature valid · keyid <keyid>
+    signature valid but the attested tree was dirty (uncommitted changes)
+```
+
+```text
+  attestation: none (sign one with `vg build --attest`)
+```
+
+`verified` means three local facts together: the signature matches the key you passed to `--pub`, the on-disk map's digest matches the statement, and the statement's `dirty` flag is not true. When no map is on disk, a pinned signature whose statement is not dirty reports `signature valid, signer trusted` and does not claim a digest match.
+
+`dirty` is the value recorded at sign time. `--verify` reads that flag from the statement. The determinism lines compare rebuilds with each other, and they compare the toolchain fingerprint with the map on disk. They do not compare a fresh rebuild's digest to the attestation, so a source edit that has not been written into the on-disk map can still verify. Exit code 0 covers `verified`, both `signature-valid` lines, and a missing default attestation whose determinism check passed. A job that must require a pinned signer should pass `--pub` and require `attestation.status` to be `verified` in `--json`. `ok: true` is also returned for `signature-valid`.
+
+#### What stays on this machine
+
+Signing and checking the signature are local Ed25519 (`node:crypto`). The attestation step contacts no registry, timestamp authority, or transparency log.
+
+Commit metadata is local `git`: `rev-parse HEAD`, `status --porcelain`, and `rev-parse --abbrev-ref HEAD`, with terminal prompts disabled. If `git` is missing, the directory is not a work tree, or the command fails, the statement has no `commit` object and signing still finishes. Those three commands are local reads; they are not a `git fetch`.
+
+The process around the signature is still a normal `vg` run. Local crypto is the attestation step. It is not, by itself, an air-gap for the whole command:
+
+- Unless you pass `--offline` or `--local`, every `vg` invocation may start a background install of the optional architecture and relevance modules when they are not already present. The command does not wait on that install.
+- `vg build --attest` is a full graph build. Without `--offline` it may install the architecture module during the build. On an interactive terminal it may also download the semantic embedding model the first time it warms that index. `--no-warm`, `--json`, and `--quiet` skip the warm-up. `--offline` skips both the module install and the warm-up.
+- `vg build --verify` does not install the architecture module and does not warm embeddings. The background module check above still applies unless `--offline` or `--local` is set.
+- Grammars are read from the local install. An air-gapped machine passes `--grammars <dir>` with a directory of `.wasm` files, the same as any other `vg build`.
+
+Add `--offline` to both commands when this machine must not open a connection.
+
+#### Try it
+
+```bash
+printf '%s\n' '.vibgrate/attest-key.pem' '.vibgrate/attest-key.pem.pub' >> .gitignore
+git add .gitignore && git commit -m "ignore the graph signing key"
+vg build --attest
+vg build --verify --pub .vibgrate/attest-key.pem.pub
+```
+
+Commit the ignore change before signing. `dirty` follows `git status --porcelain`, including untracked files, so any other local change at sign time is recorded too. A clean tree and a pinned key end on the `✔ attestation verified` lines above. A tree that was dirty at sign time ends on `signature valid but the attested tree was dirty (uncommitted changes)` and still exits 0. The first sign also prints the mint notice. Nothing in that output is a PEM.
+
+An attestation path you named, when the file is not there:
+
+```bash
+vg build --verify --attestation .vibgrate/no-such-attestation.intoto.jsonl
+```
+
+```text
+error: no attestation at .vibgrate/no-such-attestation.intoto.jsonl — sign one with `vg build --attest`
+```
+
+Exit code 3. Sign with `vg build --attest`, or point `--attestation` at the file you committed. The same exit and the same sentence, with the default path filled in, are what you get from `--pub` when `.vibgrate/attestation.intoto.jsonl` is missing. Leaving both flags off prints `attestation: none (sign one with `vg build --attest`)` and does not fail the command for that reason.
+
+#### Errors
+
+Failing commands write `error: …` to stderr. The messages below are the text the CLI prints (color removed). `<keyid>` is the 16-hex public identifier from the file, not key material.
+
+**Signing key missing** — exit 5. The path in the message is the string from `--attest-key` or `VG_ATTEST_KEY`, unchanged. No key is created.
+
+```text
+error: signing key not found: missing.pem
+```
+
+Point the flag or variable at an existing Ed25519 PEM, or unset it so the default path can be created.
+
+**Key is not Ed25519** — exit 5. For a key inside the project the path is relative. A key outside the project is shown as an absolute path. The last word is the key type.
+
+```text
+error: attest requires an Ed25519 key, but rsa.pem is rsa
+```
+
+Replace the file with an Ed25519 key.
+
+**Key file is unreadable** — exit 5. The path exists and is not a private key this process can read (for example a file that is not a PEM).
+
+```text
+error: could not read an Ed25519 private key from bad.pem
+```
+
+Replace it with an Ed25519 PEM. The same relative-versus-absolute path rule as the type error applies.
+
+**Named attestation is missing** — exit 3. This is the failure in the try-it above. `--pub` with no attestation file uses the same sentence and the default path:
+
+```text
+error: no attestation at .vibgrate/attestation.intoto.jsonl — sign one with `vg build --attest`
+```
+
+**Default attestation is absent, and you did not require one** — exit 0 when the determinism lines passed. This is a report, not a failed signature:
+
+```text
+  attestation: none (sign one with `vg build --attest`)
+```
+
+**Signature does not check** — exit 2. The text lines come first, then the error. The `keyid` is omitted when the envelope has nothing usable to show.
+
+```text
+  ✘ attestation failed · keyid <keyid>
+    signature verification failed
+error: attestation verification failed
+```
+
+The attestation file was modified after signing, or `--pub` is a different key from the one that signed. Sign again with `vg build --attest`. Do not paste the PEM into the log.
+
+**On-disk map no longer matches** — exit 2.
+
+```text
+  ✘ attestation failed · keyid <keyid>
+    graph.json no longer matches the attested digest (content changed since signing)
+error: attestation verification failed
+```
+
+The map `vg` loads has changed since the statement was signed. If that change is intended, run `vg build --attest` again.
+
+**Envelope parses, payload is not a statement** — exit 2.
+
+```text
+  ✘ attestation failed
+    malformed attestation payload (not a valid in-toto statement)
+error: attestation verification failed
+```
+
+Replace the file by signing again.
+
+**`--pub` file is missing** — exit 1. Node prints the absolute path it tried to open; the path in the sample below is a stand-in. A second stderr line is `  (ref <id>) — re-run with --json for detail, or report at https://vibgrate.com/help`, and `<id>` changes every run.
+
+```text
+error: ENOENT: no such file or directory, open '/absolute/path/missing.pub'
+```
+
+Pass the public half of the signing key, such as `.vibgrate/attest-key.pem.pub`.
+
+**Attestation file is not JSON** — exit 1, same `ref` line as above. The `error:` text is the JSON parser's message. For a file whose contents are `{not json` the line is:
+
+```text
+error: Expected property name or '}' in JSON at position 1 (line 1 column 2)
+```
+
+**Determinism self-check failed** — exit 4.
+
+```text
+error: determinism self-check failed
+```
+
+The lines above the error name the check (`run-to-run determinism`, `cache safety (incremental == full)`, or `toolchain fingerprint matches committed graph`). When this check and the attestation both fail, the process exits 4 with this message. The attestation lines are still printed first.
+
+With `--json`, a failed attestation check (exit 2) still writes the result object to stdout: `ok` is false, `attestation.status` is `failed`, and `attestation.reason` is the same sentence as the text line (`signature verification failed`, the digest sentence, or the malformed-payload sentence). Stderr then gets `error: attestation verification failed`. A missing file you named (exit 3) and a bad key (exit 5) throw before that object is written.
 
 ---
 
@@ -5326,6 +5549,8 @@ CI and agents branch on these, so they are a stable contract.
 | `6`  | `ENGINE_UNAVAILABLE`  | A required optional module is not installed and could not be fetched (see [`vg module`](#vg-module)) |
 
 `vg scan --junit` writes that file before it exits, including when the code is `2`. See [JUnit](#junit).
+
+[`vg build --verify`](#signing-and-verifying-the-graph) uses `2` when the attestation check fails, `3` when an attestation path you named is missing, `4` when the determinism self-check fails, and `5` for a bad or missing signing key (`vg attest` and `vg verify` are the same exit `5`, and they print the flag to run instead).
 
 `6` is deliberately distinct from `2`: a CI gate must never read "engine missing" as a gate verdict.
 The same rule is why [`vg review`](#vg-review) exits `6` when there is no code map, and why `--explain`
