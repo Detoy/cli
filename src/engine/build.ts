@@ -153,18 +153,21 @@ export async function buildGraph(options: BuildOptions): Promise<BuildResult> {
   timer.start('total');
   const root = path.resolve(options.root);
   const exclude = mergeExcludes(root, options.exclude);
+  // Resolved before discovery so the walk itself stops at the corpus cap
+  // instead of reading a filesystem root or an enormous unpack first.
+  const limits = resolveLimits(options.limits);
   timer.start('discover');
   const files = discover({
     root,
     only: options.only,
     exclude,
     paths: options.paths,
+    maxEntries: limits.maxFiles,
   });
   timer.end('discover');
 
   // Resource safeguards (see limits.ts): stop a pathological corpus before it
   // OOM-kills the process. Skips are deterministic functions of the input.
-  const limits = resolveLimits(options.limits);
   if (limits.maxFiles > 0 && files.length > limits.maxFiles) {
     throw new ResourceLimitError(
       `graph build stopped: ${files.length.toLocaleString()} files exceed the ` +
@@ -501,6 +504,7 @@ export async function buildGraph(options: BuildOptions): Promise<BuildResult> {
     root,
     exclude,
     paths: options.paths,
+    maxEntries: limits.maxFiles,
   });
   for (const d of docs) {
     try {
