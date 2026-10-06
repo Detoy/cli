@@ -10,6 +10,13 @@ import type { Dirent } from 'node:fs';
 import ignore, { type Ignore } from 'ignore';
 import { Semaphore } from './semaphore.js';
 import { compileGlobs, gitignoreWithoutBlankLines } from './glob.js';
+import {
+  assertSafeWalkRoot,
+  createWalkBudget,
+  noteWalkEntry,
+  UnsafeRootError,
+  type WalkBudgetState,
+} from './root-safety.js';
 
 
 const execFileAsync = promisify(execFile);
@@ -316,6 +323,8 @@ export class FileCache {
   private _maxFileSize = 0;
   /** Per-project / per-directory scan timeout in ms. */
   private _projectScanTimeout = 180_000;
+  /** Walk-entry ceiling. `undefined` reads `VG_MAX_FILES` at walk time; `0` disables. */
+  private _walkEntryBudget: number | undefined;
   /** Whether we have already shown the "increase projectScanTimeout" hint */
   private _timeoutHintShown = false;
   /** Root dir for relative-path computation (set by the first walkDir call) */
@@ -343,6 +352,14 @@ export class FileCache {
    *  instead of a hard-coded constant so the user can override it via config. */
   setProjectScanTimeout(ms: number): void {
     this._projectScanTimeout = ms;
+  }
+
+  /**
+   * Ceiling on files and directories the shared walk will visit.
+   * `0` disables it. Unset uses `VG_MAX_FILES` (default 100000).
+   */
+  setWalkEntryBudget(entries: number): void {
+    this._walkEntryBudget = entries;
   }
 
   /** Current per-project scan timeout in milliseconds */
@@ -464,8 +481,18 @@ export class FileCache {
     const extraSkip = FileCache.EXTRA_SKIP;
     const isExcluded = this.excludePredicate;
     const stuckDirs = this._stuckPaths;
+    // Structural refusal (filesystem root, OS image) before any readdir.
+    // The entry budget stops an enormous unpack that is neither of those.
+    assertSafeWalkRoot(rootDir);
+    const budgetState = createWalkBudget(rootDir, this._walkEntryBudget);
+    let budgetError: UnsafeRootError | null = null;
+    const note = (): void => {
+      if (budgetError) return;
+      budgetError = noteWalkEntry(budgetState);
+    };
 
     async function walk(dir: string, gitignoreLevels: GitignoreLevel[]) {
+      if (budgetError) return;
       const relDir = path.relative(rootDir, dir);
 
       // Report the directory we are ABOUT to read so the UI shows
@@ -513,6 +540,7 @@ export class FileCache {
 
         // Check user-configured excludes
         if (isExcluded && isExcluded(relPath)) continue;
+        if (budgetError) break;
 
         if (e.isDirectory()) {
           if (isSkippedDirName(e.name) || extraSkip.has(e.name)) continue;
@@ -521,15 +549,20 @@ export class FileCache {
           // (e.g. a custom-named virtualenv) don't get walked just because
           // they aren't on the hardcoded SKIP_DIRS list.
           if (isGitignored(levels, absPath, true)) continue;
+          note();
+          if (budgetError) break;
           results.push({ absPath, relPath, name: e.name, isFile: false, isDirectory: true });
           // Launch sub-walk WITHOUT wrapping in sem.run — child walks
           // acquire the semaphore independently for their own readdir.
           subWalks.push(walk(absPath, levels));
         } else if (e.isFile()) {
+          if (isGitignored(levels, absPath, false)) continue;
+          // Count extension-skipped files too: a dump of images is still a walk.
+          note();
+          if (budgetError) break;
           // Skip binary/font/media files that no scanner needs
           const ext = path.extname(e.name).toLowerCase();
           if (SKIP_EXTENSIONS.has(ext)) continue;
-          if (isGitignored(levels, absPath, false)) continue;
           results.push({ absPath, relPath, name: e.name, isFile: true, isDirectory: false });
           foundCount++;
           if (onProgress && foundCount - lastReported >= REPORT_INTERVAL) {
@@ -538,10 +571,12 @@ export class FileCache {
           }
         }
       }
+      if (budgetError) return;
       await Promise.all(subWalks);
     }
 
     await walk(rootDir, []);
+    if (budgetError) throw budgetError;
 
     let totalDirs = 0;
     const rootNameIndex = new Map<string, string[]>();
@@ -798,19 +833,44 @@ export interface TreeCount {
  *
  * Respects the same SKIP_DIRS as the full walk.
  */
-export async function quickTreeCount(rootDir: string, excludePatterns?: string[]): Promise<TreeCount> {
-  const native = await quickTreeCountWithRipgrep(rootDir, excludePatterns);
-  if (native) return native;
+export async function quickTreeCount(
+  rootDir: string,
+  excludePatterns?: string[],
+  maxEntries?: number,
+): Promise<TreeCount> {
+  const root = path.resolve(rootDir);
+  assertSafeWalkRoot(root);
+  const budgetState = createWalkBudget(root, maxEntries);
+  // ripgrep never emits the files it skips, so it cannot enforce the entry
+  // budget. While the budget is on, count in-process and stop at the ceiling.
+  // `VG_MAX_FILES=0` disables the budget and keeps the ripgrep fast path.
+  if (budgetState.budget <= 0) {
+    const native = await quickTreeCountWithRipgrep(root, excludePatterns);
+    if (native) return native;
+  }
+  return countTreeWithBudget(root, excludePatterns, budgetState);
+}
 
+async function countTreeWithBudget(
+  rootDir: string,
+  excludePatterns: string[] | undefined,
+  budgetState: WalkBudgetState,
+): Promise<TreeCount> {
   let totalFiles = 0;
   let totalDirs = 0;
+  let budgetError: UnsafeRootError | null = null;
   const cores = typeof os.availableParallelism === 'function' ? os.availableParallelism() : os.cpus().length || 4;
   const maxConcurrent = Math.max(8, Math.min(128, cores * 8));
   const sem = new Semaphore(maxConcurrent);
   const extraSkip = EXTRA_SKIP_DIRS;
   const isExcluded = excludePatterns ? compileGlobs(excludePatterns) : null;
+  const note = (): void => {
+    if (budgetError) return;
+    budgetError = noteWalkEntry(budgetState);
+  };
 
   async function count(dir: string, gitignoreLevels: GitignoreLevel[]) {
+    if (budgetError) return;
     let entries: Dirent[];
     try {
       entries = await sem.run(() => fs.readdir(dir, { withFileTypes: true }));
@@ -820,6 +880,7 @@ export async function quickTreeCount(rootDir: string, excludePatterns?: string[]
     const levels = await extendGitignoreLevels(dir, gitignoreLevels);
     const subs: Promise<void>[] = [];
     for (const e of entries) {
+      if (budgetError) break;
       const absPath = path.join(dir, e.name);
       const relPath = path.relative(rootDir, absPath);
       if (isExcluded && isExcluded(relPath)) continue;
@@ -827,19 +888,25 @@ export async function quickTreeCount(rootDir: string, excludePatterns?: string[]
       if (e.isDirectory()) {
         if (isSkippedDirName(e.name) || extraSkip.has(e.name)) continue;
         if (isGitignored(levels, absPath, true)) continue;
+        note();
+        if (budgetError) break;
         totalDirs++;
         subs.push(count(absPath, levels));
       } else if (e.isFile()) {
+        if (isGitignored(levels, absPath, false)) continue;
+        note();
+        if (budgetError) break;
         const ext = path.extname(e.name).toLowerCase();
         if (SKIP_EXTENSIONS.has(ext)) continue;
-        if (isGitignored(levels, absPath, false)) continue;
         totalFiles++;
       }
     }
+    if (budgetError) return;
     await Promise.all(subs);
   }
 
   await count(rootDir, []);
+  if (budgetError) throw budgetError;
   return { totalFiles, totalDirs };
 }
 
@@ -969,12 +1036,20 @@ export async function findFiles(
   rootDir: string,
   predicate: (name: string) => boolean,
 ): Promise<string[]> {
+  assertSafeWalkRoot(rootDir);
+  const budgetState = createWalkBudget(rootDir);
+  let budgetError: UnsafeRootError | null = null;
+  const note = (): void => {
+    if (budgetError) return;
+    budgetError = noteWalkEntry(budgetState);
+  };
   const results: string[] = [];
   const cores = typeof os.availableParallelism === 'function' ? os.availableParallelism() : os.cpus().length || 4;
   const maxConcurrentReads = Math.max(8, Math.min(64, cores * 4));
   const readDirSemaphore = new Semaphore(maxConcurrentReads);
 
   async function walk(dir: string) {
+    if (budgetError) return;
     let entries: Dirent[];
     try {
       entries = await readDirSemaphore.run(() => fs.readdir(dir, { withFileTypes: true }));
@@ -985,19 +1060,27 @@ export async function findFiles(
     const subDirectoryWalks: Promise<void>[] = [];
 
     for (const e of entries) {
+      if (budgetError) break;
       if (e.isDirectory()) {
         if (isSkippedDirName(e.name)) continue;
+        note();
+        if (budgetError) break;
         subDirectoryWalks.push(walk(path.join(dir, e.name)));
-      } else if (e.isFile() && predicate(e.name)) {
+      } else if (e.isFile()) {
+        note();
+        if (budgetError) break;
+        if (!predicate(e.name)) continue;
         const ext = path.extname(e.name).toLowerCase();
         if (!SKIP_EXTENSIONS.has(ext)) results.push(path.join(dir, e.name));
       }
     }
 
+    if (budgetError) return;
     await Promise.all(subDirectoryWalks);
   }
 
   await walk(rootDir);
+  if (budgetError) throw budgetError;
   return results;
 }
 

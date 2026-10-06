@@ -42,7 +42,7 @@ from a bundle, or point `VIBGRATE_ARCH_PATH` at an unpacked module directory.
 
 | Source | Where the CLI looks | Fact address |
 |---|---|---|
-| Terraform / OpenTofu | any `.tf` / `.tofu` file | `aws_s3_bucket.logs`, `data.aws_ami.ubuntu`, `module.vpc` |
+| Terraform / OpenTofu | any `.tf` or `.tofu` file. Drift scoring is `.tf` only — [Terraform and OpenTofu files](#terraform-and-opentofu-files) | `aws_s3_bucket.logs`, `data.aws_ami.ubuntu`, `module.vpc` |
 | Kubernetes manifests | any `.yaml` with `apiVersion` and `kind` under `k8s/`, `kubernetes/`, `manifests/`, `deploy/` or `infra/` at any depth | `<namespace>/<Kind>/<name>` |
 | Helm | `charts/<name>/Chart.yaml` and `values.yaml` (read as written; templates are not rendered) | `chart:<name>` |
 | Dockerfiles | `Dockerfile`, `Dockerfile.*`, `Containerfile` anywhere | `dockerfile:<path>#<stage>` |
@@ -54,6 +54,138 @@ resource is safe. Secret-shaped keys (`password`, `secret`, `token`,
 `api_key`, `private_key`, `access_key`, `credential`) are redacted before the
 value reaches the module; no attribute value that could be a secret is written
 to any output.
+
+## Terraform and OpenTofu files
+
+`vg scan` reads Terraform and OpenTofu in two passes: provider and module drift, and infrastructure findings (`vg scan --iac`). Each pass has its own file rule.
+
+### Provider and module drift
+
+The drift scanner opens a file only when the name ends in `.tf`. From those files it records `required_providers` entries and registry `module` blocks as dependency rows (`provider:<source>`, `module:<source>`). It does not open `.tofu` files. A provider or module that exists only in a `.tofu` file is not a drift row.
+
+**Same stem.** A directory may contain both `main.tf` and `main.tofu`. Only `main.tf` contributes drift rows. In the example below the Terraform project lists `provider:hashicorp/aws` (constraint `~> 5.0`) and `module:terraform-aws-modules/vpc/aws` (constraint `5.1.0`). It does not list `provider:hashicorp/azurerm` or the module constraint `5.2.0` from `main.tofu`.
+
+**`.tofu`-only tree — current gap.** A directory with no `.tf` file is not a Terraform project, so provider and module requirements in its `.tofu` files are not scored. When those files are the whole tree, `vg scan` prints `No projects found.` and DriftScore is absent (`null`; the text report shows it as not measured).
+
+There is no flag that points the drift scanner at `.tofu`. Until that gap is closed, put the `required_providers` and registry `module` blocks you want scored in a `.tf` file in the same directory. A `versions.tf` that contains only those blocks is enough: the drift scanner then records them, and `vg scan --iac` still reports resources that live only in `.tofu`. Leave the resource blocks in the `.tofu` file. Copying the same resource into both files makes `--iac` report it twice, once per path, with two ids.
+
+### Infrastructure findings (`vg scan --iac`)
+
+The infrastructure rules read every `.tf` file and every `.tofu` file. Both files in a same-stem pair are evaluated. The same resource address declared in both files is two findings, because the path is part of the finding, so the ids differ. Moving the block keeps the id ([Finding identity](#finding-identity)).
+
+`--iac` still needs the Architecture module and the code map, as described above. The ids below are from `vg scan --iac --format json` with pack `iac-cis-v1` version 1. They are `extended.security.findings[].id`.
+
+### Example
+
+Run the command from the directory that holds the files:
+
+```bash
+vg scan --iac --format json --out scan.json
+```
+
+#### `main.tf` and `main.tofu`
+
+`main.tf`:
+
+```hcl
+terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+}
+
+resource "aws_s3_bucket" "from_tf" {
+  acl = "public-read"
+}
+
+module "vpc_tf" {
+  source  = "terraform-aws-modules/vpc/aws"
+  version = "5.1.0"
+}
+```
+
+`main.tofu`:
+
+```hcl
+terraform {
+  required_providers {
+    azurerm = {
+      source  = "hashicorp/azurerm"
+      version = "~> 3.0"
+    }
+  }
+}
+
+resource "aws_s3_bucket" "from_tofu" {
+  acl = "public-read"
+}
+
+module "vpc_tofu" {
+  source  = "terraform-aws-modules/vpc/aws"
+  version = "5.2.0"
+}
+```
+
+Drift rows come from `main.tf` only: `provider:hashicorp/aws` at `~> 5.0`, and `module:terraform-aws-modules/vpc/aws` at `5.1.0`.
+
+`aws-s3-public` findings, in report order (path, then line):
+
+| Path | Line | Address | Id |
+|---|---|---|---|
+| `main.tf` | 10 | `aws_s3_bucket.from_tf` | `d7c1dd201d14694dcc319c91abe6963c` |
+| `main.tofu` | 10 | `aws_s3_bucket.from_tofu` | `63f1e38403b4db739b230175b34b2d56` |
+
+#### Same address in both files
+
+`main.tf` and `main.tofu`, each containing only:
+
+```hcl
+resource "aws_s3_bucket" "logs" {
+  acl = "public-read"
+}
+```
+
+| Path | Line | Address | Id |
+|---|---|---|---|
+| `main.tf` | 1 | `aws_s3_bucket.logs` | `ee9c34890f987cec7d3a6768b32e22c9` |
+| `main.tofu` | 1 | `aws_s3_bucket.logs` | `81cd15b869a90b4967966a1b48b51dfe` |
+
+`main.tf` still makes this directory a Terraform project. With no provider or module block in that file, the project has no dependency rows. The `.tofu` copy of the bucket is a second finding.
+
+#### `.tofu` only
+
+`main.tofu`:
+
+```hcl
+terraform {
+  required_providers {
+    google = {
+      source  = "hashicorp/google"
+      version = "~> 5.0"
+    }
+  }
+}
+
+resource "aws_s3_bucket" "only_tofu" {
+  acl = "public-read"
+}
+
+module "vpc_only" {
+  source  = "terraform-aws-modules/vpc/aws"
+  version = "5.3.0"
+}
+```
+
+No Terraform project. `provider:hashicorp/google` and `module:terraform-aws-modules/vpc/aws` (`5.3.0`) are not drift rows. One `aws-s3-public` finding:
+
+| Path | Line | Address | Id |
+|---|---|---|---|
+| `main.tofu` | 10 | `aws_s3_bucket.only_tofu` | `4c11ad8767b2fb9b1eb0b5fb9d3f2f31` |
+
+That id follows the file and the bucket block, not the line. The same `aws_s3_bucket.only_tofu` block at line 1 of `main.tofu` produces the same id, including when a `versions.tf` beside it supplies the drift rows.
 
 ## Rules in `iac-cis-v1` (version 1)
 

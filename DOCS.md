@@ -20,9 +20,14 @@ For a quick overview, see the [README](./README.md). This document covers everyt
   - [vg report](#vg-report)
   - [vg review](#vg-review)
   - [vg sbom](#vg-sbom)
+    - [Component identity](#component-identity)
+    - [CycloneDX type and SPDX primaryPackagePurpose](#cyclonedx-type-and-spdx-primarypackagepurpose)
+    - [Production, development, and optional scope](./docs/sbom-dependency-scope.md)
   - [vg scan](#vg-scan)
     - [Offline scan with a package-version manifest](#offline-scan-with-a-package-version-manifest)
     - [Vulnerabilities and exposure attribution](#vulnerabilities-and-exposure-attribution)
+      - [Go modules: pseudo-versions and +incompatible](#go-modules-pseudo-versions-and-incompatible)
+    - [Maven and Gradle manifests](#maven-and-gradle-manifests)
   - [vg update](#vg-update)
   - [vg why](#vg-why)
 - [Workspace auth & cloud upload](#workspace-auth--cloud-upload)
@@ -33,6 +38,7 @@ For a quick overview, see the [README](./README.md). This document covers everyt
 - [Code Graph Commands](#code-graph-commands)
   - [vg ask](#vg-ask)
   - [vg build](#vg-build)
+    - [Maven and Gradle manifests](#maven-and-gradle-manifests)
   - [vg watch](#vg-watch)
   - [vg bundle](#vg-bundle)
   - [vg code](#vg-code)
@@ -166,9 +172,9 @@ Vibgrate evaluates **upgrade drift** in depth for:
 - **Node.js / TypeScript** (`package.json`, lockfiles)
 - **.NET** (`.sln`, `.csproj`)
 - **Python** (`requirements.txt`, `pyproject.toml`-style manifests)
-- **Java** (`pom.xml`, Gradle-style manifests)
+- **Java** (`pom.xml`, Gradle-style manifests). Which Maven profiles, scopes, and Gradle configurations become a `vg scan` row or a `vg build` edge is in [Maven and Gradle manifests](#maven-and-gradle-manifests).
 
-**Known-vulnerability detection** (`--vulns`) and **dependency attribution** (`vg why`, exposure windows) additionally cover npm / pnpm / yarn, pip / poetry / pipenv, cargo, composer, bundler, go, pub, hex, NuGet, and Maven/Gradle — read from each project's lockfile.
+**Known-vulnerability detection** (`--vulns`) and **dependency attribution** (`vg why`, exposure windows) additionally cover npm / pnpm / yarn, pip / poetry / pipenv, cargo, composer, bundler, pub, hex, NuGet, and Maven/Gradle, read from each project's lockfile. Go is matched from direct `require` lines in `go.mod`. Pseudo-versions and `+incompatible` tags follow [Go modules: pseudo-versions and +incompatible](#go-modules-pseudo-versions-and-incompatible).
 
 ### End-to-end workflow (recommended)
 
@@ -879,8 +885,11 @@ vg review findings-from-diff --diff pr.patch --format json
 ```
 
 `--diff` reads a unified diff (`-` is stdin). The patch names the files and
-hunks; the code map still has to be built (`vg` or `vg build`). `--format json`
-writes the findings document plus a `publishable` array of correctness rows.
+hunks. Scanners still read file text from the working tree, and they still
+need the code map. This command builds a missing map the same way `vg review`
+does (`vg build` is the explicit map command). `--format json`, and the global
+`--json` flag, write one document: the findings object plus a `publishable`
+array. Text output is a different shape and is not this contract.
 
 | Field | Blast-radius | Architecture-policy |
 | --- | --- | --- |
@@ -891,13 +900,423 @@ writes the findings document plus a `publishable` array of correctness rows.
 | severity | `low` or `medium` | `low`, `medium`, or `high` — never `critical` from version lag |
 | `receipts` | existing capsule `verify:` / `scan:` / `attest:` ids when those facts already exist | same |
 
-Ids are stable across head SHAs: same symbol or rule+path keeps the same key.
-No spaces. Suggested-fix on publishable rows is an honest skip (`null` /
-`skipped_no_patch`) — there is no computed PatchIR for blast-radius or
-architecture-policy rows. Each run also writes
+Ids for those two rows are stable across head SHAs: the same symbol, or the
+same rule and path, keeps the same key. No spaces. Suggested-fix on publishable
+rows is an honest skip (`null` / `skipped_no_patch`) — there is no computed
+PatchIR for blast-radius or architecture-policy rows. Each run also writes
 `.vibgrate/review-propose-handoff.json` (`vg.review.propose-handoff.v1`) so
 `vg review propose` can resolve those ids without a second findings loop.
-This path does not post a comment or a check run.
+That file is not the stdout document. This path does not post a comment or a
+check run.
+
+The field list, every `kind`, the sort, a captured example, and the failure
+exits are in [Findings JSON contract](#findings-json-contract).
+
+#### Findings JSON contract
+
+`vg review findings-from-diff --format json` prints a single JSON object to
+stdout and a trailing newline. Errors go to stderr. The object is
+`JSON.stringify` of the findings value with `publishable` added, indented by
+two spaces. Keys stay in the order below.
+
+##### Top-level fields
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `schema_version` | string | Schema identifier. Always `vg.review.findings.v1`. |
+| `change_class` | string[] | `architecture`, then `security`, when those classes apply. Otherwise `["none"]`. |
+| `architecture_findings` | object[] | Architecture-policy rows and blast-radius rows. May be empty. |
+| `security_findings` | object[] | Security-control rows. May be empty. |
+| `unknowns` | string[] | Facts the scanners could not establish. May be empty. Not sorted. |
+| `required_checks` | string[] | Check names, unique, then sorted by UTF-16 code unit. |
+| `publishable` | object[] | Blast-radius and architecture-policy rows only, sorted by `finding_key`. Always present. |
+
+`change_class` pushes `architecture` when an architecture finding remains, a
+cross-file edge was added, or a changed path is architectural. It then pushes
+`security` when a security finding remains, a security fact is on the capsule,
+or a dependency manifest changed. With neither, the array is `["none"]`.
+
+There is no `decision`, receipt id, timestamp, digest, signature, or git SHA
+on this object. Those live on `vg review --format json`
+(`vg.review.receipt.v1`), not here.
+
+##### Finding object
+
+Architecture and blast-radius rows are written with these keys, in this order:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `id` | string | Stable key. Same value as `finding_key` on these rows. |
+| `kind` | string | See [kind values](#finding-kind-values). |
+| `finding_key` | string | Same as `id` for blast-radius and architecture-policy rows. |
+| `producer` | string | `blast_radius` or `architecture`. Not a second `kind`. |
+| `severity` | string | `low`, `medium`, or `high`. |
+| `confidence` | number | `0..1`. Blast-radius confidence is rounded to three decimal places. |
+| `claim` | string | One sentence (sometimes two) stating the fact. |
+| `evidence_ids` | string[] | Ids that exist on the capsule. Order is emission order, then any `verify:` / `scan:` / `attest:` ids that were not already listed. |
+| `target_alignment` | string | `regression`, `legacy_consistent`, `approved_exception`, or `unknown` from these scanners. |
+| `remediation` | string | What to do next. |
+| `paths` | string[] | Repo-relative paths. Blast-radius lists the changed file, then affected files, de-duplicated, at most eight. |
+| `protected_finding` | boolean | `false` on blast-radius and architecture-policy rows. |
+| `source` | string | `scanner`. This command does not call a model. |
+| `receipts` | string[] | Existing `verify:` / `scan:` / `attest:` ids for the finding's paths, sorted with `localeCompare`. `[]` when none exist. |
+
+Security rows use the same keys except they omit `finding_key`, `producer`,
+and `receipts`. Their `id` is `sec-01`, `sec-02`, … in emission order. That
+counter is not a content hash: it stays put for a fixed input and renumbers
+when an earlier security row appears or disappears.
+
+`target_alignment` on the type also includes `target`. These scanners do not
+write `target`. Severity on the type also includes `critical`. These scanners
+do not write `critical`.
+
+##### Finding `kind` values
+
+`kind` is the top-level classification. Blast-radius is not its own `kind`.
+
+| `kind` | Where | How you tell the rows apart |
+| --- | --- | --- |
+| `correctness` | `architecture_findings` | `producer` is `blast_radius` or `architecture`. |
+| `guard_removed` | `security_findings` | A guard was deleted and none remains. `protected_finding` is `true` when the rule is on. |
+| `unguarded_entrypoint` | `security_findings` | A changed mutating route has no guard while peers do. `protected_finding` is `true` only when the peer group is large enough. |
+| `known_vulnerable_dependency` | `security_findings` | A changed manifest declares a package named in `.vibgrate/scan_result.json`. `protected_finding` is `true`. |
+
+**Blast-radius** (`producer: "blast_radius"`, `scanner_kind: "blast_radius"` on
+`publishable`): a changed symbol has at least one dependent in another file,
+the same reverse reachability as `vg impact` (depth 4). `id` is
+`blast:{node_id}` when the graph node is known, otherwise
+`blast:{path}:{name}` with whitespace stripped. Severity is `medium` when
+three or more direct cross-file dependents exist, otherwise `low`. At most
+eight blast-radius rows are emitted, highest fan-out first. Same-file-only
+fan-out is omitted.
+
+**Architecture-policy** (`producer: "architecture"`, `scanner_kind:
+"architecture"` on `publishable`): `kind` is still `correctness`. The rule
+lives in the id, `arch:{rule}:{path}`, with an optional extra segment
+(`arch:{rule}:{path}:{extra}`) and whitespace stripped. Rules this command
+emits:
+
+| Rule in the id | When |
+| --- | --- |
+| `peer_deviation` | A changed file steps away from a peer majority. |
+| `duplicate_implementation` | A changed function matches an existing one. Extra segment is the function name. |
+| `unverified_change` | No test edge reaches the changed file. |
+| `{profile}:skip:{from}→{to}` | Declared `layered`, `mvc`, or `mvvm` target, and the new edge skips a tier. Extra segment is the destination path. |
+| `{profile}:outer-ring:{from}→{to}` | Declared `clean`, `hexagonal`, or `onion` target, and an outer layer touches persistence directly. |
+| `{profile}:domain→{to}` | Domain depends on data-access or infrastructure. |
+| `{profile}:upward:{from}→{to}` | A dependency points up the layered stack. |
+| `vertical-slice:cross-slice-internal` | A vertical-slice edge reaches into another slice. |
+| `layer-skip` or `boundary_bypass` | Fallback ids used only when the scanner's rule string is empty. |
+
+Layer and skip rows are emitted only when a profile exists (a declared target,
+or an observed majority). A skip is emitted only against a declared target.
+Severity on these rows is `low`, `medium`, or `high`, never `critical`.
+
+**Gap:** `validated_taint` is a protected kind the review policy understands,
+and older notes list it next to the other security kinds. This command does
+not emit a finding with `kind: "validated_taint"`. When the rule is on and the
+change touches an entrypoint or a cross-layer path, the scanner appends one
+`unknowns` string instead and does not confirm or exclude tainted input.
+
+##### `publishable` rows
+
+Only blast-radius and architecture-policy rows are copied here. A row is
+dropped when its key is empty, contains whitespace, or lacks the `blast:` /
+`arch:` prefix. Other `kind` values stay on `architecture_findings` or
+`security_findings` and are absent from `publishable`.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `id` | string | Same as `finding_key`. |
+| `finding_key` | string | The stable id. |
+| `kind` | string | Always `correctness`. |
+| `scanner_kind` | string | `blast_radius` or `architecture`. |
+| `review_check` | string | Always `vibgrate/review`. |
+| `severity` | string | Blast-radius is clamped to `low` or `medium` (`medium` stays; anything else becomes `low`). Architecture stays `low`, `medium`, or `high`. Never `critical`. |
+| `confidence` | number | Copied from the finding. |
+| `claim` | string | Copied. |
+| `paths` | string[] | Copied, same order. |
+| `source` | string | `scanner`. |
+| `receipts` | string[] | Copied, then sorted with `localeCompare`. |
+| `evidence_ids` | string[] | Copied, same order. |
+| `suggested_fix` | null | Always `null`. |
+| `suggested_fix_status` | string | Always `skipped_no_patch`. |
+| `suggested_fix_note` | string | The blast-radius note or the architecture-policy note below. |
+
+Blast-radius note, exactly:
+
+```text
+No automatic patch — blast-radius facts have no computed edit. `vg review propose` is a model-backed dry-run, not a deterministic bump.
+```
+
+Architecture-policy note, exactly:
+
+```text
+No automatic patch — architecture-policy facts have no computed edit. `vg review propose` is a model-backed dry-run, not a deterministic bump.
+```
+
+##### Ordering
+
+The same map, the same change, the same review policy, and the same
+`.vibgrate/scan_result.json` (or its absence) produce byte-identical stdout.
+Two runs of the fixture below matched. The sorts that fix that order:
+
+1. **`publishable`** is sorted by `finding_key` with `String.prototype.localeCompare`
+   (`exportCorrectnessPublishRows` in `src/review/finding-publish.ts`). This
+   sort is not the order of `architecture_findings`. In the fixture below the
+   two orders happen to agree (`arch:` before `blast:`).
+2. **Blast-radius rows inside `architecture_findings`** follow `compareRanked`
+   in `collectBlastRadiusFindings` (`src/review/impact-findings.ts`): more
+   depth-1 cross-file dependents first, then more cross-file dependents, then
+   `path`, `name`, and `node_id` with `localeCompare`. Symbols are sorted by
+   that same path / name / node id before impact is computed. The list is then
+   cut at eight. Named callers inside one claim follow `impactOf`: depth
+   ascending, confidence descending, then `name` with `localeCompare`.
+3. **Architecture-policy rows** are appended in scanner pass order, before the
+   blast-radius rows, and are not re-sorted as one list:
+   - layer and skip rows, in code-map edge order (edges are sorted by kind, then source, then destination);
+   - `peer_deviation`, peer groups ordered by group id with code-unit `<`, deviator paths with the default array sort;
+   - `duplicate_implementation`, one row per changed function, in graph node id order (`localeCompare` on the node id);
+   - `unverified_change`, by path with `localeCompare`.
+4. **`security_findings`**: `guard_removed` (removed-line entries, default array sort), then `unguarded_entrypoint` (route directories ordered with code-unit `<`), then `known_vulnerable_dependency` in the order those findings appear in `.vibgrate/scan_result.json`.
+5. **`required_checks`**: insertion order, duplicates removed, then the default array sort (UTF-16 code units, not `localeCompare`).
+6. **`receipts`**: `localeCompare`.
+7. **`unknowns`**: first-seen order (capsule unknowns, then scanner unknowns). Not sorted.
+8. **`change_class`**: `architecture` then `security`, or `["none"]`. Not alphabetical.
+
+Paths inside a unified `--diff` are collected with code-unit `<` before any
+finding is built.
+
+##### What varies
+
+Stdout does not include a clock, a receipt id, a signature, a digest, or a git
+SHA, so those cannot change this document.
+
+These change when the inputs change, and they are not stable identifiers:
+
+- `claim`, `confidence`, `severity`, and `paths` follow the map and the change. Blast-radius `confidence` is rounded to three decimals. Peer-deviation and duplicate-implementation confidence are not rounded to a fixed scale before they are printed.
+- Security `id` (`sec-NN`) is an emission counter.
+- An evidence id of the form `source_span:<n>` uses the capsule evidence length at the moment it is inserted, so it moves when earlier evidence is added.
+
+The same `--diff` text on two different trees can differ, because file text is
+read from disk. A missing `.vibgrate/scan_result.json` is not "no
+vulnerabilities": dependency-manifest changes become an `unknowns` entry and
+`required_checks` gains `dependency-advisory-check`.
+
+stderr is not part of the document. Without `--quiet` or `--json`, a map build
+or refresh prints a line whose elapsed seconds vary (`code map built — N files
+in X.Xs`, or the refreshed form). `--format json` alone does not hide that
+line. `--json` does.
+
+`.vibgrate/review-propose-handoff.json` is a side file
+(`vg.review.propose-handoff.v1`). Its capsule carries `base_sha`, `head_sha`,
+`dirty_tree_hash`, and a path-derived `repo_pseudonym`. A failed write of that
+file does not fail the command.
+
+##### Example
+
+Captured stdout, twice, byte-identical, from a two-file git repository. `src/app.ts`
+imports `add` from `src/lib.ts`. After the first commit, `add`'s return was
+edited to `a + b + 0` and left unstaged. The command was:
+
+```bash
+vg review findings-from-diff --format json --quiet
+```
+
+The map was built by the command. Both rows have `kind: "correctness"`. The
+first is architecture-policy (`unverified_change`: no test edge). The second
+is blast-radius (`main` in `src/app.ts` depends on `add`). `publishable` lists
+the `arch:` key before the `blast:` key.
+
+```json
+{
+  "schema_version": "vg.review.findings.v1",
+  "change_class": [
+    "architecture"
+  ],
+  "architecture_findings": [
+    {
+      "id": "arch:unverified_change:src/lib.ts",
+      "kind": "correctness",
+      "finding_key": "arch:unverified_change:src/lib.ts",
+      "producer": "architecture",
+      "severity": "medium",
+      "confidence": 0.7,
+      "claim": "src/lib.ts has no test edge reaching it in the code map.",
+      "evidence_ids": [
+        "verify:no_test_covering_change:1"
+      ],
+      "target_alignment": "unknown",
+      "remediation": "Add a test that exercises the changed call path, or point `vg build` at the coverage report that already covers it.",
+      "paths": [
+        "src/lib.ts"
+      ],
+      "protected_finding": false,
+      "source": "scanner",
+      "receipts": [
+        "verify:no_test_covering_change:1"
+      ]
+    },
+    {
+      "id": "blast:1fc1f7fc442e388dcdf2eb08b60759d9",
+      "kind": "correctness",
+      "finding_key": "blast:1fc1f7fc442e388dcdf2eb08b60759d9",
+      "producer": "blast_radius",
+      "severity": "low",
+      "confidence": 0.75,
+      "claim": "Changing add in src/lib.ts reaches 1 direct and 0 transitive dependents across 1 file(s): main in src/app.ts. No test edge reaches this file in the map.",
+      "evidence_ids": [
+        "impact:1fc1f7fc442e388dcdf2eb08b60759d9",
+        "impact:1fc1f7fc442e388dcdf2eb08b60759d9:dep:24636616b8372e46cd4c85a83253282c",
+        "verify:no_test_covering_change:1"
+      ],
+      "target_alignment": "unknown",
+      "remediation": "Add a test that exercises the highest-fan-out caller (main) before merging, or keep the exported contract of add compatible with those callers.",
+      "paths": [
+        "src/lib.ts",
+        "src/app.ts"
+      ],
+      "protected_finding": false,
+      "source": "scanner",
+      "receipts": [
+        "verify:no_test_covering_change:1"
+      ]
+    }
+  ],
+  "security_findings": [],
+  "unknowns": [],
+  "required_checks": [
+    "changed-call-path-test"
+  ],
+  "publishable": [
+    {
+      "id": "arch:unverified_change:src/lib.ts",
+      "finding_key": "arch:unverified_change:src/lib.ts",
+      "kind": "correctness",
+      "scanner_kind": "architecture",
+      "review_check": "vibgrate/review",
+      "severity": "medium",
+      "confidence": 0.7,
+      "claim": "src/lib.ts has no test edge reaching it in the code map.",
+      "paths": [
+        "src/lib.ts"
+      ],
+      "source": "scanner",
+      "receipts": [
+        "verify:no_test_covering_change:1"
+      ],
+      "evidence_ids": [
+        "verify:no_test_covering_change:1"
+      ],
+      "suggested_fix": null,
+      "suggested_fix_status": "skipped_no_patch",
+      "suggested_fix_note": "No automatic patch — architecture-policy facts have no computed edit. `vg review propose` is a model-backed dry-run, not a deterministic bump."
+    },
+    {
+      "id": "blast:1fc1f7fc442e388dcdf2eb08b60759d9",
+      "finding_key": "blast:1fc1f7fc442e388dcdf2eb08b60759d9",
+      "kind": "correctness",
+      "scanner_kind": "blast_radius",
+      "review_check": "vibgrate/review",
+      "severity": "low",
+      "confidence": 0.75,
+      "claim": "Changing add in src/lib.ts reaches 1 direct and 0 transitive dependents across 1 file(s): main in src/app.ts. No test edge reaches this file in the map.",
+      "paths": [
+        "src/lib.ts",
+        "src/app.ts"
+      ],
+      "source": "scanner",
+      "receipts": [
+        "verify:no_test_covering_change:1"
+      ],
+      "evidence_ids": [
+        "impact:1fc1f7fc442e388dcdf2eb08b60759d9",
+        "impact:1fc1f7fc442e388dcdf2eb08b60759d9:dep:24636616b8372e46cd4c85a83253282c",
+        "verify:no_test_covering_change:1"
+      ],
+      "suggested_fix": null,
+      "suggested_fix_status": "skipped_no_patch",
+      "suggested_fix_note": "No automatic patch — blast-radius facts have no computed edit. `vg review propose` is a model-backed dry-run, not a deterministic bump."
+    }
+  ]
+}
+```
+
+The `blast:` id is the graph node id from that map. It is a content id, not a
+secret. A different grammar or a different node-id algorithm would change it;
+the rest of the shape would not.
+
+##### Failures
+
+Stdout is empty on every failure below. The `error:` line is stderr. The
+text here was captured with `--no-color`.
+
+| Case | Exit | Stderr |
+| --- | --- | --- |
+| No code map, and this run did not leave one | `6` | see below |
+| `--graph <file>` does not exist | `6` | the missing-map line, then ` (looked at <file>)` |
+| `--graph <file>` exists but is not valid JSON | `1` | see below |
+| `--diff <file>` does not exist | `3` | see below |
+| Not a git repository (or git is not on `PATH`) | `5` | see below |
+| `--format` is not `text` or `json` | `5` | `error: unknown --format (expected text \| json)` |
+
+No code map:
+
+```text
+error: no code map found — run `vg` in this repository first, then `vg review`
+```
+
+`--graph` file present but not JSON (exit `1`):
+
+```text
+error: The code map is truncated or not valid JSON. Rebuild it with `vg build`.
+```
+
+Missing `--diff` file (`<file>` is the path you passed):
+
+```text
+error: no diff at <file> — pass a unified-diff file or `-` to read stdin
+```
+
+Not a git repository (`<root>` is the directory `vg` resolved):
+
+```text
+error: `vg review` needs a git repository — <root> is not one (or git is not on PATH)
+```
+
+The missing-diff check runs after map prep and before the missing-map check.
+A missing `--diff` path exits `3` even when the map was not built. With neither
+`--quiet` nor `--json`, a skipped build also prints `  code map not built: <reason>`
+before the `error:` line. One verified reason is `another vg process is building the map`.
+
+**Gap — empty diff.** An empty file, a blank file, or text that is not a
+unified diff is not an error. Exit is `0`. The document is:
+
+```json
+{
+  "schema_version": "vg.review.findings.v1",
+  "change_class": ["none"],
+  "architecture_findings": [],
+  "security_findings": [],
+  "unknowns": [],
+  "required_checks": [],
+  "publishable": []
+}
+```
+
+A clean working tree with no `--diff` prints the same document. Callers that
+need a failure on an empty patch have to test `change_class` and the finding
+arrays themselves.
+
+**Gap — `--no-auto-build`.** That flag belongs to `vg review`. On
+`findings-from-diff` it is an unknown option and the process exits `1` with
+`error: unknown option '--no-auto-build'`. Placing it before the subcommand
+(`vg review --no-auto-build findings-from-diff`) does not stop the build: the
+subcommand never reads the flag, builds a missing map, and exits `0` when the
+review itself succeeds. Exit `6` on this subcommand is the case where prep did
+not leave a map (`--graph` pointing at nothing, a build error that is not a
+config-file error, or a refresh lock held by another `vg` process). A broken
+project config is thrown as its own error and is not this exit `6` message.
 
 #### Propose a PatchIR dry-run — `vg review propose`
 
@@ -1059,14 +1478,114 @@ Every component also carries a [purl](https://github.com/package-url/purl-spec)
 CycloneDX `purl` field and `bom-ref`, and as the SPDX `externalRefs` PACKAGE-MANAGER
 reference — so a vulnerability scanner can match components without re-deriving an
 identifier. When a package name cannot be a Package URL (a space, a non-ASCII
-character, or an empty path segment), that component stays in the document and
+character, an empty path segment, or a slash or colon that is not an npm scope
+separator), that component stays in the document and
 the purl is omitted. CycloneDX sets `vibgrate:purlStatus` to `unavailable` and
 records the reason on `vibgrate:purlWarning`. SPDX omits the purl externalRef,
 records `purlStatus=unavailable` on the package annotation, and repeats the
 reason in a second annotation. `vg sbom export` prints the same warning on
 stderr. The warning names the package and its ecosystem. The purl rules above
-are the identity a scanner should store. The rest of this section says how that
-identity behaves when one package is installed more than once.
+are the identity a scanner should store.
+
+#### Component identity
+
+Match a component on its [package URL](https://github.com/package-url/purl-spec) (purl). That string is the primary identity in `vg sbom export`. `vg scan --format json` and `.vibgrate/scan_result.json` use the same coordinates and do not repeat the purl string.
+
+| Output | Fields to key on |
+| --- | --- |
+| CycloneDX | `components[].purl`. `bom-ref` is that purl when the purl was written. |
+| SPDX | `packages[].externalRefs[]` with `referenceType` `purl`. The value is `referenceLocator`. |
+| Scan JSON, inventory | `projects[].type`, `projects[].dependencies[].package`, `projects[].dependencies[].resolvedVersion`. |
+| Scan JSON, advisory match | `extended.vulnerabilities.packages[].ecosystem`, `.package`, and `.version`. |
+
+`projects[].type` is the project kind (`java`, `node`, `python`). The vulnerability block uses the advisory ecosystem (`maven`, `npm`, `pypi`). `vg sbom export` turns those coordinates into the purl type (`pkg:maven`, `pkg:npm`, `pkg:pypi`).
+
+These documents have no CPE field. The CLI does not write one, including when a name has several segments (a Maven `group:artifact`, an npm scope, a Go module path). A missing CPE is the normal record. Leave it missing. If a file from another cataloger carries a `cpe` property, keep the purl as the identity you match. A CPE does not replace a purl, rank above it, or stand in for a purl that was omitted.
+
+When a name cannot be a package URL, the component stays in the SBOM and `purl` is omitted. CycloneDX sets `vibgrate:purlStatus` to `unavailable`. That row still has no CPE.
+
+Local advisory matching uses the same coordinates. `vg scan --vulns --offline --package-manifest package-versions.json` reads `vulns` under the ecosystem and the package name in that file. Matches land on `extended.vulnerabilities.packages[]`. Join an advisory of your own on the purl, or on ecosystem + package name + version.
+
+```bash
+vg scan --vulns --offline --package-manifest package-versions.json --format json --out scan.json
+vg sbom export --in scan.json --format cyclonedx --out sbom.cdx.json
+```
+
+For `com.google.code.gson:gson` at `2.11.0` in a Java project, read these fields. They are shown together so the join is visible. `vg` writes them in `scan.json` and `sbom.cdx.json`, not in one object. The advisory object is present when `--vulns` records a match for that package.
+
+```json
+{
+  "scanDependency": {
+    "projectType": "java",
+    "package": "com.google.code.gson:gson",
+    "resolvedVersion": "2.11.0"
+  },
+  "scanAdvisory": {
+    "ecosystem": "maven",
+    "package": "com.google.code.gson:gson",
+    "version": "2.11.0"
+  },
+  "cyclonedx": {
+    "name": "com.google.code.gson:gson",
+    "version": "2.11.0",
+    "purl": "pkg:maven/com.google.code.gson/gson@2.11.0",
+    "bom-ref": "pkg:maven/com.google.code.gson/gson@2.11.0"
+  }
+}
+```
+
+Key the join on `pkg:maven/com.google.code.gson/gson@2.11.0`, or on `maven` + `com.google.code.gson:gson` + `2.11.0`. The group `com.google.code.gson` is the purl namespace. SPDX stores the same purl on `externalRefs[].referenceLocator`.
+
+#### Declared licenses
+
+When a scanned dependency carries a declared license, `vg sbom export` copies
+that declaration onto the component. SPDX `licenseConcluded` is `NOASSERTION`
+on every package: the field reports the declaration, and the export does not
+conclude a license.
+
+| Declared value | CycloneDX 1.5 | SPDX 2.3 `licenseDeclared` |
+| --- | --- | --- |
+| One SPDX license-list id, such as `MIT` | `licenses: [{ "license": { "id": "MIT" } }]` | `MIT` |
+| A `LicenseRef-…` or an SPDX expression (`OR`, `AND`, `WITH`, or a trailing `+`) | `licenses: [{ "expression": "<expression>" }]` | the same expression |
+| Missing, empty, or an explicit unknown (`NOASSERTION`, `unknown`, `none`, `n/a`) | `licenses` omitted | `NOASSERTION` |
+| Any other value | `licenses` omitted, plus a warning | `NOASSERTION`, plus a warning |
+
+A single SPDX license-list id is the only value written to CycloneDX
+`license.id`. A custom reference and a compound expression are one
+`expression` string. `MIT OR LicenseRef-Acme-1.0` stays that expression:
+CycloneDX treats a list of `license` objects as licenses that all apply, which
+is a different claim from `OR`.
+
+A valid custom reference is `LicenseRef-` followed by one or more letters,
+digits, `.`, or `-`. `LicenseRef-Acme-1.0` is copied unchanged into both
+formats. It is not reported as a license-parse failure. `LicenseRef-Proprietary`
+is the same kind of reference.
+
+Each distinct `LicenseRef-…` used in the document appears once in the SPDX
+array `hasExtractedLicensingInfos`, sorted by `licenseId`. Each entry has
+`licenseId`, `extractedText`, and `name`. The scan does not include the
+license text, so `extractedText` is `No license text was recorded for this
+custom license reference.` `name` is the reference. A reference that is
+already in the license catalog keeps that catalog name (`LicenseRef-Proprietary`
+is `Proprietary / Commercial`).
+
+A value that cannot be represented, such as `LicenseRef-has space`, stays
+visible. The component remains in the document. CycloneDX sets
+`vibgrate:licenseStatus` to `unrepresentable` and records the reason on
+`vibgrate:licenseWarning`. SPDX adds `licenseStatus=unrepresentable` to the
+package annotation and repeats the reason in a second annotation. `vg sbom
+export` prints the same warning on stderr. The warning names the ecosystem,
+the package, and the version. No license field is left as an empty string,
+and no license is filled in from a guess.
+
+Document-level license-parse failures are unchanged. A scan finding whose
+rule is `vibgrate/license-parse-failed` is repeated on the CycloneDX metadata
+`properties` and as an SPDX document annotation.
+
+The license on a shared `name@version` is the license from the scan row that
+was kept (the first project that declared that version). A lockfile-only
+transitive row has no declared license, so its SPDX `licenseDeclared` is
+`NOASSERTION` and its CycloneDX `licenses` field is omitted.
 
 #### Several versions of one package
 
@@ -1089,8 +1608,8 @@ project that resolved that exact version, does not add a row.
 
 The row that is kept for a shared `name@version` is the first project in the
 scan artifact that declared it. `vibgrate:project`, `vibgrate:currentSpec`,
-`vibgrate:drift`, and `vibgrate:majorsBehind` come from that project. A later
-project's copy of the same version is dropped.
+`vibgrate:drift`, `vibgrate:majorsBehind`, and the declared license come from
+that project. A later project's copy of the same version is dropped.
 
 `vibgrate:scope` (SPDX: `scope=` on the package annotation) is `direct` when a
 scanned manifest declared that exact `name@version`, and `transitive` when the
@@ -1099,6 +1618,11 @@ both declared and locked is `direct`. The lockfile copy of that same version
 is omitted. A second version that the lockfile resolved and no manifest
 declared stays in the document as `transitive`. On a transitive row,
 `vibgrate:project` is the scan root's name.
+
+That value is `direct` or `transitive`. Production, development, and optional
+are recorded or dropped before export, and the CycloneDX `scope` member is
+omitted. The mapping, a worked example, and the gaps are in
+[Dependency scope](./docs/sbom-dependency-scope.md).
 
 ```bash
 vg sbom export --format cyclonedx --out sbom.cdx.json
@@ -1122,8 +1646,9 @@ and the names inside one lockfile edge are sorted on their own.
 `--root`, `vg sbom export` writes the same JSON on every run, including the
 CycloneDX `serialNumber` and the SPDX `documentNamespace`. Those document ids
 are a hash of that artifact — timestamp included — and of the ordered component
-list and edges. A later scan of the same tree records a new timestamp, so the
-document id changes. Purls and CycloneDX `bom-ref` values do not.
+list, declared licenses, license-parse notes, and edges. A later scan of the
+same tree records a new timestamp, so the document id changes. Purls and
+CycloneDX `bom-ref` values do not.
 
 **Known limitations** (the exporters are unchanged):
 
@@ -1151,6 +1676,136 @@ document id changes. Purls and CycloneDX `bom-ref` values do not.
   still assigns each row its own `SPDXID`. An npm name is copied into the purl
   as scanned, so `left-pad@1.3.0` and `left-pad@1.2.0` stay two purls.
 
+#### CycloneDX type and SPDX primaryPackagePurpose
+
+`vg sbom export` writes an inventory of what the scan artifact and the lockfiles
+listed. An inventory, not a compliance determination. The labels below are what
+this command writes. They are not a certification, a profile check, or a claim
+that the inventory is complete.
+
+CycloneDX 1.5 `type` is written in two places. SPDX 2.3 `primaryPackagePurpose`
+is omitted on every package.
+
+| Source | Where it is written | CycloneDX `type` | SPDX `primaryPackagePurpose` |
+| --- | --- | --- | --- |
+| Scan root (the artifact's root directory name) | CycloneDX `metadata.component` only. It is not copied into `components`. SPDX has no package for the root. | `application` | Omitted. There is no package to carry the field. |
+| Lockfile package (`package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `Cargo.lock`, `go.sum`, `poetry.lock`, `uv.lock`), including a package that only the lockfile lists | One CycloneDX component and one SPDX package | `library` | Omitted |
+| Manifest dependency from a scanned project (Node, Python, Rust, Go, Java, Kotlin, Scala, Ruby, PHP, .NET, Swift, Dart, and any other project the scan records) | One CycloneDX component and one SPDX package | `library` | Omitted |
+| Container image named by a `Dockerfile` `FROM` or a Compose `image:` line | The same kind of row. A Docker Hub image with no namespace is named `library/<image>`. The tag is the version. | `library` | Omitted |
+| Helm chart dependency (`Chart.yaml` `dependencies`) | The same kind of row. The chart itself is not a row. | `library` | Omitted |
+| Terraform registry provider or registry module | The same kind of row. The name is `provider:<source>` or `module:<source>`. | `library` | Omitted |
+| OS packages, packages installed inside an image, Terraform `resource` blocks, local or git Terraform modules (`./`, `../`, `git::`), Kubernetes manifests | Not emitted | — | — |
+
+`type` is present on `metadata.component` and on every component. The only values
+this command writes are `application` and `library`. It does not write
+`container`, `operating-system`, `file`, `firmware`, `platform`, or
+`machine-learning-model`.
+
+`primaryPackagePurpose` is absent from every SPDX package. The document does not
+write `LIBRARY`, `APPLICATION`, `CONTAINER`, `OPERATING_SYSTEM`, or any other
+purpose. An omitted field is not a default. A consumer that needs a purpose has
+to supply one; this file does not.
+
+The metadata component's `bom-ref` is `vibgrate-root`. Its `name` is the scan
+root. It has no version and no purl. A scan that recorded no dependencies still
+writes that metadata component and an empty `components` array. SPDX `packages`
+is empty in that case, and `primaryPackagePurpose` is still absent because there
+is still no package.
+
+**Gaps.** These are holes in the inventory, labeled as holes.
+
+- The metadata label `application` is fixed. A library package, a Dockerfile, a
+  Helm chart, and a Terraform directory all get it. The command does not read
+  the manifest, the image, or the project type to choose a different label.
+- Every dependency row is `library`, including a container image and a Terraform
+  provider. The command does not inspect the package to decide a role. `library`
+  here is the label it writes.
+- OS packages are a gap. `apk add`, Debian packages, and RPM packages are not
+  rows. A base image is one row. What that image contains is unknown to this
+  command.
+- A Kubernetes manifest that names an image is a gap. A fixture whose only file
+  was a Deployment using `nginx:1.27` produced an empty component list. The
+  metadata component was still `application`.
+- A Terraform `resource` block is a gap. A module whose source starts with
+  `./`, `../`, or `git::` is a gap. A registry module is a row, typed `library`.
+- Docker, Helm, and Terraform are not ecosystems this command has a Package URL
+  type for, so it tries an npm Package URL. On a `Chart.yaml` whose only
+  dependency was `redis` at `17.14.0`, the row was `type` `library` with purl
+  `pkg:npm/redis@17.14.0`. That URL names the npm registry. The chart (`tiny`
+  at `0.1.0`) was not a row. An image name or a `provider:` / `module:` name
+  contains a slash or a colon, so the purl is omitted and `vibgrate:purlStatus`
+  is `unavailable`. Neither outcome is an OCI, Helm, or Terraform Package URL.
+
+**Examples.** Each excerpt is `vg sbom export` output from a small fixture,
+run from that directory with `vg scan --offline --no-graph` and then
+`vg sbom export --format cyclonedx` and `vg sbom export --format spdx`.
+Annotations, `externalRefs`, properties, serial numbers, and timestamps are
+left out of the excerpt. The values that are shown are the ones the command
+wrote. `primaryPackagePurpose` was not a key on any package.
+
+Lockfile packages. The fixture directory is `tiny-npm`. `package.json` depends
+on `left-pad` at `1.3.0`. Its `package-lock.json` also lists `once` at `1.4.0`
+under `left-pad`. That lockfile is the fixture. It is not the registry's tree
+for `left-pad`.
+
+```json
+"component": { "type": "application", "bom-ref": "vibgrate-root", "name": "tiny-npm" }
+```
+
+```json
+{ "type": "library", "name": "left-pad", "version": "1.3.0", "purl": "pkg:npm/left-pad@1.3.0" }
+{ "type": "library", "name": "once", "version": "1.4.0", "purl": "pkg:npm/once@1.4.0" }
+```
+
+The SPDX package for `left-pad` was:
+
+```json
+{
+  "name": "left-pad",
+  "SPDXID": "SPDXRef-Package-1",
+  "versionInfo": "1.3.0",
+  "downloadLocation": "NOASSERTION",
+  "filesAnalyzed": false
+}
+```
+
+`once` was `SPDXRef-Package-2`. Neither package had `primaryPackagePurpose`.
+There was no SPDX package for `tiny-npm`.
+
+Container image. The fixture directory is `tiny-image`. The Dockerfile is:
+
+```dockerfile
+FROM alpine:3.20
+RUN apk add --no-cache curl
+```
+
+```json
+"component": { "type": "application", "bom-ref": "vibgrate-root", "name": "tiny-image" }
+```
+
+```json
+{ "type": "library", "name": "library/alpine", "version": "3.20" }
+```
+
+The purl was omitted (`vibgrate:purlStatus` `unavailable`). `curl` was not a
+component. The SPDX package was `library/alpine` at `3.20`, with no
+`primaryPackagePurpose`.
+
+Terraform. The fixture directory is `tiny-iac`. `main.tf` required provider
+`hashicorp/random` at `3.6.2`, declared `resource "random_pet" "example"`,
+called registry module `terraform-aws-modules/vpc/aws` at `5.1.2`, and called
+a local module with `source = "./modules/local"`. The component list was these
+two rows, both `library`:
+
+```json
+{ "type": "library", "name": "provider:hashicorp/random", "version": "3.6.2" }
+{ "type": "library", "name": "module:terraform-aws-modules/vpc/aws", "version": "5.1.2" }
+```
+
+The metadata component was `application`, name `tiny-iac`. Both purls were
+omitted. `random_pet` and the local module were not rows. Both SPDX packages
+omitted `primaryPackagePurpose`.
+
 When the lockfile format resolves real dependency edges (npm
 `package-lock.json` v2/v3 today; pnpm and yarn report components without edges), the
 SBOM also carries the resolved dependency graph: CycloneDX's top-level `dependencies`
@@ -1169,13 +1824,14 @@ lockfile's edges, as described above.
 The primary command. Scans your project for upgrade drift.
 
 ```bash
-vg scan [path] [--vulns] [--full] [--format text|json|sarif|md] [--out <file>] [--junit <file>] [--fail-on warn|error|architecture-finding|architecture-warning] [--offline] [--package-manifest <file>] [--no-local-artifacts] [--max-privacy] [--baseline <file>] [--drift-budget <score>] [--drift-worsening <percent>] [--changed-only] [--concurrency <n>]
+vg scan [path] [--vulns] [--full] [--iac] [--format text|json|sarif|md] [--out <file>] [--junit <file>] [--fail-on warn|error|architecture-finding|architecture-warning] [--offline] [--package-manifest <file>] [--no-local-artifacts] [--max-privacy] [--baseline <file>] [--drift-budget <score>] [--drift-worsening <percent>] [--changed-only] [--concurrency <n>]
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--vulns` | — | Also detect known vulnerabilities (OSV online; offline via `--package-manifest` advisories) |
-| `--full` | — | Comprehensive scan: enables `--vulns` and reports banned dependencies when a standards policy exists |
+| `--full` | — | Comprehensive scan: turns on known-vulnerability detection (`--vulns`), infrastructure misconfiguration rules (`--iac`), and, when a standards policy exists, a banned-dependency report |
+| `--iac` | — | Evaluate infrastructure misconfiguration rules (Terraform, Kubernetes, Helm, Dockerfiles) with the Architecture module's `iac-cis-v1` pack. Needs the code map. How this pass and Terraform drift scoring treat `.tf` and `.tofu`: [Terraform and OpenTofu files](./docs/security-packs.md#terraform-and-opentofu-files) |
 | `--format` | `text` | Output format: `text`, `json`, `sarif`, or `md` |
 | `--out <file>` | — | Write output to a file |
 | `--junit <file>` | — | Also write a deterministic JUnit XML report of findings and gates. See [JUnit](#junit). Does not replace `--format` |
@@ -1314,6 +1970,8 @@ Expected results:
 
 **Plan limits never block the scan.** If your workspace is at a plan limit that gates ingestion — repository cap, scan credits, VM minutes — the CLI warns with the reason (and the upgrade link), disables the upload, and runs the **full local scan** anyway, repeating the warning after the results so it isn't lost in the output. Local scoring never depended on the cloud, and now neither does it depend on your plan. Pass `--strict` to keep the old behaviour and fail the command instead, which is usually what you want in CI.
 
+Maven scopes, Maven profiles, and Gradle configurations do not all become dependency rows. The included and omitted cases, and what to edit when a version is missing, are in [Maven and Gradle manifests](#maven-and-gradle-manifests).
+
 ---
 
 ### Vulnerabilities and exposure attribution
@@ -1322,7 +1980,7 @@ Expected results:
 
 SARIF from that scan is one result per package and advisory. How a GHSA, a CVE, and other aliases share that result, and when a second code-scanning alert is expected, is under [Advisories with several ids](#advisories-with-several-ids).
 
-Machine-readable JSON (`vg scan --format json`, and the `.vibgrate/scan_result.json` artifact) lists each advisory under `extended.vulnerabilities.packages[].advisories`. When the advisory data used for that scan already carries exploitability, the same object includes these optional fields:
+Machine-readable JSON (`vg scan --format json`, and the `.vibgrate/scan_result.json` artifact) lists each advisory under `extended.vulnerabilities.packages[].advisories`. Match the package on `ecosystem`, `package`, and `version` — the same identity `vg sbom export` writes as a purl. See [Component identity](#component-identity). When the advisory data used for that scan already carries exploitability, the same object includes these optional fields:
 
 | Field | Type | Meaning |
 | ----- | ---- | ------- |
@@ -1351,7 +2009,7 @@ In a git repository the scan also attributes each finding: the commit, author, a
 
 The scan also reconstructs **closed** exposure windows from history — a vulnerable version that was later bumped out of the affected range or removed from the lockfile entirely — and reports real remediation time (MTTR) from them: measured, not estimated. Offline, a package-version manifest extends this to advisories that are fully fixed today, so a dependency that is clean now but was once vulnerable still counts toward your remediation record.
 
-Detection and attribution read each project's lockfile, so they cover npm / pnpm / yarn, pip / poetry / pipenv, cargo, composer, bundler, go, pub, hex, NuGet, and Maven/Gradle.
+Detection and attribution read each project's lockfile for npm / pnpm / yarn, pip / poetry / pipenv, cargo, composer, bundler, pub, hex, NuGet, and Maven/Gradle. Go is matched from direct `require` lines in `go.mod`. The pseudo-version and `+incompatible` rules are in [Go modules: pseudo-versions and +incompatible](#go-modules-pseudo-versions-and-incompatible).
 
 ```bash
 # Online detection against OSV
@@ -1363,6 +2021,213 @@ vg scan --vulns --offline --package-manifest ./package-versions.zip
 # Everything in one run: drift + vulnerabilities + a banned-dependency report
 vg scan --full
 ```
+
+#### Go modules: pseudo-versions and +incompatible
+
+Go modules pin an untagged commit as a pseudo-version (`v0.0.0-20191109021931-daa7c04131f5`, or `v1.2.4-0.20210101120000-abcdefabcdef` for a commit after tag `v1.2.3`). A major of 2 or higher whose module path has no `/vN` suffix is written with `+incompatible` (`v2.0.0+incompatible`). The local comparison below is what `vg scan --vulns` uses against a package-version manifest. `--offline` keeps that comparison on the machine: no module proxy, no OSV query, no registry token. Leave `--offline` off and the same recorded version is sent to the public OSV API, which applies OSV's own comparison.
+
+##### Which version is compared
+
+The scan reads direct `require` lines in `go.mod`.
+
+- A concrete `v` version that is valid semver after the leading `v` is removed is the recorded version. `v1.2.3` is recorded as `1.2.3`.
+- Build metadata is dropped. `v2.0.0+incompatible` is recorded as `2.0.0`. The major stays 2.
+- A pseudo-version keeps its pre-release suffix. `v0.0.0-20191109021931-daa7c04131f5` is recorded as `0.0.0-20191109021931-daa7c04131f5`.
+- A bare module path, a range such as `>=1.4.0`, a line marked `// indirect`, and a token that is not a full semver (`v1.2`) are not matched against advisories.
+- `go.sum` is not the version source for this match.
+
+A range is half-open: the version matches from `introduced` up to, and not including, `fixed`. `introduced` of `0` means from the beginning. Before that check, the recorded version is reduced to `major.minor.patch`. The pre-release suffix is not ordered against the tag. An explicit `versions` list matches the recorded string exactly, so the list entry still has the pre-release suffix and has no leading `v`.
+
+##### Pseudo-versions and tagged releases
+
+| Require line | Recorded | Compared as | `introduced` `1.0.0`, `fixed` `1.2.4` |
+| --- | --- | --- | --- |
+| `v1.2.3` | `1.2.3` | `1.2.3` | matches |
+| `v1.2.3-0.20210101120000-abcdefabcdef` | `1.2.3-0.20210101120000-abcdefabcdef` | `1.2.3` | matches |
+| `v1.2.4-0.20210101120000-abcdefabcdef` | `1.2.4-0.20210101120000-abcdefabcdef` | `1.2.4` | does not match |
+| `v0.0.0-20191109021931-daa7c04131f5` | `0.0.0-20191109021931-daa7c04131f5` | `0.0.0` | does not match |
+
+In Go's own order, `v1.2.4-0.<timestamp>-<commit>` is a commit after `v1.2.3` and before the `v1.2.4` tag. Local matching compares it as `1.2.4`, so an advisory fixed at `1.2.4` does not include it. That gap is real. A `v0.0.0-<timestamp>-<commit>` pseudo-version (no earlier tag for that major) compares as `0.0.0`. It matches a range that starts at `0` and is fixed at `1.0.0`. It does not match a range that starts at `1.0.0`.
+
+An explicit list entry of `v0.0.0-20191109021931-daa7c04131f5` does not match the open finding. The entry `0.0.0-20191109021931-daa7c04131f5` does. The entry `0.0.0` does not: the list is exact, and the recorded string still has the pre-release suffix.
+
+Exposure windows replay the `require` token as written in `go.mod`, including the leading `v` and a `+incompatible` suffix. Range checks reduce that token to the same `major.minor.patch` as the open finding. An explicit `versions` list matches the string it is given, so `v2.0.0+incompatible` can match a history replay and miss the open finding (`2.0.0`), or the other way around.
+
+##### `+incompatible`
+
+The suffix is dropped before the comparison. `v2.0.0+incompatible` matches a range from `2.0.0` up to `2.1.0`. It does not match a range that only covers `1.x`. An explicit list entry of `v2.0.0+incompatible` does not match the open finding. The entry `2.0.0` does.
+
+##### `replace` and `exclude`
+
+`replace` and `exclude` are not applied before the match.
+
+- The module path and version on the `require` line are what get matched. A `replace` to a fork, another version, or a local directory does not change that target. A `replace` with no `require` adds nothing.
+- An `exclude` line does not add a module, and it does not drop a version that is also required.
+
+The code graph records those same `require` paths, including lines marked `// indirect`, and skips `replace` and `exclude`. The graph does not store the version. Vulnerability matching still skips `// indirect`.
+
+##### Check it locally
+
+The two files are checked in at `examples/go-pseudo-versions/`. They use `example.com` module paths and example advisory ids. Copy them into an empty directory if you are reading this from an installed package.
+
+`go.mod`:
+
+```go
+module example.com/demo
+
+go 1.22
+
+require (
+	example.com/tagged v1.2.3
+	example.com/pseudo-next v1.2.4-0.20210101120000-abcdefabcdef
+	example.com/pseudo-base v0.0.0-20191109021931-daa7c04131f5
+	example.com/oldmajor v2.0.0+incompatible
+	example.com/replaced-mod v1.0.0
+	example.com/indirect-mod v1.2.3 // indirect
+)
+
+exclude example.com/excluded-mod v1.2.3
+
+replace example.com/replaced-mod => ./local
+
+replace example.com/fork-only => example.com/fork v1.2.3
+```
+
+`package-versions.json`:
+
+```json
+{
+  "go": {
+    "example.com/tagged": {
+      "latest": "1.2.4",
+      "vulns": [
+        {
+          "id": "GHSA-example-tagged",
+          "severity": "high",
+          "ranges": [{ "introduced": "1.0.0", "fixed": "1.2.4" }]
+        }
+      ]
+    },
+    "example.com/pseudo-next": {
+      "latest": "1.2.4",
+      "vulns": [
+        {
+          "id": "GHSA-example-pseudo-next",
+          "severity": "high",
+          "ranges": [{ "introduced": "1.0.0", "fixed": "1.2.4" }]
+        }
+      ]
+    },
+    "example.com/pseudo-base": {
+      "latest": "1.0.0",
+      "vulns": [
+        {
+          "id": "GHSA-example-pseudo-base",
+          "severity": "moderate",
+          "ranges": [{ "introduced": "0", "fixed": "1.0.0" }]
+        },
+        {
+          "id": "GHSA-example-pseudo-explicit-v",
+          "severity": "low",
+          "versions": ["v0.0.0-20191109021931-daa7c04131f5"]
+        },
+        {
+          "id": "GHSA-example-pseudo-explicit-clean",
+          "severity": "low",
+          "versions": ["0.0.0-20191109021931-daa7c04131f5"]
+        }
+      ]
+    },
+    "example.com/oldmajor": {
+      "latest": "2.1.0",
+      "vulns": [
+        {
+          "id": "GHSA-example-incompatible-range",
+          "severity": "high",
+          "ranges": [{ "introduced": "2.0.0", "fixed": "2.1.0" }]
+        },
+        {
+          "id": "GHSA-example-incompatible-v1",
+          "severity": "high",
+          "ranges": [{ "introduced": "1.0.0", "fixed": "1.9.0" }]
+        },
+        {
+          "id": "GHSA-example-incompatible-explicit",
+          "severity": "low",
+          "versions": ["v2.0.0+incompatible"]
+        }
+      ]
+    },
+    "example.com/replaced-mod": {
+      "latest": "1.0.1",
+      "vulns": [
+        {
+          "id": "GHSA-example-replaced",
+          "severity": "moderate",
+          "ranges": [{ "introduced": "0", "fixed": "1.0.1" }]
+        }
+      ]
+    },
+    "example.com/indirect-mod": {
+      "latest": "1.2.4",
+      "vulns": [
+        {
+          "id": "GHSA-example-indirect",
+          "severity": "high",
+          "ranges": [{ "introduced": "0", "fixed": "9.0.0" }]
+        }
+      ]
+    },
+    "example.com/excluded-mod": {
+      "latest": "1.2.3",
+      "vulns": [
+        {
+          "id": "GHSA-example-excluded",
+          "severity": "high",
+          "ranges": [{ "introduced": "0" }]
+        }
+      ]
+    }
+  }
+}
+```
+
+From that directory:
+
+```bash
+vg scan --vulns --offline --package-manifest package-versions.json --format json --out go-vulns.json
+```
+
+`findings[].details.advisoryId` in `go-vulns.json` (the same ids are under `extended.vulnerabilities.packages[].advisories`):
+
+| Module | Advisory id | Result |
+| --- | --- | --- |
+| `example.com/tagged` | `GHSA-example-tagged` | reported (`1.2.3` is below `1.2.4`) |
+| `example.com/pseudo-next` | `GHSA-example-pseudo-next` | absent (compared as `1.2.4`) |
+| `example.com/pseudo-base` | `GHSA-example-pseudo-base` | reported (compared as `0.0.0`) |
+| `example.com/pseudo-base` | `GHSA-example-pseudo-explicit-v` | absent (the list has the leading `v`) |
+| `example.com/pseudo-base` | `GHSA-example-pseudo-explicit-clean` | reported |
+| `example.com/oldmajor` | `GHSA-example-incompatible-range` | reported (`2.0.0`) |
+| `example.com/oldmajor` | `GHSA-example-incompatible-v1` | absent (that range is `1.x`) |
+| `example.com/oldmajor` | `GHSA-example-incompatible-explicit` | absent (the list is `v2.0.0+incompatible`) |
+| `example.com/replaced-mod` | `GHSA-example-replaced` | reported (the `require` version; the `replace` is ignored) |
+| `example.com/indirect-mod` | `GHSA-example-indirect` | absent |
+| `example.com/excluded-mod` | `GHSA-example-excluded` | absent |
+| `example.com/fork-only` | — | absent (`replace` only, no `require`) |
+
+`timestamp` and `durationMs` change between runs. The advisory ids and their order do not: ecosystem, then package name, then recorded version, then severity (critical, high, moderate, low, unknown), then advisory id. The scan also writes `.vibgrate/scan_result.json` beside the `go.mod`.
+
+##### If the match looks wrong
+
+A surprise match, or a missing one, is a bug report. Include a local repro:
+
+- the `go.mod` `require` line
+- the advisory id and its `introduced` / `fixed` bounds, or the explicit `versions` list
+- the command above, run with `--offline`, so the repro needs no network and no registry credential
+- the advisory ids from the JSON, and which row in the table you expected to differ
+- `vg --version`
+
+Leave out tokens, `.netrc` contents, and private module-proxy URLs.
 
 ---
 
@@ -1564,8 +2429,278 @@ Maps source code into a graph artifact, enabling all downstream queries (`vg sho
 
 **Local by default — no git churn.** The first time vg writes into `.vibgrate/` it also creates `.vibgrate/.gitignore`, keeping the graph artifacts (`graph.json`, `graph.html`, `GRAPH_REPORT.md`, `facts.jsonl`, `mcp-navigation.json`) and the cache out of git — so builds, auto-refreshes, and MCP use never leave your branch dirty. Run `vg share` when you want the map committed for your team (it rewrites that ignore file). vg never touches an existing `.vibgrate/.gitignore`, so edit it (or leave it empty) to manage the ignores yourself.
 
+Maven `import` edges, and the Gradle files that stay document nodes, are in [Maven and Gradle manifests](#maven-and-gradle-manifests).
+
 ---
 
+### Maven and Gradle manifests
+
+`vg scan` and `vg build` read Java build files as text and XML. They do not run Maven or Gradle, and they do not decide which Maven profile is active. A profile that is `activeByDefault`, and a profile that is not, are treated the same: the dependencies inside `<profiles>` are left out of both outputs.
+
+`vg scan` writes one dependency row per coordinate it keeps. The rows are `projects[].dependencies` in `vg scan --format json` and in `.vibgrate/scan_result.json`. `vg build` writes `import` edges in the code map (`graph.json`, or the file you pass to `vg build -o`). `vg show` lists call edges. On a POM-only tree its `calls` list stays empty even when `import` edges exist. Read the map file for those edges.
+
+`vg drift` is a third reader. It is not this table. On a POM it records every `<dependency>` element it finds as text, including blocks inside profiles, and it stores an unresolved `${property}` as `*`. On Gradle it does not read `gradle.lockfile`.
+
+#### What each output carries
+
+A code-map `import` edge runs from the POM's `package` node to an `external` node. The external name is `groupId:artifactId`. The edge fields are `kind: "import"`, `epistemic: "declared"`, `resolution: "heuristic"`, `confidence: 1`, `count: 1`. There is no version field and no scope field. The package node's qualified name is `groupId:artifactId` when the POM has its own `<groupId>`. When `<groupId>` is only on a parent POM, the qualified name is the `<artifactId>` alone.
+
+A scan row has `package` (`groupId:artifactId`), `section`, `currentSpec`, `resolvedVersion`, `latestStable`, `majorsBehind`, and `drift`. `section` is `dependencies` for every Java row, including `<scope>test</scope>` and `testImplementation`. Scope and the Gradle configuration name are not fields. A missing resolved version is `null`, and a missing major lag is `null`.
+
+`resolvedVersion` is the declared version when that string converts to a semantic version, with a missing patch padded (`1.2` becomes `1.2.0`). `32.1.3-jre` is kept. `1.2.3-SNAPSHOT` and a Maven range such as `[1.0,2.0)` stay in `currentSpec` and set `resolvedVersion` to `null`. With `--offline`, `latestStable` is `null` and `drift` is `unknown`. A run that can reach Maven Central fills `latestStable` and `drift` from that registry.
+
+#### Maven
+
+| Declaration in the POM | `vg build` import edge | `vg scan` row |
+| --- | --- | --- |
+| Top-level `<dependencies>` entry with a literal `<version>`, any `<scope>` (`compile`, `test`, `provided`, `runtime`) | Included. Scope is dropped. | Included. `currentSpec` is the version. `section` is `dependencies`. |
+| Top-level entry with no `<version>` | Included. The edge still has no version. | Omitted. |
+| Top-level `<version>${name}</version>` and `<properties><name>…</name></properties>` in the same file | Included. The edge name is still `groupId:artifactId`. | Included. `currentSpec` is the property value. |
+| `${…}` that is not a `<properties>` entry in the same file, including `${project.version}` | Included. | Omitted. The unsubstituted text contains `${`. |
+| `<dependencyManagement>` entry in the same file with `groupId`, `artifactId`, and `<version>` (a BOM `<scope>import</scope>` included) | Omitted. | Included, even when `<dependencies>` never names that coordinate. |
+| `<dependencyManagement>` entry with no `<version>` | Omitted. | Omitted. |
+| `<dependencies>` or `<dependencyManagement>` inside `<profiles>`, whether or not the profile is `activeByDefault` | Omitted. | Omitted. |
+| Version that exists only on a parent POM's `<dependencyManagement>` | Edge from the child POM when the child lists the coordinate under its own top-level `<dependencies>`. The parent's management block is not an edge. | Omitted on the child. The parent file can still have its own row for a versioned management entry in that parent file. |
+| `<dependencies>` nested under a `<plugin>` | Omitted. | Omitted. |
+
+A direct dependency and a `<dependencyManagement>` entry for the same coordinate in one file: the direct entry is first. A direct entry that has a version keeps that version. A direct entry with no version is skipped, and the versioned management entry can still supply the row.
+
+#### Gradle
+
+`vg scan` reads `build.gradle` and `build.gradle.kts`. The match is a text search over the whole file for these configuration names: `implementation`, `api`, `compileOnly`, `runtimeOnly`, `testImplementation`, `testRuntimeOnly`, `annotationProcessor`, `kapt`. The coordinate has to be a quoted `group:artifact:version` (`implementation 'g:a:v'` or `implementation("g:a:v")`). `implementation platform('g:a:v')` and `api(platform("g:a:v"))` are included too. The configuration name is not stored.
+
+| Declaration | `vg build` import edge | `vg scan` row |
+| --- | --- | --- |
+| Quoted `group:artifact:version` on a configuration in the list above | Omitted. The file is a `document` node (`build.gradle.kts` is also a Kotlin `file` node). | Included. `currentSpec` is the third colon field. |
+| `implementation platform('g:a:v')` or `api(platform("g:a:v"))` | Omitted. | Included. |
+| Same configurations with no version (`implementation 'g:a'`) | Omitted. | Omitted. A `gradle.lockfile` line for that coordinate does not add the row. |
+| Dynamic version such as `1.+`, with `gradle.lockfile` beside the build file containing `group:artifact:1.4.2=runtimeClasspath` | Omitted. The lockfile is not a map input. | Included. `currentSpec` stays `1.+`. `resolvedVersion` is `1.4.2`. |
+| Custom configuration (`integrationTestImplementation`, `smoke`), legacy `compile`, Spring `developmentOnly` | Omitted. | Omitted. |
+| Version catalog (`implementation(libs.guava)`), map notation (`group:`, `name:`, `version:`), `project(':core')` | Omitted. | Omitted. |
+| A matching configuration string in a comment, or inside `constraints { }` | Omitted. | Included. The search does not know comments or which block it is in. |
+
+`gradle.lockfile` lines look like `group:artifact:version=conf1,conf2`. Blank lines, `#` comments, and `empty=` are skipped. The first line for a coordinate wins. The configuration list on that line is not copied onto the row. The lockfile version is used for `resolvedVersion` only when the build file already contributed that coordinate with a non-empty version string. `currentSpec` stays the declared text.
+
+#### Same directory
+
+A directory that contains both `pom.xml` and `build.gradle` (or `build.gradle.kts`) is one scan project. Both files contribute coordinates. The version kept for a coordinate that appears in both is the one from whichever file the directory listing returns first. A later file does not replace it. The project name is whatever the last file sets (the POM's `<artifactId>`, or the directory name from the Gradle file). **Gap:** that order is not sorted, and there is no stable preference for the POM. On one check, `build.gradle` was first, so `com.example:shared` kept the Gradle version `9.9.9`, and `pom.xml` was second, so the project name was the POM artifact id. The code map for that tree had `import` edges only from the POM.
+
+#### Gaps
+
+- Profile activation is not evaluated. Active and inactive profile dependencies are both omitted from `vg scan` and from `vg build`.
+- `import` edges never carry a version or a scope, including when the POM has both.
+- Gradle dependencies never become `import` edges. `gradle.lockfile` is not read by `vg build`.
+- Scan rows do not record Maven scope or the Gradle configuration. Test-scoped and `testImplementation` coordinates are `section: "dependencies"`.
+- A versioned `<dependencyManagement>` entry becomes a scan row even when the POM does not depend on that artifact. A BOM import can show up as its own row.
+- Parent POMs, imported BOMs that this file does not restate, and `${project.version}` do not fill a missing child version.
+- A `gradle.lockfile` does not create a row for a coordinate the build file declared without a version.
+- The Gradle reader is a text search. Commented-out lines and `constraints` blocks that contain a recognized configuration become rows. Custom configurations, catalogs, map notation, and `project()` dependencies do not.
+- Two manifests in one directory do not have a defined winner.
+
+#### Recover a missing version
+
+**Maven, scan row missing.** Put a literal `<version>` on the `<dependency>` in that same `pom.xml`, or use `${name}` with `<name>` defined in that file's `<properties>`. A versioned `<dependencyManagement>` entry in that same file also creates the row. Move a profile coordinate you need scored into the top-level `<dependencies>` or into that file's `<dependencyManagement>`, with a version. Repeat a parent-managed or BOM-managed version in this file. Replace `${project.version}` with a literal or with a `<properties>` entry in this file.
+
+**Gradle, scan row missing.** Declare `group:artifact:version` on `implementation`, `api`, `compileOnly`, `runtimeOnly`, `testImplementation`, `testRuntimeOnly`, `annotationProcessor`, or `kapt`, or use `implementation platform('g:a:v')` / `api(platform("g:a:v"))`. A declaration with no version stays omitted; add the version on that line. `gradle.lockfile` then supplies `resolvedVersion` for a dynamic declared version (`1.+`) and leaves `currentSpec` as the text you wrote. Generate the lockfile with Gradle's dependency locking so the line is `group:artifact:version=configurations`, and keep it next to the build file. For a custom configuration or a version-catalog alias, declare the same coordinate again on one of the configurations above. Delete a commented-out coordinate if it should not be a row.
+
+**`resolvedVersion` is null.** The row is present and `currentSpec` holds the declared text, and the text is not a semantic version (`1.2.3-SNAPSHOT`, `[1.0,2.0)`, `1.+` with no lockfile pin). Pin a semantic version in the declaration, or add a `gradle.lockfile` pin for a dynamic Gradle version.
+
+**Code map.** Adding a `<version>` does not put a version on the `import` edge. **Gap:** there is no switch that adds versions to those edges. A missing Maven edge comes back when the coordinate is a direct child of the top-level `<dependencies>` in that POM. A missing version does not block the edge. **Gap:** `vg build` does not create Gradle dependency edges. `vg scan` is the command that lists those coordinates.
+
+#### Example: Maven
+
+`pom.xml`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<project>
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>demo</artifactId>
+  <version>1.0.0</version>
+  <properties>
+    <jackson.version>2.17.0</jackson.version>
+  </properties>
+  <dependencies>
+    <dependency>
+      <groupId>com.google.guava</groupId>
+      <artifactId>guava</artifactId>
+      <version>32.1.3-jre</version>
+      <scope>compile</scope>
+    </dependency>
+    <dependency>
+      <groupId>junit</groupId>
+      <artifactId>junit</artifactId>
+      <version>4.13.2</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-api</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+      <version>${jackson.version}</version>
+    </dependency>
+  </dependencies>
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>com.squareup.okhttp3</groupId>
+        <artifactId>okhttp</artifactId>
+        <version>4.12.0</version>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+  <profiles>
+    <profile>
+      <id>extra</id>
+      <activation>
+        <activeByDefault>true</activeByDefault>
+      </activation>
+      <dependencies>
+        <dependency>
+          <groupId>com.google.code.gson</groupId>
+          <artifactId>gson</artifactId>
+          <version>2.10.1</version>
+        </dependency>
+      </dependencies>
+    </profile>
+  </profiles>
+</project>
+```
+
+From that directory:
+
+```bash
+vg build --no-html --no-report -o graph.json
+vg scan --offline --format json --out scan.json --no-graph
+```
+
+`vg build` on this file wrote 7 nodes and 5 edges, 4 of them `import` edges from `com.example:demo`:
+
+- `com.fasterxml.jackson.core:jackson-databind`
+- `com.google.guava:guava`
+- `junit:junit`
+- `org.slf4j:slf4j-api`
+
+`com.squareup.okhttp3:okhttp` and `com.google.code.gson:gson` were not edges. `vg show demo --json` reported `calls` and `calledBy` as empty arrays.
+
+`vg scan --offline` wrote these rows (`latestStable` and `majorsBehind` are `null`, `drift` is `unknown`, because the run did not ask Maven Central). `org.slf4j:slf4j-api` and `gson` are absent:
+
+```json
+[
+  {
+    "package": "com.fasterxml.jackson.core:jackson-databind",
+    "section": "dependencies",
+    "currentSpec": "2.17.0",
+    "resolvedVersion": "2.17.0",
+    "latestStable": null,
+    "majorsBehind": null,
+    "drift": "unknown"
+  },
+  {
+    "package": "com.google.guava:guava",
+    "section": "dependencies",
+    "currentSpec": "32.1.3-jre",
+    "resolvedVersion": "32.1.3-jre",
+    "latestStable": null,
+    "majorsBehind": null,
+    "drift": "unknown"
+  },
+  {
+    "package": "com.squareup.okhttp3:okhttp",
+    "section": "dependencies",
+    "currentSpec": "4.12.0",
+    "resolvedVersion": "4.12.0",
+    "latestStable": null,
+    "majorsBehind": null,
+    "drift": "unknown"
+  },
+  {
+    "package": "junit:junit",
+    "section": "dependencies",
+    "currentSpec": "4.13.2",
+    "resolvedVersion": "4.13.2",
+    "latestStable": null,
+    "majorsBehind": null,
+    "drift": "unknown"
+  }
+]
+```
+
+The test-scoped JUnit row uses `section: "dependencies"`. OkHttp is a row because `<dependencyManagement>` in this file carries a version. Gson stays out because it lives in a profile, including one marked `activeByDefault`.
+
+#### Example: Gradle
+
+`build.gradle`:
+
+```groovy
+dependencies {
+    implementation 'com.google.guava:guava:32.1.3-jre'
+    testImplementation 'junit:junit:4.13.2'
+    implementation 'com.example:dynamic:1.+'
+    implementation 'com.example:managed'
+    integrationTestImplementation 'com.example:it:2.0.0'
+}
+```
+
+`gradle.lockfile` in the same directory:
+
+```text
+# This is a Gradle generated file for dependency locking.
+com.example:dynamic:1.4.2=runtimeClasspath
+com.example:managed:4.5.6=runtimeClasspath
+empty=
+```
+
+From that directory, the same two commands:
+
+```bash
+vg build --no-html --no-report -o graph.json
+vg scan --offline --format json --out scan.json --no-graph
+```
+
+`vg build` wrote one `document` node, `build.gradle`, and zero edges. The lockfile was not a node.
+
+`vg scan --offline` named the project from the directory (`gradle` when the folder is `gradle`) and wrote:
+
+```json
+[
+  {
+    "package": "com.example:dynamic",
+    "section": "dependencies",
+    "currentSpec": "1.+",
+    "resolvedVersion": "1.4.2",
+    "latestStable": null,
+    "majorsBehind": null,
+    "drift": "unknown"
+  },
+  {
+    "package": "com.google.guava:guava",
+    "section": "dependencies",
+    "currentSpec": "32.1.3-jre",
+    "resolvedVersion": "32.1.3-jre",
+    "latestStable": null,
+    "majorsBehind": null,
+    "drift": "unknown"
+  },
+  {
+    "package": "junit:junit",
+    "section": "dependencies",
+    "currentSpec": "4.13.2",
+    "resolvedVersion": "4.13.2",
+    "latestStable": null,
+    "majorsBehind": null,
+    "drift": "unknown"
+  }
+]
+```
+
+`com.example:managed` is absent even though the lockfile pins `4.5.6`, because the build file has no version. `com.example:it` is absent because `integrationTestImplementation` is a custom configuration. JUnit's `testImplementation` row is still `section: "dependencies"`. `currentSpec` for the dynamic coordinate stays `1.+`; the lockfile supplies `resolvedVersion`.
+
+---
 
 ### vg watch
 
@@ -3112,6 +4247,8 @@ The default output. A coloured, human-readable report showing:
 
 The full scan artifact in JSON format. Contains all raw data, scores, findings, and VCS metadata. Stable schema (`schemaVersion: "1.0"`). This is the same artifact saved to `.vibgrate/scan_result.json`.
 
+Dependency identity in this file is `projects[].type` plus `dependencies[].package` and `resolvedVersion`. An advisory match is `extended.vulnerabilities.packages[]` (`ecosystem`, `package`, `version`). `vg sbom export` writes those coordinates as a package URL. The file has no CPE field. See [Component identity](#component-identity).
+
 ### SARIF
 
 [Static Analysis Results Interchange Format](https://sarifweb.azurewebsites.net/) (SARIF) 2.1.0. GitHub code scanning and Azure DevOps read this file. It contains findings only. The DriftScore and the other metrics stay in the JSON artifact. Drift findings come first. Vulnerability findings follow when the scan ran with `--vulns`.
@@ -3320,7 +4457,7 @@ and `0` always means "disabled".
 | Variable              | Default                     | What it does                                                                                                                          |
 | --------------------- | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
 | `VG_MAX_FILE_BYTES`   | `2097152` (2 MiB)           | Per-file source cap. Larger files (almost always generated/minified) are skipped with a warning; they stay freshness-tracked.          |
-| `VG_MAX_FILES`        | `100000`                    | Corpus file-count ceiling. Exceeding it stops the build with guidance (scope with paths, `--exclude`, or `--only`) instead of an OOM.   |
+| `VG_MAX_FILES`        | `100000`                    | Walk-entry ceiling for `vg scan` and `vg build`. Exceeding it stops the walk with guidance (narrow the path, add `--exclude`, or raise this value; `0` disables the budget only). Pointing either command at the filesystem root or an operating-system image stops before the walk, with the same guidance to narrow the path. |
 | `VG_TSC_MAX_FILES`    | `10000`                     | Max TS/JS files handed to the in-process TypeScript resolver (the largest single memory consumer). Above it, the heuristic rung is used. |
 | `VG_MEMORY_BUDGET_MB` | 90% of the Node heap ceiling | Heap budget checked at phase boundaries. Exceeding it stops the build with a clear, catchable error before V8 hard-crashes.             |
 | `VG_JOBS`             | CPU cores − 1               | Default parse worker count when `--jobs` isn't passed. Fewer workers = lower peak memory (each worker loads its own grammar set).       |
@@ -3562,6 +4699,7 @@ Maps security findings into OWASP Top 10 categories for security triage inside e
 
 Use the maintained templates in this package for copy-paste setup:
 
+- `examples/github-actions/README.md` (drift gate: when the job fails, warn versus enforce, pins, DriftScore badge)
 - `examples/github-actions/driftscore-ci.yml` (JSON artifact + drift gate)
 - `examples/github-actions/driftscore-sarif.yml` (SARIF upload to code scanning)
 - `examples/github-actions/vulnerabilities-sarif.yml` (vulnerability gate + SARIF upload)
