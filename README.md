@@ -619,7 +619,7 @@ vg vex                          # generate an OpenVEX document for attestation
 
 `vibgrate:scope` on each component is `direct` or `transitive`. How production, development, and optional dependencies are written in CycloneDX and SPDX, including fields the export omits, is in [Dependency scope](./docs/sbom-dependency-scope.md).
 
-Match a component on its package URL (`purl` in CycloneDX, the `purl` externalRef in SPDX). Scan JSON uses the same coordinates (`projects[].type`, `dependencies[].package`, `resolvedVersion`, and `extended.vulnerabilities.packages[]`) and does not repeat the purl string. These files have no CPE field. The CLI does not invent one, and a CPE from another cataloger does not replace the purl. Fields and a local example: [DOCS.md](./DOCS.md#component-identity).
+Component identity in the SBOM is the Package URL on each component (CycloneDX `purl` and `bom-ref`, SPDX purl `externalRef`). `vg scan --format json` records the same package as ecosystem, name, and installed version. Neither output includes a CPE. The fields to key on, including a local advisory match, are in [DOCS.md](./DOCS.md#component-identity).
 
 ## Review a change
 

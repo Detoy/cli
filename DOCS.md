@@ -1485,56 +1485,153 @@ records the reason on `vibgrate:purlWarning`. SPDX omits the purl externalRef,
 records `purlStatus=unavailable` on the package annotation, and repeats the
 reason in a second annotation. `vg sbom export` prints the same warning on
 stderr. The warning names the package and its ecosystem. The purl rules above
-are the identity a scanner should store.
+are the identity a scanner should store. [Component identity](#component-identity)
+names the fields to key on, including scan JSON and a local advisory match.
+The rest of this section says how that identity behaves when one package is
+installed more than once.
 
 #### Component identity
 
-Match a component on its [package URL](https://github.com/package-url/purl-spec) (purl). That string is the primary identity in `vg sbom export`. `vg scan --format json` and `.vibgrate/scan_result.json` use the same coordinates and do not repeat the purl string.
+A library component is identified by its package coordinates: ecosystem, registry
+name, and installed version. When `vg sbom export` can build a
+[Package URL](https://github.com/package-url/purl-spec), that purl is the
+primary identity in the SBOM. `vg scan` machine-readable JSON records the same
+coordinates as separate fields. These outputs leave CPE unset. The CLI does not
+derive a CPE from a package name, an npm scope, or a Maven group id. Matching
+an advisory, or joining a scan row to an SBOM component, uses the purl when one
+is present and those coordinates when it is not. A CPE supplied by another
+cataloger stays a note. It does not replace the purl, and it does not fill in
+for a purl that was omitted.
 
-| Output | Fields to key on |
+##### SBOM fields
+
+| Field | What to key on |
 | --- | --- |
-| CycloneDX | `components[].purl`. `bom-ref` is that purl when the purl was written. |
-| SPDX | `packages[].externalRefs[]` with `referenceType` `purl`. The value is `referenceLocator`. |
-| Scan JSON, inventory | `projects[].type`, `projects[].dependencies[].package`, `projects[].dependencies[].resolvedVersion`. |
-| Scan JSON, advisory match | `extended.vulnerabilities.packages[].ecosystem`, `.package`, and `.version`. |
+| CycloneDX `components[].purl` | Primary identity. `bom-ref` is that same string. |
+| SPDX `packages[].externalRefs[]` | The same purl. `referenceCategory` is `PACKAGE-MANAGER`, `referenceType` is `purl`, and the value is `referenceLocator`. |
+| CycloneDX `name` and `version`; SPDX `name` and `versionInfo` | Package name and version as scanned. For PyPI the purl name is the normalized form of this name. |
 
-`projects[].type` is the project kind (`java`, `node`, `python`). The vulnerability block uses the advisory ecosystem (`maven`, `npm`, `pypi`). `vg sbom export` turns those coordinates into the purl type (`pkg:maven`, `pkg:npm`, `pkg:pypi`).
+A Java dependency recorded as `com.google.code.gson:gson` at version `2.11.0`
+has purl `pkg:maven/com.google.code.gson/gson@2.11.0`. The group id stays a
+namespace segment (`com.google.code.gson` / `gson`). The exporter does not fold
+the group and the artifact into one product token.
 
-These documents have no CPE field. The CLI does not write one, including when a name has several segments (a Maven `group:artifact`, an npm scope, a Go module path). A missing CPE is the normal record. Leave it missing. If a file from another cataloger carries a `cpe` property, keep the purl as the identity you match. A CPE does not replace a purl, rank above it, or stand in for a purl that was omitted.
+CycloneDX components have no `cpe` property. SPDX packages have no
+`externalRefs` entry whose `referenceType` is `cpe22Type` or `cpe23Type`. A
+missing CPE means the document did not assign one. The component is still
+identified by its purl.
 
-When a name cannot be a package URL, the component stays in the SBOM and `purl` is omitted. CycloneDX sets `vibgrate:purlStatus` to `unavailable`. That row still has no CPE.
+When the name or version cannot be a Package URL, the component stays in the
+document and the purl is left off. CycloneDX sets `vibgrate:purlStatus` to
+`unavailable`, records the reason on `vibgrate:purlWarning`, and sets `bom-ref`
+to `vibgrate:<ecosystem>:<name>@<version>`. SPDX omits the purl externalRef and
+records `purlStatus=unavailable` on the package annotation. That `bom-ref` is a
+document-local id for this SBOM. Match that row by ecosystem, package name, and
+version. [Several versions of one package](#several-versions-of-one-package)
+covers deduplication and the case where two PyPI spellings share one purl.
 
-Local advisory matching uses the same coordinates. `vg scan --vulns --offline --package-manifest package-versions.json` reads `vulns` under the ecosystem and the package name in that file. Matches land on `extended.vulnerabilities.packages[]`. Join an advisory of your own on the purl, or on ecosystem + package name + version.
+##### Scan JSON fields
+
+`vg scan --format json` writes the scan artifact. The same document is saved
+to `.vibgrate/scan_result.json` unless you pass `--no-local-artifacts` or
+`--max-privacy`. The artifact has no `purl` property and no `cpe` property.
+SARIF copies vulnerability finding details onto `properties` and also has no
+purl and no CPE ([Advisories with several ids](#advisories-with-several-ids)).
+
+| What you are matching | Fields |
+| --- | --- |
+| Installed dependency | `projects[].type`, `projects[].dependencies[].package`, `projects[].dependencies[].resolvedVersion` |
+| Advisory hit (`--vulns`) | `extended.vulnerabilities.packages[].ecosystem`, `.package`, `.version`, and `.advisories[].id` |
+| Vulnerability finding, including SARIF `properties` | `ecosystem`, `package`, `installedVersion`, `advisoryId` |
+
+`projects[].type` and the advisory ecosystem are related and not always the
+same string. The purl type is a third spelling. Use this table, which is what
+the scanners and `vg sbom export` implement:
+
+| `projects[].type` | Advisory ecosystem (manifest key) | SBOM purl |
+| --- | --- | --- |
+| `node`, `typescript` | `npm` | `pkg:npm/<name>@<version>` |
+| `python` | `pypi` | `pkg:pypi/<name>@<version>` (PEP 503: lowercase, runs of `-_.` folded to one `-`) |
+| `java` | `maven` | `pkg:maven/<group>/<artifact>@<version>` when `package` is `group:artifact`. `pom.xml`, `build.gradle`, and `build.gradle.kts` are recorded as `type` `java` |
+| `kotlin`, `scala` | not vulnerability-matched | `pkg:maven/<name>@<version>` (the exporter uses the Java purl type) |
+| `dotnet` | `nuget` | `pkg:nuget/<name>@<version>` |
+| `go` | `go` | `pkg:golang/<module>@<version>` |
+| `rust` | `cargo` | `pkg:cargo/<name>@<version>` |
+| `php` | `composer` | `pkg:composer/<vendor>/<name>@<version>` |
+| `ruby` | `rubygems` | `pkg:gem/<name>@<version>` |
+| `dart` | `pub` | `pkg:pub/<name>@<version>` |
+| `swift` | not vulnerability-matched | `pkg:swift/<name>@<version>` |
+| `elixir` | `hex` | `pkg:npm/<name>@<version>` |
+
+Any other project type is exported with an npm purl when the name can be one.
+`elixir` is the row where that default and the advisory ecosystem differ:
+`--vulns` looks up ecosystem `hex`, package name, and version, while the SBOM
+purl uses the npm type. Match Hex advisories on the scan fields. The npm purl
+is the string the exporter wrote; it is not a Hex registry id. Leave CPE unset
+there too.
+
+##### Matching an advisory locally
+
+Offline, `vg scan --vulns --offline --package-manifest <file>` matches with
+the package-version manifest on the machine. A local consumer uses the same
+three fields. There is no CPE key in the manifest, and the matcher does not
+read one.
+
+1. Take `ecosystem`, `package`, and `version` from `extended.vulnerabilities.packages[]` when the scan already matched. From a dependency row, map `projects[].type` through the table above, then read `dependencies[].package` and `dependencies[].resolvedVersion`. A dependency with no `resolvedVersion` is not an advisory target.
+2. Look that package up in the manifest under the advisory ecosystem key (`npm`, `pypi`, `maven`, `nuget`, `go`, `cargo`, `composer`, `rubygems`, `pub`, `hex`). NuGet names are matched case-insensitively. Every other ecosystem uses the package string as recorded. PyPI lookup does not apply the purl's PEP 503 normalization, so `Flask` and `flask` are different manifest keys. They still share one SBOM purl, `pkg:pypi/flask@<version>`, as described under several versions of one package.
+3. Test the installed version against each `vulns` entry. `ranges` are half-open: from `introduced` up to, and not including, `fixed`. `versions` lists affected versions explicitly. The advisory id is `vulns[].id`. On the scan artifact those bounds are copied to `advisories[].affectedRanges` and `advisories[].affectedVersions`.
+4. Join the hit to the SBOM on the component purl. CycloneDX: `purl` and `bom-ref`. SPDX: the purl `referenceLocator`.
+
+An online `vg scan --vulns` sends OSV the same triple (`package.name`,
+`package.ecosystem`, `version`). OSV's ecosystem strings are `npm`, `PyPI`,
+`Maven`, `NuGet`, `Go`, `crates.io`, `Packagist`, `RubyGems`, `Pub`, and `Hex`.
+The query has no CPE.
+
+##### Example
+
+`package-versions.json` is the manifest in
+[Offline scan with a package-version manifest](#offline-scan-with-a-package-version-manifest).
+The project lockfile installs `left-pad@1.3.0`. Both commands stay on the machine:
 
 ```bash
-vg scan --vulns --offline --package-manifest package-versions.json --format json --out scan.json
+vg scan --vulns --offline --package-manifest ./package-versions.json --format json --out scan.json
 vg sbom export --in scan.json --format cyclonedx --out sbom.cdx.json
 ```
 
-For `com.google.code.gson:gson` at `2.11.0` in a Java project, read these fields. They are shown together so the join is visible. `vg` writes them in `scan.json` and `sbom.cdx.json`, not in one object. The advisory object is present when `--vulns` records a match for that package.
+`scan.json` is the scan artifact (`--format json` and `.vibgrate/scan_result.json`
+are the same document when local artifacts are written). Key on the advisory
+package:
 
 ```json
 {
-  "scanDependency": {
-    "projectType": "java",
-    "package": "com.google.code.gson:gson",
-    "resolvedVersion": "2.11.0"
-  },
-  "scanAdvisory": {
-    "ecosystem": "maven",
-    "package": "com.google.code.gson:gson",
-    "version": "2.11.0"
-  },
-  "cyclonedx": {
-    "name": "com.google.code.gson:gson",
-    "version": "2.11.0",
-    "purl": "pkg:maven/com.google.code.gson/gson@2.11.0",
-    "bom-ref": "pkg:maven/com.google.code.gson/gson@2.11.0"
-  }
+  "ecosystem": "npm",
+  "package": "left-pad",
+  "version": "1.3.0"
 }
 ```
 
-Key the join on `pkg:maven/com.google.code.gson/gson@2.11.0`, or on `maven` + `com.google.code.gson:gson` + `2.11.0`. The group `com.google.code.gson` is the purl namespace. SPDX stores the same purl on `externalRefs[].referenceLocator`.
+That object is `extended.vulnerabilities.packages[]`. With the sample manifest,
+`advisories[].id` is `GHSA-example`. The same hit on a finding is
+`findings[].details.ecosystem`, `findings[].details.package`,
+`findings[].details.installedVersion`, and `findings[].details.advisoryId`
+(`ruleId` `vibgrate/vulnerability`).
+
+`sbom.cdx.json` keys the same component on:
+
+```json
+{
+  "name": "left-pad",
+  "version": "1.3.0",
+  "purl": "pkg:npm/left-pad@1.3.0",
+  "bom-ref": "pkg:npm/left-pad@1.3.0"
+}
+```
+
+That component has no `cpe`. The advisory matches it on ecosystem `npm`,
+package `left-pad`, and version `1.3.0`, which the SBOM records as
+`pkg:npm/left-pad@1.3.0`.
+`vg sbom export --format spdx` writes that purl as `externalRefs[].referenceLocator`
+with `referenceType` `purl`.
 
 #### Declared licenses
 
@@ -1976,7 +2073,7 @@ Maven scopes, Maven profiles, and Gradle configurations do not all become depend
 
 ### Vulnerabilities and exposure attribution
 
-`vg scan --vulns` matches your installed dependencies against the public OSV database and records each known vulnerability — advisory id and CVE, severity, CVSS, and the fixing version — in the scan artifact, as findings, and in SARIF. Supply advisories in a `--package-manifest` bundle to run it offline. The manifest shape, the exit code `1` errors, and the offline limits are in [Offline scan with a package-version manifest](#offline-scan-with-a-package-version-manifest).
+`vg scan --vulns` matches your installed dependencies against the public OSV database and records each known vulnerability — advisory id and CVE, severity, CVSS, and the fixing version — in the scan artifact, as findings, and in SARIF. The match key is ecosystem, package name, and installed version. Supply advisories in a `--package-manifest` bundle to run it offline. The manifest shape, the exit code `1` errors, and the offline limits are in [Offline scan with a package-version manifest](#offline-scan-with-a-package-version-manifest). Which fields to store, and how that joins to a `vg sbom` purl, are in [Component identity](#component-identity).
 
 SARIF from that scan is one result per package and advisory. How a GHSA, a CVE, and other aliases share that result, and when a second code-scanning alert is expected, is under [Advisories with several ids](#advisories-with-several-ids).
 
@@ -4245,9 +4342,7 @@ The default output. A coloured, human-readable report showing:
 
 ### JSON Artifact
 
-The full scan artifact in JSON format. Contains all raw data, scores, findings, and VCS metadata. Stable schema (`schemaVersion: "1.0"`). This is the same artifact saved to `.vibgrate/scan_result.json`.
-
-Dependency identity in this file is `projects[].type` plus `dependencies[].package` and `resolvedVersion`. An advisory match is `extended.vulnerabilities.packages[]` (`ecosystem`, `package`, `version`). `vg sbom export` writes those coordinates as a package URL. The file has no CPE field. See [Component identity](#component-identity).
+The full scan artifact in JSON format. Contains all raw data, scores, findings, and VCS metadata. Stable schema (`schemaVersion: "1.0"`). This is the same artifact saved to `.vibgrate/scan_result.json`. Dependency identity is `projects[].type` plus `dependencies[].package` and `resolvedVersion`. An advisory match is `extended.vulnerabilities.packages[]` (`ecosystem`, `package`, `version`). The artifact has no `purl` and no `cpe`. `vg sbom export` writes those coordinates as a package URL. See [Component identity](#component-identity).
 
 ### SARIF
 
@@ -4271,7 +4366,7 @@ A near-duplicate code-scanning alert is expected in that case. If the vulnerabil
 | `locations[0].physicalLocation.artifactLocation.uri` | The package name. |
 | `properties.advisoryId` | The advisory's own id. This is the primary id. |
 | `properties.aliases` | The alias list, in the order the advisory supplied. Distinct advisory ids stay distinct results. |
-| `properties` | The finding details, copied as-is: ecosystem, package, installed version, severity, CVSS, and fixing versions, plus introduction details when the scan attributed the advisory. |
+| `properties` | The finding details, copied as-is: ecosystem, package, installed version, severity, CVSS, and fixing versions, plus introduction details when the scan attributed the advisory. No `purl` and no CPE. See [Component identity](#component-identity). |
 
 The same advisory set always produces the same result order. Packages are ordered by ecosystem, package name, then version. Advisories on one package are ordered by severity from critical down to unknown, then by advisory id. SARIF emits results in that order: drift findings, then those vulnerability results.
 
