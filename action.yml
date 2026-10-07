@@ -1,5 +1,6 @@
 name: 'Vibgrate Scan'
-description: 'Stop dependency drift entering your main branch. Scans every pull request for a 0-100 DriftScore and uploads SARIF to GitHub Security. No account needed.'
+# Public Marketplace blurb. GitHub rejects a description of 125 characters or longer.
+description: 'Your dependencies age quietly. Pull requests score DriftScore (how far behind) and RiskScore (exposed now) and upload SARIF.'
 author: 'Vibgrate'
 
 branding:
