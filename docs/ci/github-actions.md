@@ -21,7 +21,8 @@ in the file. SARIF upload to private repositories needs GitHub code scanning.
 The `vibgrate/cli` Action fails the job when the DriftScore is above a budget
 you choose. `max-score` takes a number from 0 to 100 (lower is better) and maps
 to `--drift-budget`; leave it empty to never fail on the score. A non-numeric
-value fails the step with a clear error.
+value, or one outside 0 to 100, fails the step with a clear error before the
+scan runs.
 
 ```yaml
 - uses: actions/checkout@v4

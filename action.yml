@@ -25,7 +25,7 @@ inputs:
     required: false
     default: ''
   max-score:
-    description: 'Fail the job when the DriftScore is above this budget (0-100, lower is better). Empty = never fail on the score. Maps to --drift-budget.'
+    description: 'Fail the job when the DriftScore is above this budget, a number from 0 to 100 (lower is better). Values outside 0-100 fail the step. Empty = never fail on the score. Maps to --drift-budget.'
     required: false
     default: ''
   vulns:
@@ -108,11 +108,16 @@ runs:
           extra+=(--fail-on "${INPUT_FAIL_ON}")
         fi
         if [ -n "${INPUT_MAX_SCORE}" ]; then
-          if ! [[ "${INPUT_MAX_SCORE}" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+          # Trim surrounding whitespace, then enforce the documented 0-100 range:
+          # a budget above 100 can never fail, so a typo would turn the gate off.
+          max_score="${INPUT_MAX_SCORE#"${INPUT_MAX_SCORE%%[![:space:]]*}"}"
+          max_score="${max_score%"${max_score##*[![:space:]]}"}"
+          if ! [[ "${max_score}" =~ ^[0-9]+(\.[0-9]+)?$ ]] ||
+            ! awk -v score="${max_score}" 'BEGIN { exit !(score + 0 <= 100) }'; then
             echo "::error::max-score must be a number from 0 to 100 (got '${INPUT_MAX_SCORE}')."
             exit 1
           fi
-          extra+=(--drift-budget "${INPUT_MAX_SCORE}")
+          extra+=(--drift-budget "${max_score}")
         fi
         if [ "${INPUT_VULNS}" = "true" ]; then
           extra+=(--vulns)

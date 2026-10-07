@@ -249,9 +249,10 @@ that package and image are published. `uses:` needs the Action tag
 
 The same gate through the Action, still credential-free. `max-score` maps to
 `--drift-budget` (0–100, lower is better). Leave it empty and the Action does
-not fail on the score. A non-numeric `max-score` fails the step before the
-scan. `fail-on` left empty does not gate on findings. `args` is still
-appended to `scan` when you need a flag the inputs do not cover.
+not fail on the score. A `max-score` that is not a number from 0 to 100
+fails the step before the scan. `fail-on` left empty does not gate on
+findings. `args` is still appended to `scan` when you need a flag the
+inputs do not cover.
 
 ```yaml
       - name: Run Vibgrate drift gate
