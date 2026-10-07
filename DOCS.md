@@ -4628,6 +4628,8 @@ vibgrate:
       sast: vibgrate.sarif
 ```
 
+GitHub Actions: [`examples/github-actions/driftscore-junit.yml`](./examples/github-actions/driftscore-junit.yml) uploads the SARIF to code scanning and publishes the JUnit file as a check run and job summary from the same scan. Both publish steps use `if: always()`, so they still run when the gate exits `2`.
+
 ---
 
 ## Configuration
@@ -4987,6 +4989,7 @@ Use the maintained templates in this package for copy-paste setup:
 - `examples/github-actions/README.md` (drift gate: when the job fails, warn versus enforce, pins, DriftScore badge)
 - `examples/github-actions/driftscore-ci.yml` (JSON artifact + drift gate)
 - `examples/github-actions/driftscore-sarif.yml` (SARIF upload to code scanning)
+- `examples/github-actions/driftscore-junit.yml` (SARIF upload plus a JUnit test report from one scan)
 - `examples/github-actions/vulnerabilities-sarif.yml` (vulnerability gate + SARIF upload)
 - `docs/ci/github-actions.md` (integration notes). How `vg build` records a `uses:` pin: [Action pins in the code map](./docs/ci/github-actions.md#action-pins-in-the-code-map)
 
