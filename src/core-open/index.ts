@@ -30,6 +30,7 @@ export {
   parseDriftBudget,
   evaluateDriftBudget,
   worseningPercent,
+  LOCAL_SCAN_RISK_NOTE,
   type AuthorClass,
   type DriftBudget,
   type DriftBudgetConfig,

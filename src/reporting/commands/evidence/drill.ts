@@ -9,7 +9,7 @@
 
 import * as path from 'node:path';
 import { pathExists } from '../../utils/fs.js';
-import { EVIDENCE_STATE_WRITE_NEXT, writeJsonOutput } from '../../../util/json-output.js';
+import { writeJsonOutputFile } from '../../../util/output-file.js';
 import type { Advisory, ExposureResult, Regime, Release } from './types.js';
 import { evidenceDir } from './state.js';
 
@@ -53,7 +53,7 @@ export function undeterminedFields(result: ExposureResult, regime: Regime): stri
 export async function recordDrill(root: string, record: DrillRecord): Promise<string> {
   const dir = path.join(evidenceDir(root), 'drills');
   const p = path.join(dir, `${record.drillId}.json`);
-  await writeJsonOutput(p, record, { next: EVIDENCE_STATE_WRITE_NEXT });
+  await writeJsonOutputFile(p, record);
   return p;
 }
 

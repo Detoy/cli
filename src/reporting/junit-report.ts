@@ -299,7 +299,8 @@ export function configDriftBudgetCases(gate: DriftBudgetGateResult): JUnitTestCa
     if (rule.status === 'pass') {
       cases.push(pass(JUNIT_GATES_CLASS, name));
     } else if (rule.status === 'not_evaluated') {
-      cases.push(skipped(JUNIT_GATES_CLASS, name, `drift budget: ${rule.message} Run with --baseline to compare.`));
+      const hint = rule.id === 'maxWorseningPercent' ? ' Run with --baseline to compare.' : '';
+      cases.push(skipped(JUNIT_GATES_CLASS, name, `drift budget: ${rule.message}${hint}`));
     } else if (mode === 'enforce') {
       cases.push(failure(JUNIT_GATES_CLASS, name, 'gate', `drift budget (${mode}): ${rule.message}`));
     } else {

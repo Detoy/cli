@@ -106,7 +106,7 @@ output deterministic, and document it in the README/DOCS.
 A vulnerability match that looks wrong, including a Go pseudo-version or a
 `+incompatible` tag, needs a local repro. The comparison rules, a minimal
 `go.mod`, and the offline command are in
-[DOCS.md](./DOCS.md#go-pseudo-versions-and-incompatible). Run that
+[DOCS.md](./DOCS.md#go-modules-pseudo-versions-and-incompatible). Run that
 command with `--offline`. Include the `require` line, the advisory id and its
 bounds, the advisory ids the JSON reports, which documented row you expected
 to differ, and the output of `vg --version`. Leave out credentials and private

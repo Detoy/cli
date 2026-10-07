@@ -28,6 +28,18 @@ inputs:
     description: 'Fail the job when the DriftScore is above this budget, a number from 0 to 100 (lower is better). Values outside 0-100 fail the step. Empty = never fail on the score. Maps to --drift-budget.'
     required: false
     default: ''
+  baseline:
+    description: 'Repo-relative path to a committed baseline (create one with `vg baseline` and commit .vibgrate/baseline.json). Enables the change-since-baseline outputs and the max-worsening gate.'
+    required: false
+    default: ''
+  max-worsening:
+    description: 'Fail the job when drift worsens by more than this percent since the baseline (a number >= 0). Requires baseline. Empty = never fail on worsening. Maps to --drift-worsening.'
+    required: false
+    default: ''
+  summary:
+    description: 'Path of the small JSON summary the scan writes (DriftScore, risk level, change since baseline). Needs a scanner image that supports --summary-out; older images skip it with a notice.'
+    required: false
+    default: 'vibgrate-summary.json'
   vulns:
     description: 'Also scan installed dependencies for known vulnerabilities (adds --vulns). With fetch-depth:0 on checkout, findings are attributed to the introducing commit.'
     required: false
@@ -51,7 +63,7 @@ inputs:
   image-tag:
     description: 'Scanner image tag to run (defaults to a pinned, tested release).'
     required: false
-    default: '2026.1006.1' # vibgrate:cli-version — stamped by scripts/stamp-release-pins.mjs
+    default: '2026.1006.2' # vibgrate:cli-version — stamped by scripts/stamp-release-pins.mjs
   verify:
     description: 'Verify the image cosign signature + provenance before running (requires cosign on the runner).'
     required: false
@@ -61,6 +73,18 @@ outputs:
   output-file:
     description: 'Path to the written scan output file.'
     value: ${{ steps.scan.outputs.output-file }}
+  drift-score:
+    description: 'DriftScore, 0-100 (lower is better). Empty when drift could not be measured or the scanner image is too old to write a summary.'
+    value: ${{ steps.summary.outputs.drift-score }}
+  risk-level:
+    description: 'Risk level for the DriftScore (low, moderate or high). Empty when unavailable.'
+    value: ${{ steps.summary.outputs.risk-level }}
+  score-delta:
+    description: 'Change in DriftScore since the baseline (positive = worse). Empty without a baseline comparison.'
+    value: ${{ steps.summary.outputs.score-delta }}
+  summary-file:
+    description: 'Path to the written summary JSON, when one was produced.'
+    value: ${{ steps.summary.outputs.summary-file }}
 
 # Composite action that runs the cosign-signed scanner container, so users of the
 # Action inherit the exact provenance chain we publish. See
@@ -98,6 +122,9 @@ runs:
         INPUT_OUTPUT: ${{ inputs.output }}
         INPUT_FAIL_ON: ${{ inputs.fail-on }}
         INPUT_MAX_SCORE: ${{ inputs.max-score }}
+        INPUT_BASELINE: ${{ inputs.baseline }}
+        INPUT_MAX_WORSENING: ${{ inputs.max-worsening }}
+        INPUT_SUMMARY: ${{ inputs.summary }}
         INPUT_VULNS: ${{ inputs.vulns }}
         INPUT_ARGS: ${{ inputs.args }}
         VIBGRATE_DSN: ${{ inputs.dsn }}
@@ -118,6 +145,40 @@ runs:
             exit 1
           fi
           extra+=(--drift-budget "${max_score}")
+        fi
+        if [ -n "${INPUT_MAX_WORSENING}" ]; then
+          if ! [[ "${INPUT_MAX_WORSENING}" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+            echo "::error::max-worsening must be a number of percent, 0 or more (got '${INPUT_MAX_WORSENING}')."
+            exit 1
+          fi
+          if [ -z "${INPUT_BASELINE}" ]; then
+            echo "::error::max-worsening needs a baseline to compare against — set baseline: .vibgrate/baseline.json (create it with 'vg baseline' and commit it)."
+            exit 1
+          fi
+          extra+=(--drift-worsening "${INPUT_MAX_WORSENING}")
+        fi
+        if [ -n "${INPUT_BASELINE}" ]; then
+          case "${INPUT_BASELINE}" in
+            /*|../*|*/../*)
+              echo "::error::baseline must be a path inside the repository (got '${INPUT_BASELINE}')."
+              exit 1
+              ;;
+          esac
+          if [ ! -f "${INPUT_BASELINE}" ]; then
+            echo "::error::baseline file '${INPUT_BASELINE}' not found — run 'vg baseline' and commit .vibgrate/baseline.json, and check that actions/checkout ran first."
+            exit 1
+          fi
+          extra+=(--baseline "${INPUT_BASELINE}")
+        fi
+        # The summary needs a scanner image that knows --summary-out. The default
+        # image is pinned to a release; an older pin (or an older image-tag set by
+        # the caller) would fail on an unknown flag, so probe before passing it.
+        help_text="$(docker run --rm "${IMAGE}:${INPUT_TAG}" scan --help 2>/dev/null || true)"
+        if grep -q -- '--summary-out' <<<"${help_text}"; then
+          extra+=(--summary-out "${INPUT_SUMMARY}")
+          echo "summary-written=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "::notice::image ${INPUT_TAG} predates --summary-out; the drift-score outputs will be empty. Use a newer image-tag to get them."
         fi
         if [ "${INPUT_VULNS}" = "true" ]; then
           extra+=(--vulns)
@@ -150,6 +211,41 @@ runs:
           --out "${INPUT_OUTPUT}" \
           --no-graph \
           "${extra[@]}"
+
+    # Expose the score. `always()` so a run that failed its budget still reports
+    # the number that failed it. Needs jq (present on GitHub-hosted runners);
+    # without it the outputs stay empty rather than guessed.
+    - name: Expose DriftScore
+      id: summary
+      if: ${{ always() && steps.scan.outputs.summary-written == 'true' }}
+      shell: bash
+      env:
+        INPUT_SUMMARY: ${{ inputs.summary }}
+      run: |
+        set -euo pipefail
+        if [ ! -f "${INPUT_SUMMARY}" ]; then
+          echo "::notice::the scan did not write ${INPUT_SUMMARY}, so the drift-score outputs are empty."
+          exit 0
+        fi
+        if ! command -v jq >/dev/null 2>&1; then
+          echo "::notice::jq is not on this runner, so the drift-score outputs are empty. The summary is still written to ${INPUT_SUMMARY}."
+          echo "summary-file=${INPUT_SUMMARY}" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        score="$(jq -r '.driftScore // empty' "${INPUT_SUMMARY}")"
+        risk="$(jq -r '.riskLevel // empty' "${INPUT_SUMMARY}")"
+        delta="$(jq -r '.delta // empty' "${INPUT_SUMMARY}")"
+        {
+          echo "summary-file=${INPUT_SUMMARY}"
+          echo "drift-score=${score}"
+          echo "risk-level=${risk}"
+          echo "score-delta=${delta}"
+        } >> "$GITHUB_OUTPUT"
+        if [ -n "${score}" ]; then
+          line="DriftScore ${score}/100 (${risk})"
+          if [ -n "${delta}" ]; then line="${line}, ${delta} since baseline"; fi
+          echo "${line}" >> "$GITHUB_STEP_SUMMARY"
+        fi
 
     # Surface findings in the Security tab. `always()` so the SARIF still uploads
     # when `fail-on` failed the scan step — the PR check goes red AND the findings

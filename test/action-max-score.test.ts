@@ -37,8 +37,12 @@ function runScan(maxScore: string) {
       INPUT_OUTPUT: 'vibgrate.sarif',
       INPUT_FAIL_ON: '',
       INPUT_MAX_SCORE: maxScore,
+      INPUT_BASELINE: '',
+      INPUT_MAX_WORSENING: '',
+      INPUT_SUMMARY: 'vibgrate-summary.json',
       INPUT_VULNS: 'false',
       INPUT_ARGS: '',
+      VIBGRATE_DSN: '',
     },
   });
   const dockerArgs = existsSync(dockerArgsFile) ? readFileSync(dockerArgsFile, 'utf8').split('\n') : null;
