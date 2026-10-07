@@ -4,7 +4,7 @@ import chalk from 'chalk';
 import { ensureDir, pathExists } from '../utils/fs.js';
 import { writeDefaultConfig } from '../../core-open/index.js';
 import { usageError } from '../../util/exit.js';
-import { CI_PROVIDERS, isCiProvider, writeCiWorkflow } from './ci-workflow.js';
+import { BASELINE_PATH, CI_PROVIDERS, isCiProvider, writeCiWorkflow } from './ci-workflow.js';
 
 export const initCommand = new Command('init')
   .description('Initialize vibgrate in a project')
@@ -30,17 +30,23 @@ export const initCommand = new Command('init')
       console.log(chalk.green('✔') + ` Created ${chalk.bold('vibgrate.config.ts')}`);
     }
 
+    if (opts.baseline) {
+      const { runBaseline } = await import('./baseline.js');
+      await runBaseline(rootDir);
+    }
+
+    // After the baseline, so a workflow written in the same run can reference it.
     if (opts.ci !== undefined && isCiProvider(opts.ci)) {
-      const { file, created } = await writeCiWorkflow(rootDir, opts.ci);
+      const baselineFile = path.join(rootDir, BASELINE_PATH);
+      const hasBaseline = await pathExists(baselineFile);
+      const { file, created } = await writeCiWorkflow(rootDir, opts.ci, { baseline: hasBaseline });
       const rel = path.relative(rootDir, file).split(path.sep).join('/');
       console.log(created
         ? chalk.green('✔') + ` Created ${chalk.bold(rel)}`
         : chalk.dim(`  ${rel} already exists, skipping`));
-    }
-
-    if (opts.baseline) {
-      const { runBaseline } = await import('./baseline.js');
-      await runBaseline(rootDir);
+      if (created && hasBaseline) {
+        console.log(chalk.yellow('!') + ` Commit ${chalk.bold(BASELINE_PATH)} so CI can compare against it.`);
+      }
     }
 
     console.log('');

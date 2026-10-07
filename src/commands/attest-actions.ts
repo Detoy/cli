@@ -15,13 +15,7 @@ import {
   type VerifyResult,
 } from '../engine/attest.js';
 import { CliError, ExitCode } from '../util/exit.js';
-import {
-  ATTESTATION_WRITE_NEXT,
-  SIGNING_KEY_WRITE_NEXT,
-  ensureOutputDir,
-  outputWriteError,
-  writeOutputTextSync,
-} from '../util/json-output.js';
+import { outputWriteError, writeOutputFileSync } from '../util/output-file.js';
 import type { VgGraph } from '../schema.js';
 
 /**
@@ -68,17 +62,9 @@ export async function signGraphAttestation(
     // First use with no key: mint one at the default path (loud — it must be kept
     // and gitignored to re-sign reproducibly).
     const kp = generateKeypair();
-    const keyShown = rel(root, keyPath);
-    ensureOutputDir(path.dirname(keyPath), { displayPath: keyShown, next: SIGNING_KEY_WRITE_NEXT });
-    writeOutputTextSync(keyPath, kp.privatePem, {
-      mode: 0o600,
-      displayPath: keyShown,
-      next: SIGNING_KEY_WRITE_NEXT,
-    });
-    writeOutputTextSync(`${keyPath}.pub`, kp.publicPem, {
-      displayPath: `${keyShown}.pub`,
-      next: SIGNING_KEY_WRITE_NEXT,
-    });
+    fs.mkdirSync(path.dirname(keyPath), { recursive: true });
+    fs.writeFileSync(keyPath, kp.privatePem, { mode: 0o600 });
+    fs.writeFileSync(`${keyPath}.pub`, kp.publicPem);
     keyGeneratedAt = keyPath;
     notices.push(
       `minted a new Ed25519 signing key at ${rel(root, keyPath)} (keyid ${kp.keyid}) — ` +
@@ -105,15 +91,15 @@ export async function signGraphAttestation(
   const outPath = opts.attestation
     ? path.resolve(opts.attestation)
     : path.join(root, '.vibgrate', DEFAULT_ATTESTATION);
-  const shown = rel(root, outPath);
-  ensureOutputDir(path.dirname(outPath), { displayPath: shown, next: ATTESTATION_WRITE_NEXT });
-  let body: string;
+  const attestOut = { flag: '--attestation' };
+  let payload: string;
   try {
-    body = serializeEnvelope(envelope);
+    payload = serializeEnvelope(envelope);
   } catch (err) {
-    throw outputWriteError(shown, err, 'serialize', ATTESTATION_WRITE_NEXT);
+    if (err instanceof CliError) throw err;
+    throw outputWriteError(outPath, err, { ...attestOut, kind: 'serialize' });
   }
-  writeOutputTextSync(outPath, body, { displayPath: shown, next: ATTESTATION_WRITE_NEXT });
+  writeOutputFileSync(outPath, payload, attestOut);
 
   return {
     summary: {

@@ -143,15 +143,14 @@ describe('sbom export: several versions of one package', () => {
       purl: c.purl,
       scope: scopeOf(c.properties, 'vibgrate:scope'),
       project: scopeOf(c.properties, 'vibgrate:project'),
-      projects: scopeOf(c.properties, 'vibgrate:projects'),
     }));
     expect(rows).toEqual([
-      { name: 'left-pad', version: '1.3.0', bom: 'pkg:npm/left-pad@1.3.0', purl: 'pkg:npm/left-pad@1.3.0', scope: 'direct', project: 'shared-root', projects: 'shared-extra,shared-root' },
-      { name: 'widget', version: '1.0.0', bom: 'pkg:npm/widget@1.0.0', purl: 'pkg:npm/widget@1.0.0', scope: 'direct', project: 'shared-root', projects: 'shared-root' },
-      { name: 'once', version: '1.4.0', bom: 'pkg:npm/once@1.4.0', purl: 'pkg:npm/once@1.4.0', scope: 'direct', project: 'shared-extra', projects: 'shared-extra,shared-root' },
-      { name: 'left-pad', version: '1.2.0', bom: 'pkg:npm/left-pad@1.2.0', purl: 'pkg:npm/left-pad@1.2.0', scope: 'transitive', project: 'shared-root', projects: 'shared-root' },
-      { name: 'ms', version: '2.1.3', bom: 'pkg:npm/ms@2.1.3', purl: 'pkg:npm/ms@2.1.3', scope: 'transitive', project: 'shared-extra', projects: 'shared-extra' },
-      { name: 'once', version: '1.3.0', bom: 'pkg:npm/once@1.3.0', purl: 'pkg:npm/once@1.3.0', scope: 'transitive', project: 'shared-root', projects: 'shared-root' },
+      { name: 'left-pad', version: '1.3.0', bom: 'pkg:npm/left-pad@1.3.0', purl: 'pkg:npm/left-pad@1.3.0', scope: 'direct', project: 'shared-root' },
+      { name: 'widget', version: '1.0.0', bom: 'pkg:npm/widget@1.0.0', purl: 'pkg:npm/widget@1.0.0', scope: 'direct', project: 'shared-root' },
+      { name: 'once', version: '1.4.0', bom: 'pkg:npm/once@1.4.0', purl: 'pkg:npm/once@1.4.0', scope: 'direct', project: 'shared-extra' },
+      { name: 'left-pad', version: '1.2.0', bom: 'pkg:npm/left-pad@1.2.0', purl: 'pkg:npm/left-pad@1.2.0', scope: 'transitive', project: 'shared-root' },
+      { name: 'ms', version: '2.1.3', bom: 'pkg:npm/ms@2.1.3', purl: 'pkg:npm/ms@2.1.3', scope: 'transitive', project: 'shared-extra' },
+      { name: 'once', version: '1.3.0', bom: 'pkg:npm/once@1.3.0', purl: 'pkg:npm/once@1.3.0', scope: 'transitive', project: 'shared-root' },
     ]);
     expect(new Set(rows.map((r) => r.bom)).size).toBe(rows.length);
 
@@ -228,8 +227,6 @@ describe('sbom export: several versions of one package', () => {
     expect(left(b).purl).toBe(left(a).purl);
     expect(scopeOf(left(a).properties, 'vibgrate:project')).toBe('shared-root');
     expect(scopeOf(left(b).properties, 'vibgrate:project')).toBe('shared-extra');
-    expect(scopeOf(left(a).properties, 'vibgrate:projects')).toBe('shared-extra,shared-root');
-    expect(scopeOf(left(b).properties, 'vibgrate:projects')).toBe('shared-extra,shared-root');
     expect(b.serialNumber).not.toBe(a.serialNumber);
 
     const spdxA = toSpdx(forward, graph) as { packages: Array<{ SPDXID: string; name: string }> };

@@ -8,7 +8,7 @@
 import * as path from 'node:path';
 import { pathExists, readJsonFile } from '../../utils/fs.js';
 import { CliError, ExitCode } from '../../../util/exit.js';
-import { EVIDENCE_STATE_WRITE_NEXT, writeJsonOutput } from '../../../util/json-output.js';
+import { writeJsonOutputFile } from '../../../util/output-file.js';
 import { DEFAULT_REGIME } from './regimes.js';
 import type { EvidenceOrg, Product, Release } from './types.js';
 
@@ -43,7 +43,7 @@ export async function loadOrg(root: string): Promise<EvidenceOrg> {
 }
 
 export async function saveOrg(root: string, org: EvidenceOrg): Promise<void> {
-  await writeJsonOutput(orgPath(root), org, { next: EVIDENCE_STATE_WRITE_NEXT });
+  await writeJsonOutputFile(orgPath(root), org);
 }
 
 export async function loadProducts(root: string): Promise<Product[]> {
@@ -53,7 +53,7 @@ export async function loadProducts(root: string): Promise<Product[]> {
 }
 
 export async function saveProducts(root: string, products: Product[]): Promise<void> {
-  await writeJsonOutput(productsPath(root), products, { next: EVIDENCE_STATE_WRITE_NEXT });
+  await writeJsonOutputFile(productsPath(root), products);
 }
 
 export async function getProduct(root: string, id: string): Promise<Product | undefined> {
@@ -75,7 +75,7 @@ export async function freezeRelease(root: string, release: Release): Promise<str
       ExitCode.USAGE_ERROR,
     );
   }
-  await writeJsonOutput(p, release, { next: EVIDENCE_STATE_WRITE_NEXT });
+  await writeJsonOutputFile(p, release);
   return p;
 }
 

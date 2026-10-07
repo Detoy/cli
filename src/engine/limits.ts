@@ -35,6 +35,7 @@ export interface ResourceLimits {
 const MIB = 1024 * 1024;
 
 export const DEFAULT_MAX_FILE_BYTES = 2 * MIB;
+/** Also the walk-entry ceiling in `core-open/utils/root-safety.ts` (`DEFAULT_WALK_ENTRY_BUDGET`). */
 export const DEFAULT_MAX_FILES = 100_000;
 export const DEFAULT_TSC_MAX_FILES = 10_000;
 

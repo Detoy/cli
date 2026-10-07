@@ -214,19 +214,6 @@ function pipfileLock(root: string, name: string): string | undefined {
 export interface LockfileComponent {
   package: string;
   version: string;
-  /**
-   * Registry this component was read from. Set when several lockfiles are
-   * merged. Absent on a single-lockfile parse: the graph's `ecosystem`
-   * applies, and an absent graph ecosystem means the npm family.
-   */
-  ecosystem?: DepRecord['ecosystem'];
-  /**
-   * Scan project that won path-order precedence among lockfiles that contain
-   * this component. Set by the multi-project merge.
-   */
-  project?: string;
-  /** Every scan project that contributed this component, sorted. Set by the multi-project merge. */
-  projects?: string[];
 }
 
 /**

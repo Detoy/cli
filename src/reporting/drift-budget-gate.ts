@@ -9,7 +9,7 @@
  * `vg scan` cannot tell who authored a change, so `agents.maxWorseningPercent`
  * is enforced by the GitHub App check only.
  */
-import { evaluateDriftBudget, parseDriftBudget, type DriftBudgetVerdict } from '../core-open/index.js';
+import { evaluateDriftBudget, LOCAL_SCAN_RISK_NOTE, parseDriftBudget, type DriftBudgetVerdict } from '../core-open/index.js';
 
 export interface DriftBudgetGateInput {
   /** The `driftBudget` value from the loaded config (unvalidated). */
@@ -74,6 +74,7 @@ export function evaluateConfigDriftBudget(input: DriftBudgetGateInput): DriftBud
     headScore: input.headScore,
     baseScore: input.baseScore,
     budget: parsed.budget,
+    riskUnavailableReason: LOCAL_SCAN_RISK_NOTE,
   });
   const lines: DriftBudgetGateResult['lines'] = [];
   const breachLevel: GateLineLevel = verdict.mode === 'enforce' ? 'error' : 'warn';
@@ -81,7 +82,10 @@ export function evaluateConfigDriftBudget(input: DriftBudgetGateInput): DriftBud
     // An agent limit can't be judged locally; the App check owns it.
     if (rule.id === 'agents.maxWorseningPercent') continue;
     if (rule.status === 'breach') lines.push({ level: breachLevel, text: `drift budget (${verdict.mode}): ${rule.message}` });
-    else if (rule.status === 'not_evaluated') lines.push({ level: 'info', text: `drift budget: ${rule.message} Run with --baseline to compare.` });
+    else if (rule.status === 'not_evaluated') {
+      const hint = rule.id === 'maxWorseningPercent' ? ' Run with --baseline to compare.' : '';
+      lines.push({ level: 'info', text: `drift budget: ${rule.message}${hint}` });
+    }
     else lines.push({ level: 'info', text: `drift budget: ${rule.message}` });
   }
   if (!verdict.withinBudget && verdict.mode === 'warn') {

@@ -6,8 +6,6 @@
 # This job fails (exit 2) on an error-level finding or a DriftScore above 40.
 # driftBudget.mode warn is a different knob: it prints a breach and exits 0.
 # --fail-on warn is a finding level, and it fails the job too.
-#
-# Pin the CLI. An unpinned `npx @vibgrate/cli` installs npm latest each run.
 
 name: DriftScore CI
 
@@ -33,9 +31,7 @@ jobs:
         with:
           node-version: 22
 
-      # Published npm release. Do not use @latest on a gate.
-      # package.json and action.yml image-tag stamp 2026.1006.1; move this
-      # pin to that stamp when the package and ghcr.io/vibgrate/cli tag exist.
+      # Calendar pin. Same version as action.yml image-tag. Do not use @latest on a gate.
       - name: Install Vibgrate CLI
         run: npm install -g @vibgrate/cli@2026.1005.1
 
