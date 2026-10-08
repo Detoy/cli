@@ -24,7 +24,6 @@ import {
   ResourceLimitError,
   type ResourceLimits,
 } from './limits.js';
-import { assertSafeScanRoot, type RootSafetyOptions } from './root-safety.js';
 import { hashString, hashBytes, canonicalize, shortId } from './hash.js';
 import { grammarSetVersion } from './grammars.js';
 import { classifyEpistemic } from './epistemic.js';
@@ -51,6 +50,8 @@ import type { FileParse } from './types.js';
 import type { ResolveResult } from './resolve.js';
 import { fileRolesFromParses } from './ast-roles.js';
 import type { AstRoleHit } from '../core-open/scanners/architecture/ast-roles.js';
+import { stampWarning, WARNING_CODES, type CodedWarning } from '../core-open/warnings.js';
+import { assembleEngineWarnings } from './warning-codes.js';
 
 export interface BuildOptions {
   /** Directory to build (default cwd). */
@@ -101,10 +102,6 @@ export interface BuildOptions {
   /** Resource-safeguard overrides (else VG_MAX_FILE_BYTES / VG_MAX_FILES /
    * VG_TSC_MAX_FILES / VG_MEMORY_BUDGET_MB env vars, else defaults). */
   limits?: Partial<ResourceLimits>;
-  /** Skip filesystem-root, OS-image, and walk-budget checks (`--allow-unsafe-root`). */
-  allowUnsafeRoot?: boolean;
-  /** Walk-entry ceiling (else `VG_MAX_WALK_ENTRIES`). 0 disables the budget only. */
-  maxWalkEntries?: number;
 }
 
 /** Stat + content hash of one corpus file at build time. */
@@ -149,6 +146,11 @@ export interface BuildResult {
   /** SQLite index write result. */
   index?: { ok: boolean; path?: string; reason?: string };
   warnings: string[];
+  /**
+   * Same notices as `warnings`, split into a stable code and the prose.
+   * Sorted by code, then message. Empty when there are no warnings.
+   */
+  codedWarnings: CodedWarning[];
   /** Architecture role hits extracted during the parse already paid for. */
   fileRoles: AstRoleHit[];
 }
@@ -157,17 +159,9 @@ export async function buildGraph(options: BuildOptions): Promise<BuildResult> {
   const timer = new StageTimer();
   timer.start('total');
   const root = path.resolve(options.root);
-  const safety: RootSafetyOptions = {
-    allowUnsafeRoot: options.allowUnsafeRoot,
-    maxWalkEntries: options.maxWalkEntries,
-  };
-  // Before config reads and discovery. Scoped paths are checked instead of an
-  // ancestor that will not be walked (`vg build ./app` from a wide cwd).
-  const scopes = options.paths?.length ? options.paths.map((p) => path.resolve(root, p)) : [root];
-  for (const scope of scopes) assertSafeScanRoot(scope, safety);
   const exclude = mergeExcludes(root, options.exclude);
-  // Corpus cap is applied to the file list below. The walk's own ceiling is
-  // VG_MAX_WALK_ENTRIES (see root-safety.ts), not VG_MAX_FILES.
+  // Resolved before discovery so the walk itself stops at the corpus cap
+  // instead of reading a filesystem root or an enormous unpack first.
   const limits = resolveLimits(options.limits);
   timer.start('discover');
   const files = discover({
@@ -175,8 +169,7 @@ export async function buildGraph(options: BuildOptions): Promise<BuildResult> {
     only: options.only,
     exclude,
     paths: options.paths,
-    allowUnsafeRoot: options.allowUnsafeRoot,
-    maxWalkEntries: options.maxWalkEntries,
+    maxEntries: limits.maxFiles,
   });
   timer.end('discover');
 
@@ -242,8 +235,11 @@ export async function buildGraph(options: BuildOptions): Promise<BuildResult> {
       });
       oversizeRels.add(file.rel);
       buildWarnings.push(
-        `${file.rel}: skipped — ${formatBytes(stat.size)} exceeds the ` +
-          `${formatBytes(limits.maxFileBytes)} per-file limit (set VG_MAX_FILE_BYTES to raise it, 0 to disable)`,
+        stampWarning(
+          WARNING_CODES.BUILD_FILE_OVERSIZE,
+          `${file.rel}: skipped — ${formatBytes(stat.size)} exceeds the ` +
+            `${formatBytes(limits.maxFileBytes)} per-file limit (set VG_MAX_FILE_BYTES to raise it, 0 to disable)`,
+        ),
       );
       continue;
     }
@@ -394,9 +390,12 @@ export async function buildGraph(options: BuildOptions): Promise<BuildResult> {
     // in the build. Past the cap, fall back to the heuristic floor (still a
     // complete graph, just less precise call resolution).
     warnings.push(
-      `typescript resolver skipped — ${tsFiles.length.toLocaleString()} TS/JS files exceed the ` +
-        `${limits.tscMaxFiles.toLocaleString()}-file limit; calls use the heuristic resolver ` +
-        `(set VG_TSC_MAX_FILES to raise it, 0 to disable)`,
+      stampWarning(
+        WARNING_CODES.TSC_RESOLVER_SKIPPED,
+        `typescript resolver skipped — ${tsFiles.length.toLocaleString()} TS/JS files exceed the ` +
+          `${limits.tscMaxFiles.toLocaleString()}-file limit; calls use the heuristic resolver ` +
+          `(set VG_TSC_MAX_FILES to raise it, 0 to disable)`,
+      ),
     );
     tsFiles = [];
   }
@@ -518,8 +517,7 @@ export async function buildGraph(options: BuildOptions): Promise<BuildResult> {
     root,
     exclude,
     paths: options.paths,
-    allowUnsafeRoot: options.allowUnsafeRoot,
-    maxWalkEntries: options.maxWalkEntries,
+    maxEntries: limits.maxFiles,
   });
   for (const d of docs) {
     try {
@@ -548,6 +546,7 @@ export async function buildGraph(options: BuildOptions): Promise<BuildResult> {
   }
   const toolchainResult = await extractToolchain(docs, { fileNodes: fileNodesByPath });
   if (toolchainResult.nodes.length) nodes = [...nodes, ...toolchainResult.nodes];
+  if (toolchainResult.warnings.length) warnings.push(...toolchainResult.warnings);
   timer.end('toolchain');
 
   // Analyse → centrality/areas/surprise (test/coverage edges excluded from these).
@@ -677,6 +676,7 @@ export async function buildGraph(options: BuildOptions): Promise<BuildResult> {
 
   timer.end('total');
   const stages = timer.snapshot();
+  const assembled = assembleEngineWarnings(warnings);
 
   return {
     graph,
@@ -691,7 +691,8 @@ export async function buildGraph(options: BuildOptions): Promise<BuildResult> {
     tsc: tscStats,
     scip: scipStats,
     index: indexResult,
-    warnings,
+    warnings: assembled.warnings,
+    codedWarnings: assembled.codedWarnings,
     fileRoles: fileRolesFromParses(parses),
   };
 }

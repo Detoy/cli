@@ -12,28 +12,25 @@ backward compatible.
 
 ## [Unreleased]
 
+### Added
+
+- **`vg build --attest` and `vg build --verify` are documented.** The docs
+  cover the DSSE in-toto statement written to
+  `.vibgrate/attestation.intoto.jsonl`, the Ed25519 key
+  (`--attest-key`, `VG_ATTEST_KEY`, or `.vibgrate/attest-key.pem`), what
+  `--verify` checks against the map on disk, and the exact text each failure
+  prints. There is no `vg attest-actions` command. `vg attest` and `vg verify`
+  are retired names for those flags.
+
 ### Fixed
 
 - **`vg sbom export` merges multi-project lockfiles by ecosystem, name, and
-  version.** Components were keyed only by `name@version`, so a later lockfile
-  replaced an earlier one and did not record which projects contributed.
-  Every merged component also inherited the root lockfile's ecosystem, which
-  gave a sub-project from another ecosystem the root purl type. Identity is
-  now ecosystem + name + version. Direct manifest rows still win, then
-  lockfile components in sorted project-path order. The same identity from
-  two projects stays one component and lists every contributing project on
-  `vibgrate:projects`. A warning is recorded when a project type has no
-  Package URL ecosystem, or when keeping the first row drops differing
-  manifest fields (`vibgrate:mergeWarning`, the same text on stderr). The
-  document is deterministic for the same scan and lockfiles.
-
-- **`vg scan` and `vg build` refuse a filesystem-sized root instead of walking it.**
-  A filesystem root, a directory laid out like an operating-system image, or a
-  tree past the walk budget (`VG_MAX_WALK_ENTRIES`, default `1000000`) exits 1
-  with one stable message. The message names the path and tells you to pass a
-  project subdirectory, narrow the walk with `--exclude` ignore patterns,
-  raise `VG_MAX_WALK_ENTRIES` (`0` disables the budget), or pass
-  `--allow-unsafe-root`. The same root always produces the same message.
+  version.** The same package from two projects stays one component, and
+  `vibgrate:projects` lists every project that contributed it. A sub-project
+  keeps its own package URL type. When a later lockfile's dependency list is
+  dropped, or a project type has no known ecosystem and is recorded as npm,
+  the component carries `vibgrate:mergeWarning` and the command prints that
+  warning.
 
 - **Vulnerability lines in `vg scan` and `vg report` text name a fix only when
   the scan result already has one.** A finding with published fixed versions
@@ -42,8 +39,6 @@ backward compatible.
   just because the list was empty.
 
 ### Added
-
-- **Component identity in `vg sbom` and scan JSON is documented as the Package URL.** CycloneDX `purl` / `bom-ref` and the SPDX purl `externalRef` are the SBOM identity. Scan JSON and SARIF key advisories on ecosystem, package name, and installed version. These outputs leave CPE unset; a CPE from another cataloger does not replace the purl. The docs include a local `vg scan` / `vg sbom export` example and the offline manifest lookup.
 
 - **`vg scan --junit <file>` writes a deterministic JUnit XML report.**
   CI test reporters (GitLab, Azure DevOps, Jenkins) can publish it beside

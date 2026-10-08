@@ -8,15 +8,23 @@ import { fullDependencyGraph, type LockfileComponent, type LockfileGraph } from 
 import { ECOSYSTEMS, type Ecosystem } from '../../engine/drift.js';
 import { componentLicense, extractedLicensingInfos, type ComponentLicense } from './sbom-license.js';
 import { vexCommand } from './vex.js';
+import {
+  codedWarning,
+  formatWarningLine,
+  sortCodedWarnings,
+  WARNING_CODES,
+  type CodedWarning,
+  type WarningCode,
+} from '../../core-open/warnings.js';
 
 export { describeUnrepresentableLicense } from './sbom-license.js';
 
 type SbomFormat = 'cyclonedx' | 'spdx';
 
 interface FlattenedDependency {
-  /** Precedence winner: first direct row, else the earliest lockfile path. */
+  /** Project whose metadata was kept (direct row: first in the artifact; lockfile-only: first sorted path). */
   project: string;
-  /** Every contributing project, sorted. The same identity is one component. */
+  /** Every project that contributed this identity, sorted. Not an error when this lists more than one. */
   projects: string[];
   package: string;
   version: string;
@@ -25,52 +33,42 @@ interface FlattenedDependency {
   majorsBehind: number | null;
   /** 'direct' comes from a scanned manifest; 'transitive' is lockfile-only. */
   scope: 'direct' | 'transitive';
-  /**
-   * Which package registry this dependency resolves against — picks the purl
-   * scheme. Absent when the project type has no Package URL ecosystem.
-   */
-  ecosystem: Ecosystem | undefined;
-  /** Set when `ecosystem` could not be determined. Rendered as a purl warning. */
-  ecosystemWarning: string | null;
-  /** Collisions that dropped differing manifest fields. A matching second project is not a warning. */
-  mergeWarnings: string[];
+  /** Which package registry this dependency resolves against — picks the purl scheme. */
+  ecosystem: Ecosystem;
   /** Declared license from the kept scan row. Lockfile-only rows have none. */
   license?: DependencyRow['license'];
+  /** Facts that were dropped or guessed. Empty when the merge kept everything it was given. */
+  mergeWarnings: string[];
 }
 
 /**
- * `ProjectScan.type` → the purl-scheme ecosystem for its dependencies.
- * `undefined` when this exporter has no Package URL ecosystem for the type.
- * Callers warn and omit the purl; they do not guess `npm`.
+ * Project types whose package registry is known. `node` and `typescript` are
+ * npm. Anything else that falls through is not a registry this exporter can
+ * name, and labeling it npm is a guess that must be warned about.
  */
-function projectEcosystem(type: ProjectScan['type']): Ecosystem | undefined {
-  switch (type) {
-    case 'node':
-    case 'typescript':
-      return 'npm';
-    case 'python':
-      return 'pypi';
-    case 'rust':
-      return 'rust';
-    case 'go':
-      return 'go';
-    case 'java':
-    case 'kotlin':
-    case 'scala':
-      return 'java';
-    case 'ruby':
-      return 'ruby';
-    case 'php':
-      return 'php';
-    case 'dotnet':
-      return 'dotnet';
-    case 'swift':
-      return 'swift';
-    case 'dart':
-      return 'dart';
-    default:
-      return undefined;
-  }
+const PROJECT_ECOSYSTEM: Partial<Record<ProjectScan['type'], Ecosystem>> = {
+  node: 'npm',
+  typescript: 'npm',
+  python: 'pypi',
+  rust: 'rust',
+  go: 'go',
+  java: 'java',
+  kotlin: 'java',
+  scala: 'java',
+  ruby: 'ruby',
+  php: 'php',
+  dotnet: 'dotnet',
+  swift: 'swift',
+  dart: 'dart',
+};
+
+/** `ProjectScan.type` → the purl-scheme ecosystem for its dependencies. */
+function projectEcosystem(type: ProjectScan['type']): Ecosystem {
+  return PROJECT_ECOSYSTEM[type] ?? 'npm';
+}
+
+function projectEcosystemGuessed(type: ProjectScan['type']): boolean {
+  return PROJECT_ECOSYSTEM[type] === undefined;
 }
 
 /**
@@ -152,17 +150,13 @@ const KNOWN_ECOSYSTEMS = new Set<string>(ECOSYSTEMS);
 const PURL_STATUS_PROPERTY = 'vibgrate:purlStatus';
 const PURL_WARNING_PROPERTY = 'vibgrate:purlWarning';
 const PURL_STATUS_UNAVAILABLE = 'unavailable';
-/** CycloneDX property for a merge that kept one row and dropped differing fields. */
-const MERGE_WARNING_PROPERTY = 'vibgrate:mergeWarning';
-/** Sorted contributing projects for one component identity. */
-const PROJECTS_PROPERTY = 'vibgrate:projects';
-/** Identity segment used when a project type has no Package URL ecosystem. */
-const UNKNOWN_ECOSYSTEM = 'unknown';
 
 /** CycloneDX properties that say why a declared license was not copied onto the component. */
 const LICENSE_STATUS_PROPERTY = 'vibgrate:licenseStatus';
 const LICENSE_WARNING_PROPERTY = 'vibgrate:licenseWarning';
 const LICENSE_STATUS_UNREPRESENTABLE = 'unrepresentable';
+/** CycloneDX property that carries the stable warning code beside a prose warning. */
+const WARNING_CODE_PROPERTY = 'vibgrate:warningCode';
 
 /** The purl type/namespace/name portion, without a version — shared by every ecosystem branch of `purlFor`. */
 function purlPath(ecosystem: Ecosystem, name: string): string | null {
@@ -305,74 +299,8 @@ export function resolvePurl(ecosystem: Ecosystem, name: string, version: string)
 }
 
 /** Stable CycloneDX bom-ref. A valid purl when we have one; never a rejected purl string. */
-function componentBomRef(ecosystem: Ecosystem | undefined, name: string, version: string): string {
-  if (!ecosystem) return `vibgrate:${UNKNOWN_ECOSYSTEM}:${name}@${version}`;
+function componentBomRef(ecosystem: Ecosystem, name: string, version: string): string {
   return purlFor(ecosystem, name, version) ?? `vibgrate:${ecosystem}:${name}@${version}`;
-}
-
-/** Component identity. Ecosystem is part of the key so the same name@version in two registries stays two components. */
-function identityKey(ecosystem: string, name: string, version: string): string {
-  return `${ecosystem}\0${name}\0${version}`;
-}
-
-/**
- * Project label recorded on a component. Two scanned projects that share a
- * name are disambiguated with the path so both stay in the sorted list.
- */
-function contributorLabel(project: ProjectScan, projects: readonly ProjectScan[]): string {
-  const duplicateName = projects.some((other) => other !== project && other.name === project.name);
-  return duplicateName ? `${project.name} (${project.path})` : project.name;
-}
-
-function addContributor(row: FlattenedDependency, label: string): void {
-  if (row.projects.includes(label)) return;
-  row.projects.push(label);
-  row.projects.sort();
-}
-
-function undeterminedEcosystemWarning(projectType: string, name: string, version: string): string {
-  return `Ecosystem could not be determined for project type "${projectType}" package "${name}@${version}"; no Package URL was guessed. The component is included without a purl.`;
-}
-
-/**
- * A later row with the same identity dropped fields the kept row does not
- * have. Identical fields are not a warning — the project list records them.
- */
-function licenseToken(license: DependencyRow['license']): string {
-  if (!license || (license.raw == null && license.spdxId == null)) return '';
-  return `${license.raw ?? ''}/${license.spdxId ?? ''}`;
-}
-
-function droppedFieldWarning(
-  kept: FlattenedDependency,
-  incoming: {
-    project: string;
-    currentSpec: string;
-    drift: DependencyRow['drift'];
-    majorsBehind: number | null;
-    license?: DependencyRow['license'];
-  },
-): string | null {
-  const dropped: string[] = [];
-  if (incoming.currentSpec !== kept.currentSpec) dropped.push(`currentSpec ${incoming.currentSpec}`);
-  if (incoming.drift !== kept.drift) dropped.push(`drift ${incoming.drift}`);
-  if (incoming.majorsBehind !== kept.majorsBehind) dropped.push(`majorsBehind ${incoming.majorsBehind ?? 'unknown'}`);
-  if (licenseToken(incoming.license) !== licenseToken(kept.license)) {
-    dropped.push(`license ${incoming.license?.raw ?? incoming.license?.spdxId ?? 'none'}`);
-  }
-  if (!dropped.length) return null;
-  const ecosystem = kept.ecosystem ?? UNKNOWN_ECOSYSTEM;
-  return `Kept ${ecosystem} package "${kept.package}@${kept.version}" from project "${kept.project}". Dropped ${dropped.join(', ')} from project "${incoming.project}".`;
-}
-
-function resolveRowPurl(dep: FlattenedDependency): { purl: string | null; warning: string | null } {
-  if (!dep.ecosystem) {
-    return {
-      purl: null,
-      warning: dep.ecosystemWarning ?? undeterminedEcosystemWarning('unknown', dep.package, dep.version),
-    };
-  }
-  return resolvePurl(dep.ecosystem, dep.package, dep.version);
 }
 
 function splitDependencyKey(key: string): { name: string; version: string } {
@@ -399,6 +327,107 @@ function licenseParseFindings(artifact: ScanArtifact): Finding[] {
     .sort((a, b) => a.location.localeCompare(b.location) || a.message.localeCompare(b.message));
 }
 
+/** Identity of one installed package: ecosystem, name, and version. */
+function componentIdentity(ecosystem: Ecosystem, name: string, version: string): string {
+  return `${ecosystem}\0${name}@${version}`;
+}
+
+/**
+ * Lockfile edges are `name@version` inside one ecosystem. The merged graph
+ * qualifies them so an npm `left-pad@1.3.0` cannot share an edge with a
+ * PyPI package of the same name and version. A key that is already qualified
+ * is left alone. A legacy single-lockfile graph has no separator; callers
+ * pass the graph's ecosystem as the fallback.
+ */
+function qualifyEdgeKey(ecosystem: Ecosystem, key: string): string {
+  return key.includes('\0') ? key : `${ecosystem}\0${key}`;
+}
+
+function parseEdgeKey(key: string, fallback: Ecosystem): { ecosystem: Ecosystem; name: string; version: string } {
+  const nul = key.indexOf('\0');
+  const ecosystem = (nul === -1 ? fallback : key.slice(0, nul)) as Ecosystem;
+  const raw = nul === -1 ? key : key.slice(nul + 1);
+  const { name, version } = splitDependencyKey(raw);
+  return { ecosystem, name, version };
+}
+
+function bomRefForEdgeKey(key: string, fallback: Ecosystem): string {
+  const { ecosystem, name, version } = parseEdgeKey(key, fallback);
+  return componentBomRef(ecosystem, name, version);
+}
+
+function edgesOf(graph: LockfileGraph, dep: FlattenedDependency): string[] {
+  if (!graph.edges) return [];
+  const qualified = componentIdentity(dep.ecosystem, dep.package, dep.version);
+  if (graph.edges.has(qualified)) return graph.edges.get(qualified) ?? [];
+  return graph.edges.get(`${dep.package}@${dep.version}`) ?? [];
+}
+
+function sameEdges(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false;
+  const left = [...a].sort();
+  const right = [...b].sort();
+  for (let i = 0; i < left.length; i++) if (left[i] !== right[i]) return false;
+  return true;
+}
+
+function projectPhrase(names: string[]): string {
+  const unique = [...new Set(names)].filter((name) => name.length > 0).sort((a, b) => a.localeCompare(b));
+  const label = unique.length === 1 ? 'project' : 'projects';
+  return `${label} ${unique.map((name) => `"${name}"`).join(', ')}`;
+}
+
+function describeUnknownEcosystem(projectType: string, projectName: string, packageName: string, version: string): string {
+  return `Ecosystem unknown for ${projectType} project "${projectName}"; package "${packageName}@${version}" is recorded as npm.`;
+}
+
+function describeLossyEdges(ecosystem: string, packageName: string, version: string, dropped: string[], kept: string[]): string {
+  return `Dropped a different dependency list for ${ecosystem} package "${packageName}@${version}" from ${projectPhrase(dropped)}; kept the list from ${projectPhrase(kept)}.`;
+}
+
+function describeLossyManifest(ecosystem: string, packageName: string, version: string, dropped: string, kept: string): string {
+  return `Dropped differing manifest metadata for ${ecosystem} package "${packageName}@${version}" from project "${dropped}"; kept the row from project "${kept}".`;
+}
+
+function describeUntrackedEdges(ecosystem: string, packageName: string, version: string, projects: string[]): string {
+  return `Dependency edges are not recorded for ${ecosystem} package "${packageName}@${version}" from ${projectPhrase(projects)}. An empty dependsOn is not a claim that the package has no dependencies.`;
+}
+
+/** Map a known SBOM warning sentence to its code. Unknown prose stays uncoded. */
+function sbomWarningCode(message: string): WarningCode | undefined {
+  if (message.startsWith('Package URL unavailable')) return WARNING_CODES.PURL_UNAVAILABLE;
+  if (message.startsWith('Declared license')) return WARNING_CODES.LICENSE_UNREPRESENTABLE;
+  if (message.startsWith('Dropped a different dependency list')) return WARNING_CODES.SBOM_LOSSY_EDGES;
+  if (message.startsWith('Dropped differing manifest metadata')) return WARNING_CODES.SBOM_LOSSY_MANIFEST;
+  if (message.startsWith('Ecosystem unknown')) return WARNING_CODES.SBOM_UNKNOWN_ECOSYSTEM;
+  if (message.startsWith('Dependency edges are not recorded')) return WARNING_CODES.SBOM_UNTRACKED_EDGES;
+  return undefined;
+}
+
+function pushWarningCode(properties: Array<{ name: string; value: string }>, message: string): void {
+  const code = sbomWarningCode(message);
+  if (code) properties.push({ name: WARNING_CODE_PROPERTY, value: code });
+}
+
+function sortedUnique(names: Iterable<string>): string[] {
+  return [...new Set(names)].sort((a, b) => a.localeCompare(b));
+}
+
+function addProjects(row: FlattenedDependency, names: Iterable<string>): void {
+  row.projects = sortedUnique([...row.projects, ...names]);
+}
+
+function addMergeWarnings(row: FlattenedDependency, warnings: Iterable<string>): void {
+  for (const warning of warnings) {
+    if (warning && !row.mergeWarnings.includes(warning)) row.mergeWarnings.push(warning);
+  }
+}
+
+function manifestMetadataDiffers(row: FlattenedDependency, dep: DependencyRow): boolean {
+  if (row.currentSpec !== dep.currentSpec || row.drift !== dep.drift || row.majorsBehind !== dep.majorsBehind) return true;
+  return `${row.license?.raw ?? ''}|${row.license?.spdxId ?? ''}` !== `${dep.license?.raw ?? ''}|${dep.license?.spdxId ?? ''}`;
+}
+
 /** Stable seed for the document id: format + root + the ordered dependency set + any dependency graph. */
 function sbomSerialSeed(format: string, artifact: ScanArtifact, deps: FlattenedDependency[], graph?: LockfileGraph): string {
   const edgeLines = graph?.edges
@@ -411,22 +440,9 @@ function sbomSerialSeed(format: string, artifact: ScanArtifact, deps: FlattenedD
     artifact.rootPath ?? '',
     artifact.timestamp ?? '',
     artifact.vibgrateVersion ?? '',
-    ...deps.map((d) =>
-      [
-        d.ecosystem ?? UNKNOWN_ECOSYSTEM,
-        d.package,
-        d.version,
-        d.currentSpec,
-        d.project,
-        d.projects.join(','),
-        d.drift,
-        d.majorsBehind ?? '',
-        d.scope,
-        d.ecosystemWarning ?? '',
-        d.license?.raw ?? '',
-        d.license?.spdxId ?? '',
-        ...d.mergeWarnings,
-      ].join('|'),
+    ...deps.map(
+      (d) =>
+        `${d.ecosystem}|${d.package}|${d.version}|${d.currentSpec}|${d.project}|${d.projects.join(',')}|${d.drift}|${d.majorsBehind ?? ''}|${d.scope}|${d.license?.raw ?? ''}|${d.license?.spdxId ?? ''}|${d.mergeWarnings.join(',')}`,
     ),
     ...(graph?.rootDependsOn.length ? [`root>${uniqSorted(graph.rootDependsOn).join(',')}`] : []),
     ...edgeLines,
@@ -438,26 +454,21 @@ function sbomSerialSeed(format: string, artifact: ScanArtifact, deps: FlattenedD
  * The resolved dependency graph, keyed by purl, for CycloneDX's top-level
  * `dependencies` array. `undefined` (rather than an all-empty graph) when
  * the lockfile format didn't give us real edges — see `LockfileGraph.edges`.
+ * Each edge uses the ecosystem stored on that key, so a sub-project from
+ * another registry is not rewritten as npm.
  */
 function cycloneDxDependencyGraph(
   dependencies: FlattenedDependency[],
   graph: LockfileGraph | undefined,
 ): Array<{ ref: string; dependsOn: string[] }> | undefined {
   if (!graph?.edges) return undefined;
-  // Edges belong to one lockfile. An absent graph ecosystem is the npm family.
-  const edgeEco = graph.ecosystem ?? 'npm';
-  const purlOfKey = (key: string): string => {
-    const { name, version } = splitDependencyKey(key);
-    // Lockfile edges are keyed `name@version` inside that lockfile's ecosystem.
-    return componentBomRef(edgeEco, name, version);
-  };
-  const nodes = [{ ref: ROOT_BOM_REF, dependsOn: uniqSorted(graph.rootDependsOn).map(purlOfKey) }];
+  const fallback = graph.ecosystem ?? 'npm';
+  const nodes = [{ ref: ROOT_BOM_REF, dependsOn: uniqSorted(graph.rootDependsOn).map((key) => bomRefForEdgeKey(key, fallback)) }];
   for (const dep of dependencies) {
-    const key = `${dep.package}@${dep.version}`;
-    // A component from another ecosystem keeps its own ref. It does not inherit
-    // this lockfile's edges, and it does not inherit this lockfile's purl type.
-    const children = dep.ecosystem === edgeEco ? uniqSorted(graph.edges.get(key) ?? []) : [];
-    nodes.push({ ref: componentBomRef(dep.ecosystem, dep.package, dep.version), dependsOn: children.map(purlOfKey) });
+    nodes.push({
+      ref: componentBomRef(dep.ecosystem, dep.package, dep.version),
+      dependsOn: uniqSorted(edgesOf(graph, dep)).map((key) => bomRefForEdgeKey(key, dep.ecosystem)),
+    });
   }
   return nodes;
 }
@@ -468,28 +479,38 @@ function spdxRelationships(
   graph: LockfileGraph | undefined,
 ): Array<{ spdxElementId: string; relatedSpdxElementId: string; relationshipType: string }> | undefined {
   if (!graph?.edges) return undefined;
-  const edgeEco = graph.ecosystem ?? 'npm';
+  const fallback = graph.ecosystem ?? 'npm';
   const spdxIdOf = new Map<string, string>();
-  dependencies.forEach((dep, i) => {
-    const eco = dep.ecosystem ?? UNKNOWN_ECOSYSTEM;
-    spdxIdOf.set(`${eco}\0${dep.package}@${dep.version}`, `SPDXRef-Package-${i + 1}`);
-  });
+  dependencies.forEach((dep, i) => spdxIdOf.set(componentIdentity(dep.ecosystem, dep.package, dep.version), `SPDXRef-Package-${i + 1}`));
+  const spdxIdFor = (key: string, ecosystem: Ecosystem): string | undefined => {
+    const parsed = parseEdgeKey(key, ecosystem);
+    return spdxIdOf.get(componentIdentity(parsed.ecosystem, parsed.name, parsed.version));
+  };
 
   const rels: Array<{ spdxElementId: string; relatedSpdxElementId: string; relationshipType: string }> = [];
   for (const key of uniqSorted(graph.rootDependsOn)) {
-    const id = spdxIdOf.get(`${edgeEco}\0${key}`);
+    const id = spdxIdFor(key, fallback);
     if (id) rels.push({ spdxElementId: 'SPDXRef-DOCUMENT', relatedSpdxElementId: id, relationshipType: 'DEPENDS_ON' });
   }
   for (const dep of dependencies) {
-    if (dep.ecosystem !== edgeEco) continue;
-    const fromId = spdxIdOf.get(`${dep.ecosystem}\0${dep.package}@${dep.version}`);
+    const fromId = spdxIdOf.get(componentIdentity(dep.ecosystem, dep.package, dep.version));
     if (!fromId) continue;
-    for (const childKey of uniqSorted(graph.edges.get(`${dep.package}@${dep.version}`) ?? [])) {
-      const toId = spdxIdOf.get(`${edgeEco}\0${childKey}`);
+    for (const childKey of uniqSorted(edgesOf(graph, dep))) {
+      const toId = spdxIdFor(childKey, dep.ecosystem);
       if (toId) rels.push({ spdxElementId: fromId, relatedSpdxElementId: toId, relationshipType: 'DEPENDS_ON' });
     }
   }
   return rels;
+}
+
+/** A lockfile component plus the merge facts `collectLockfileGraph` records. */
+interface MergedLockfileComponent extends LockfileComponent {
+  ecosystem: Ecosystem;
+  /** Contributing project names, sorted. */
+  projects: string[];
+  /** Project that supplied the kept component (first sorted path). */
+  winningProject: string;
+  mergeWarnings: string[];
 }
 
 /**
@@ -501,24 +522,21 @@ function spdxRelationships(
  * package.json" is not the installed dependency surface a vulnerability or
  * supply-chain review needs.
  *
- * Identity is ecosystem + name + version. Direct rows come first, in artifact
- * order, and win over a later row with the same identity. Lockfile components
- * follow, already ordered by sorted project path (see `collectLockfileGraph`).
- * A second project with the same identity keeps one component and records
- * every contributing project. That is not a warning. A warning is recorded
- * only when the dropped row carried different manifest fields, or when a
- * project type has no Package URL ecosystem.
+ * Identity is ecosystem + name + version. Direct manifest rows are applied
+ * first and win over a lockfile row. The same identity from another project
+ * stays one component; every contributing project is recorded. Differing
+ * manifest metadata is dropped with a warning, not silently.
  */
 export function flattenDependencies(
   artifact: ScanArtifact,
-  lockfileDeps: LockfileComponent[] = [],
+  lockfileDeps: Array<LockfileComponent & Partial<Pick<MergedLockfileComponent, 'ecosystem' | 'projects' | 'winningProject' | 'mergeWarnings'>>> = [],
   lockfileEcosystem?: Ecosystem,
 ): FlattenedDependency[] {
   const rows: FlattenedDependency[] = [];
-  const indexByKey = new Map<string, number>();
+  const index = new Map<string, FlattenedDependency>();
   for (const project of artifact.projects) {
     const ecosystem = projectEcosystem(project.type);
-    const label = contributorLabel(project, artifact.projects);
+    const guessed = projectEcosystemGuessed(project.type);
     for (const dep of project.dependencies) {
       // Go always pins an exact version in go.mod, but the scanner's
       // `resolvedVersion` runs it through `semver.clean` (for semver math
@@ -534,25 +552,18 @@ export function flattenDependencies(
       // the SBOM's "version" (and building a purl from it) states something
       // that isn't true; `UNKNOWN_VERSION` says plainly that it isn't known.
       const version = isConcreteVersion(rawVersion) ? rawVersion : UNKNOWN_VERSION;
-      const key = identityKey(ecosystem ?? UNKNOWN_ECOSYSTEM, dep.package, version);
-      const existingIndex = indexByKey.get(key);
-      if (existingIndex !== undefined) {
-        const existing = rows[existingIndex]!;
-        addContributor(existing, label);
-        const warning = droppedFieldWarning(existing, {
-          project: label,
-          currentSpec: dep.currentSpec,
-          drift: dep.drift,
-          majorsBehind: dep.majorsBehind,
-          license: dep.license,
-        });
-        if (warning && !existing.mergeWarnings.includes(warning)) existing.mergeWarnings.push(warning);
+      const key = componentIdentity(ecosystem, dep.package, version);
+      const existing = index.get(key);
+      if (existing) {
+        if (manifestMetadataDiffers(existing, dep)) {
+          addMergeWarnings(existing, [describeLossyManifest(ecosystem, dep.package, version, project.name, existing.project)]);
+        }
+        addProjects(existing, [project.name]);
         continue;
       }
-      indexByKey.set(key, rows.length);
-      rows.push({
-        project: label,
-        projects: [label],
+      const row: FlattenedDependency = {
+        project: project.name,
+        projects: [project.name],
         package: dep.package,
         version,
         currentSpec: dep.currentSpec,
@@ -560,29 +571,29 @@ export function flattenDependencies(
         majorsBehind: dep.majorsBehind,
         scope: 'direct',
         ecosystem,
-        ecosystemWarning: ecosystem ? null : undeterminedEcosystemWarning(project.type, dep.package, version),
-        mergeWarnings: [],
         license: dep.license,
-      });
+        mergeWarnings: [],
+      };
+      if (guessed) {
+        addMergeWarnings(row, [describeUnknownEcosystem(project.type, project.name, dep.package, version)]);
+      }
+      index.set(key, row);
+      rows.push(row);
     }
   }
+  const lockfileOnly: FlattenedDependency[] = [];
   for (const dep of lockfileDeps) {
-    // A merged component carries its own ecosystem. A single-lockfile graph
-    // leaves it unset and the graph ecosystem applies; an absent graph
-    // ecosystem is the npm family, which is which parser ran, not a guess.
     const ecosystem = dep.ecosystem ?? lockfileEcosystem ?? 'npm';
-    const key = identityKey(ecosystem, dep.package, dep.version);
-    const labels = dep.projects?.length ? dep.projects : dep.project ? [dep.project] : [artifact.rootPath];
-    const existingIndex = indexByKey.get(key);
-    if (existingIndex !== undefined) {
-      const existing = rows[existingIndex]!;
-      for (const label of labels) addContributor(existing, label);
+    const key = componentIdentity(ecosystem, dep.package, dep.version);
+    const existing = index.get(key);
+    if (existing) {
+      if (dep.projects?.length) addProjects(existing, dep.projects);
+      if (dep.mergeWarnings?.length) addMergeWarnings(existing, dep.mergeWarnings);
       continue;
     }
-    const projects = [...new Set(labels)].sort();
-    indexByKey.set(key, rows.length);
-    rows.push({
-      project: dep.project ?? projects[0] ?? artifact.rootPath,
+    const projects = dep.projects?.length ? sortedUnique(dep.projects) : [artifact.rootPath];
+    const row: FlattenedDependency = {
+      project: dep.winningProject || projects[0] || artifact.rootPath,
       projects,
       package: dep.package,
       version: dep.version,
@@ -591,100 +602,168 @@ export function flattenDependencies(
       majorsBehind: null,
       scope: 'transitive',
       ecosystem,
-      ecosystemWarning: null,
       mergeWarnings: [],
-    });
+    };
+    if (dep.mergeWarnings?.length) addMergeWarnings(row, dep.mergeWarnings);
+    index.set(key, row);
+    lockfileOnly.push(row);
   }
-  return rows;
+  lockfileOnly.sort(
+    (a, b) => a.package.localeCompare(b.package) || a.version.localeCompare(b.version) || a.ecosystem.localeCompare(b.ecosystem),
+  );
+  return [...rows, ...lockfileOnly];
+}
+
+interface LockfileMergeEntry {
+  path: string;
+  graph: LockfileGraph;
+  projects: ProjectScan[];
+}
+
+interface MergedComponentAcc {
+  component: LockfileComponent;
+  ecosystem: Ecosystem;
+  projects: Set<string>;
+  winningProject: string;
+  /** Undefined when this identity's lockfile does not record edges. */
+  edges: string[] | undefined;
+  edgeProjects: string[];
+  mergeWarnings: string[];
 }
 
 /**
  * A monorepo scans as several `artifact.projects`, each potentially with its
  * own lockfile (a `docs/` site, a `tests/` harness, a Cargo/Go/npm workspace
  * member) — not just the one at `root`. Reading only `root`'s lockfile misses
- * every package a sub-project's own lockfile resolves that root's lockfile
- * doesn't also list, which for something like a docs site's build toolchain
- * can be hundreds of components.
+ * every package a sub-project's own lockfile resolves.
  *
- * Identity is ecosystem + name + version. Project paths are visited in sorted
- * order and the first component wins; a later lockfile with the same identity
- * is recorded on `projects` instead of replacing the row. `edges`,
- * `rootDependsOn`, and the graph-level `ecosystem` still come from the
- * lockfile at `root` (or the first sorted path that has one): one CycloneDX
- * `dependencies` section describes one resolution. Each component keeps the
- * ecosystem of the lockfile it was read from, so a sub-project in another
- * ecosystem does not inherit the root purl type.
+ * Components are keyed by ecosystem + name + version. Direct rows are applied
+ * later, in `flattenDependencies`; here, lockfiles are visited in sorted
+ * project-path order and the first occurrence wins. A later lockfile that
+ * repeats the same identity adds its project names. A later lockfile with a
+ * different dependency list is not applied — that drop is a warning on the
+ * component. Each component keeps the ecosystem of the lockfile that
+ * contributed it, so a Python sub-project is not labeled npm because the
+ * root lockfile was.
+ *
+ * `rootDependsOn` is the scan-root lockfile's direct edges (the first project
+ * path that has a lockfile, when the root has none). It is not copied onto
+ * every other component.
  */
 export function collectLockfileGraph(artifact: ScanArtifact, root: string): LockfileGraph | undefined {
-  const labeled = artifact.projects
-    .map((project) => ({ project, label: contributorLabel(project, artifact.projects) }))
-    .sort((a, b) => a.project.path.localeCompare(b.project.path) || a.label.localeCompare(b.label));
-
-  const byPath = new Map<string, string[]>();
-  for (const entry of labeled) {
-    const list = byPath.get(entry.project.path);
-    if (list) list.push(entry.label);
-    else byPath.set(entry.project.path, [entry.label]);
+  const projectsByPath = new Map<string, ProjectScan[]>();
+  for (const project of artifact.projects) {
+    const list = projectsByPath.get(project.path) ?? [];
+    list.push(project);
+    projectsByPath.set(project.path, list);
   }
-
-  const loaded: Array<{ path: string; labels: string[]; graph: LockfileGraph }> = [];
-  for (const [projectPath, pathLabels] of byPath) {
+  const entries: LockfileMergeEntry[] = [];
+  for (const projectPath of [...projectsByPath.keys()].sort((a, b) => a.localeCompare(b))) {
     const graph = fullDependencyGraph(path.resolve(root, projectPath));
     if (!graph) continue;
-    loaded.push({ path: projectPath, labels: pathLabels, graph });
+    entries.push({ path: projectPath, graph, projects: projectsByPath.get(projectPath) ?? [] });
   }
-  if (!loaded.length) return undefined;
+  if (!entries.length) return undefined;
 
-  const primary =
-    loaded.find((entry) => entry.path === '.' || path.resolve(root, entry.path) === path.resolve(root)) ?? loaded[0]!;
-
-  const merged = new Map<string, { component: LockfileComponent; projects: string[] }>();
-  for (const entry of loaded) {
-    // Undefined on an npm-family lockfile: the parser that matched was npm, pnpm, or yarn.
-    const ecosystem = entry.graph.ecosystem ?? 'npm';
+  const byIdentity = new Map<string, MergedComponentAcc>();
+  let anyEdges = false;
+  for (const entry of entries) {
+    const { ecosystem, guessedProjects } = resolveLockfileEcosystem(entry);
+    const names = sortedUnique(entry.projects.map((project) => project.name));
+    if (entry.graph.edges) anyEdges = true;
     for (const component of entry.graph.components) {
-      const key = identityKey(ecosystem, component.package, component.version);
-      const existing = merged.get(key);
+      const key = componentIdentity(ecosystem, component.package, component.version);
+      const incoming = entry.graph.edges
+        ? (entry.graph.edges.get(`${component.package}@${component.version}`) ?? []).map((child) => qualifyEdgeKey(ecosystem, child))
+        : undefined;
+      const existing = byIdentity.get(key);
       if (!existing) {
-        merged.set(key, {
-          component: {
-            package: component.package,
-            version: component.version,
-            ecosystem,
-            project: entry.labels[0] ?? entry.path,
-          },
-          projects: [...entry.labels],
+        const mergeWarnings: string[] = [];
+        for (const project of guessedProjects) {
+          mergeWarnings.push(describeUnknownEcosystem(project.type, project.name, component.package, component.version));
+        }
+        byIdentity.set(key, {
+          component,
+          ecosystem,
+          projects: new Set(names),
+          winningProject: names[0] || artifact.rootPath,
+          edges: incoming,
+          edgeProjects: names,
+          mergeWarnings,
         });
         continue;
       }
-      for (const label of entry.labels) {
-        if (!existing.projects.includes(label)) existing.projects.push(label);
+      for (const name of names) existing.projects.add(name);
+      for (const project of guessedProjects) {
+        const warning = describeUnknownEcosystem(project.type, project.name, component.package, component.version);
+        if (!existing.mergeWarnings.includes(warning)) existing.mergeWarnings.push(warning);
+      }
+      if (incoming && existing.edges) {
+        if (!sameEdges(existing.edges, incoming)) {
+          existing.mergeWarnings.push(describeLossyEdges(ecosystem, component.package, component.version, names, existing.edgeProjects));
+        }
+      } else if (incoming && !existing.edges) {
+        existing.edges = incoming;
+        existing.edgeProjects = names;
       }
     }
   }
 
-  const components = [...merged.values()]
-    .map((acc) => {
-      const projects = [...acc.projects].sort();
-      return { ...acc.component, projects };
-    })
+  if (anyEdges) {
+    for (const acc of byIdentity.values()) {
+      if (acc.edges) continue;
+      acc.mergeWarnings.push(
+        describeUntrackedEdges(acc.ecosystem, acc.component.package, acc.component.version, [...acc.projects]),
+      );
+    }
+  }
+
+  const components: MergedLockfileComponent[] = [...byIdentity.values()]
+    .map((acc) => ({
+      package: acc.component.package,
+      version: acc.component.version,
+      ecosystem: acc.ecosystem,
+      projects: sortedUnique(acc.projects),
+      winningProject: acc.winningProject,
+      mergeWarnings: acc.mergeWarnings,
+    }))
     .sort(
-      (a, b) =>
-        a.package.localeCompare(b.package) ||
-        a.version.localeCompare(b.version) ||
-        (a.ecosystem ?? '').localeCompare(b.ecosystem ?? ''),
+      (a, b) => a.package.localeCompare(b.package) || a.version.localeCompare(b.version) || a.ecosystem.localeCompare(b.ecosystem),
     );
 
+  const edges = anyEdges ? new Map<string, string[]>() : undefined;
+  if (edges) {
+    for (const acc of byIdentity.values()) {
+      if (!acc.edges) continue;
+      edges.set(componentIdentity(acc.ecosystem, acc.component.package, acc.component.version), uniqSorted(acc.edges));
+    }
+  }
+
+  const rootEntry =
+    entries.find((entry) => entry.path === '.' || path.resolve(root, entry.path) === path.resolve(root)) ?? entries[0]!;
+  const rootEcosystem = resolveLockfileEcosystem(rootEntry).ecosystem;
   return {
     components,
-    edges: primary.graph.edges,
-    rootDependsOn: primary.graph.rootDependsOn,
-    ecosystem: primary.graph.ecosystem,
+    edges,
+    rootDependsOn: rootEntry.graph.rootDependsOn.map((key) => qualifyEdgeKey(rootEcosystem, key)),
+    ecosystem: rootEcosystem,
   };
 }
 
+function resolveLockfileEcosystem(entry: LockfileMergeEntry): { ecosystem: Ecosystem; guessedProjects: ProjectScan[] } {
+  if (entry.graph.ecosystem && (ECOSYSTEMS as readonly string[]).includes(entry.graph.ecosystem)) {
+    return { ecosystem: entry.graph.ecosystem, guessedProjects: [] };
+  }
+  const unknown = entry.projects.filter((project) => projectEcosystemGuessed(project.type));
+  const known = entry.projects.some((project) => !projectEcosystemGuessed(project.type));
+  // JS lockfiles omit `ecosystem`; that is npm. Warn only when no project at
+  // this path has a type we can map, so the npm label is an assumption.
+  if (!known && unknown.length > 0) return { ecosystem: 'npm', guessedProjects: unknown };
+  return { ecosystem: 'npm', guessedProjects: [] };
+}
+
 function licenseFor(dep: FlattenedDependency): ComponentLicense {
-  return componentLicense(dep.ecosystem ?? UNKNOWN_ECOSYSTEM, dep.package, dep.version, dep.license);
+  return componentLicense(dep.ecosystem, dep.package, dep.version, dep.license);
 }
 
 export function toCycloneDx(artifact: ScanArtifact, graph?: LockfileGraph): Record<string, unknown> {
@@ -712,19 +791,22 @@ export function toCycloneDx(artifact: ScanArtifact, graph?: LockfileGraph): Reco
       },
       ...(licenseNotes.length
         ? {
-            properties: licenseNotes.map((f) => ({
-              name: LICENSE_PARSE_FAILED,
-              value: `${f.location}: ${f.message}`,
-            })),
+            properties: licenseNotes.flatMap((f) => [
+              {
+                name: LICENSE_PARSE_FAILED,
+                value: `${f.location}: ${f.message}`,
+              },
+              { name: WARNING_CODE_PROPERTY, value: WARNING_CODES.LICENSE_UNPARSEABLE },
+            ]),
           }
         : {}),
     },
     components: dependencies.map((dep) => {
-      const { purl, warning } = resolveRowPurl(dep);
+      const { purl, warning } = resolvePurl(dep.ecosystem, dep.package, dep.version);
       const license = licenseFor(dep);
       const properties: Array<{ name: string; value: string }> = [
         { name: 'vibgrate:project', value: dep.project },
-        { name: PROJECTS_PROPERTY, value: dep.projects.join(',') },
+        { name: 'vibgrate:projects', value: dep.projects.join(', ') },
         { name: 'vibgrate:currentSpec', value: dep.currentSpec },
         { name: 'vibgrate:drift', value: dep.drift },
         { name: 'vibgrate:majorsBehind', value: String(dep.majorsBehind ?? 'unknown') },
@@ -735,15 +817,18 @@ export function toCycloneDx(artifact: ScanArtifact, graph?: LockfileGraph): Reco
           { name: PURL_STATUS_PROPERTY, value: PURL_STATUS_UNAVAILABLE },
           { name: PURL_WARNING_PROPERTY, value: warning },
         );
-      }
-      for (const mergeWarning of dep.mergeWarnings) {
-        properties.push({ name: MERGE_WARNING_PROPERTY, value: mergeWarning });
+        pushWarningCode(properties, warning);
       }
       if (license.warning) {
         properties.push(
           { name: LICENSE_STATUS_PROPERTY, value: LICENSE_STATUS_UNREPRESENTABLE },
           { name: LICENSE_WARNING_PROPERTY, value: license.warning },
         );
+        pushWarningCode(properties, license.warning);
+      }
+      for (const mergeWarning of dep.mergeWarnings) {
+        properties.push({ name: 'vibgrate:mergeWarning', value: mergeWarning });
+        pushWarningCode(properties, mergeWarning);
       }
       return {
         type: 'library',
@@ -776,7 +861,7 @@ export function toSpdx(artifact: ScanArtifact, graph?: LockfileGraph): Record<st
       creators: [`Tool: @vibgrate/cli-${artifact.vibgrateVersion}`],
     },
     packages: dependencies.map((dep, i) => {
-      const { purl, warning } = resolveRowPurl(dep);
+      const { purl, warning } = resolvePurl(dep.ecosystem, dep.package, dep.version);
       const license = licenses[i]!;
       const purlStatus = warning ? `; purlStatus=${PURL_STATUS_UNAVAILABLE}` : '';
       const licenseStatus = license.warning ? `; licenseStatus=${LICENSE_STATUS_UNREPRESENTABLE}` : '';
@@ -785,33 +870,29 @@ export function toSpdx(artifact: ScanArtifact, graph?: LockfileGraph): Record<st
           annotationType: 'OTHER',
           annotator: 'Tool: @vibgrate/cli',
           annotationDate: artifact.timestamp,
-          comment: `project=${dep.project}; projects=${dep.projects.join(',')}; drift=${dep.drift}; majorsBehind=${dep.majorsBehind ?? 'unknown'}; scope=${dep.scope}${purlStatus}${licenseStatus}`,
+          comment: `project=${dep.project}; projects=${dep.projects.join(', ')}; drift=${dep.drift}; majorsBehind=${dep.majorsBehind ?? 'unknown'}; scope=${dep.scope}${purlStatus}${licenseStatus}`,
         },
       ];
-      if (warning) {
+      const pushSpdxWarning = (message: string): void => {
         annotations.push({
           annotationType: 'OTHER',
           annotator: 'Tool: @vibgrate/cli',
           annotationDate: artifact.timestamp,
-          comment: warning,
+          comment: message,
         });
-      }
-      for (const mergeWarning of dep.mergeWarnings) {
-        annotations.push({
-          annotationType: 'OTHER',
-          annotator: 'Tool: @vibgrate/cli',
-          annotationDate: artifact.timestamp,
-          comment: mergeWarning,
-        });
-      }
-      if (license.warning) {
-        annotations.push({
-          annotationType: 'OTHER',
-          annotator: 'Tool: @vibgrate/cli',
-          annotationDate: artifact.timestamp,
-          comment: license.warning,
-        });
-      }
+        const code = sbomWarningCode(message);
+        if (code) {
+          annotations.push({
+            annotationType: 'OTHER',
+            annotator: 'Tool: @vibgrate/cli',
+            annotationDate: artifact.timestamp,
+            comment: `warningCode=${code}`,
+          });
+        }
+      };
+      if (warning) pushSpdxWarning(warning);
+      if (license.warning) pushSpdxWarning(license.warning);
+      for (const mergeWarning of dep.mergeWarnings) pushSpdxWarning(mergeWarning);
       return {
         name: dep.package,
         SPDXID: `SPDXRef-Package-${i + 1}`,
@@ -838,12 +919,20 @@ export function toSpdx(artifact: ScanArtifact, graph?: LockfileGraph): Record<st
     ...(relationships ? { relationships } : {}),
     ...(licenseNotes.length
       ? {
-          annotations: licenseNotes.map((f) => ({
-            annotationType: 'OTHER',
-            annotator: 'Tool: @vibgrate/cli',
-            annotationDate: artifact.timestamp,
-            comment: `${f.ruleId}: ${f.message}`,
-          })),
+          annotations: licenseNotes.flatMap((f) => [
+            {
+              annotationType: 'OTHER',
+              annotator: 'Tool: @vibgrate/cli',
+              annotationDate: artifact.timestamp,
+              comment: `${f.ruleId}: ${f.message}`,
+            },
+            {
+              annotationType: 'OTHER',
+              annotator: 'Tool: @vibgrate/cli',
+              annotationDate: artifact.timestamp,
+              comment: `warningCode=${WARNING_CODES.LICENSE_UNPARSEABLE}`,
+            },
+          ]),
         }
       : {}),
   };
@@ -852,18 +941,9 @@ export function toSpdx(artifact: ScanArtifact, graph?: LockfileGraph): Record<st
 /** Warnings for components whose purl was omitted. Same order as the SBOM rows; stable for a given artifact. */
 export function collectPurlWarnings(artifact: ScanArtifact, graph?: LockfileGraph): string[] {
   return flattenDependencies(artifact, graph?.components ?? [], graph?.ecosystem).flatMap((dep) => {
-    const warning = resolveRowPurl(dep).warning;
+    const warning = resolvePurl(dep.ecosystem, dep.package, dep.version).warning;
     return warning ? [warning] : [];
   });
-}
-
-/**
- * Warnings for merges that dropped differing manifest fields. Same order as
- * the SBOM rows. A second project with the same identity and the same fields
- * is not included — that project is listed on `vibgrate:projects`.
- */
-export function collectMergeWarnings(artifact: ScanArtifact, graph?: LockfileGraph): string[] {
-  return flattenDependencies(artifact, graph?.components ?? [], graph?.ecosystem).flatMap((dep) => dep.mergeWarnings);
 }
 
 /** Warnings for declared licenses that cannot be represented. Same order as the SBOM rows. */
@@ -872,6 +952,15 @@ export function collectLicenseWarnings(artifact: ScanArtifact, graph?: LockfileG
     const warning = licenseFor(dep).warning;
     return warning ? [warning] : [];
   });
+}
+
+/**
+ * Warnings for a merge that dropped or guessed a fact (unknown ecosystem,
+ * a later lockfile's dependency list, edges a format does not record).
+ * Same order as the SBOM rows. The export command prints each one on stderr.
+ */
+export function collectMergeWarnings(artifact: ScanArtifact, graph?: LockfileGraph): string[] {
+  return flattenDependencies(artifact, graph?.components ?? [], graph?.ecosystem).flatMap((dep) => dep.mergeWarnings);
 }
 
 function projectDependencyMap(artifact: ScanArtifact): Map<string, DependencyRow> {
@@ -969,13 +1058,21 @@ const exportCommand = new Command('export')
     const lockfileGraph = opts.transitive ? collectLockfileGraph(artifact, path.resolve(opts.root)) : undefined;
 
     const sbom = format === 'cyclonedx' ? toCycloneDx(artifact, lockfileGraph) : toSpdx(artifact, lockfileGraph);
-    for (const warning of collectPurlWarnings(artifact, lockfileGraph)) {
-      console.error(chalk.yellow(`warning: ${warning}`));
+    const coded: CodedWarning[] = [];
+    const plain: string[] = [];
+    for (const warning of [
+      ...collectPurlWarnings(artifact, lockfileGraph),
+      ...collectLicenseWarnings(artifact, lockfileGraph),
+      ...collectMergeWarnings(artifact, lockfileGraph),
+    ]) {
+      const code = sbomWarningCode(warning);
+      if (code) coded.push(codedWarning(code, warning));
+      else plain.push(warning);
     }
-    for (const warning of collectMergeWarnings(artifact, lockfileGraph)) {
-      console.error(chalk.yellow(`warning: ${warning}`));
+    for (const warning of sortCodedWarnings(coded)) {
+      console.error(chalk.yellow(formatWarningLine(warning)));
     }
-    for (const warning of collectLicenseWarnings(artifact, lockfileGraph)) {
+    for (const warning of plain) {
       console.error(chalk.yellow(`warning: ${warning}`));
     }
     const body = JSON.stringify(sbom, null, 2);

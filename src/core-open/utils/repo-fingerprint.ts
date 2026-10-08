@@ -6,7 +6,6 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import type { VcsInfo } from '../types.js';
 import { detectVcs } from './vcs.js';
-import { unsafeRootAllowed } from '../../engine/root-safety.js';
 import { assertSafeWalkRoot, createWalkBudget, noteWalkEntry, UnsafeRootError } from './root-safety.js';
 
 const SKIP_DIRS = new Set([
@@ -43,10 +42,6 @@ export interface RepoFingerprint {
 export interface TreeFingerprintOptions {
   /** Skip directories with more than this many direct file children (default 500) */
   maxFilesPerDirectory?: number;
-  /** Skip filesystem-root, OS-image, and walk-budget checks. */
-  allowUnsafeRoot?: boolean;
-  /** Walk-entry ceiling. Wins over `VG_MAX_WALK_ENTRIES`. `0` disables. */
-  maxWalkEntries?: number;
 }
 
 /**
@@ -56,14 +51,13 @@ export interface TreeFingerprintOptions {
 export async function computeRepoFingerprint(
   rootDir: string,
   vcs?: VcsInfo,
-  options?: TreeFingerprintOptions,
 ): Promise<RepoFingerprint> {
   const vcsInfo = vcs ?? (await detectVcs(rootDir));
   if (vcsInfo.type === 'git' && vcsInfo.sha) {
     return { vcsSha: vcsInfo.sha, method: 'git_sha' };
   }
 
-  const treeHash = await computeTreeMetadataHash(rootDir, options);
+  const treeHash = await computeTreeMetadataHash(rootDir);
   if (treeHash) {
     return { treeHash, method: 'tree_metadata' };
   }
@@ -82,12 +76,8 @@ export async function computeTreeMetadataHash(
   const maxFiles = options?.maxFilesPerDirectory ?? 500;
   const leaves: string[] = [];
   const root = path.resolve(rootDir);
-  const safety = { allowUnsafeRoot: options?.allowUnsafeRoot, maxWalkEntries: options?.maxWalkEntries };
-  assertSafeWalkRoot(root, safety);
-  const budgetState = createWalkBudget(
-    root,
-    unsafeRootAllowed(options?.allowUnsafeRoot) ? 0 : options?.maxWalkEntries,
-  );
+  assertSafeWalkRoot(root);
+  const budgetState = createWalkBudget(root);
   let budgetError: UnsafeRootError | null = null;
   const note = (): void => {
     if (budgetError) return;

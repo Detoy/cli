@@ -44,7 +44,6 @@ src/
 │
 ├── engine/           The deterministic parse → resolve → analyze pipeline
 │   ├── discover.ts       Walk the project, select files (stable order)
-│   ├── root-safety.ts    Refuse filesystem roots, OS images, and over-budget walks
 │   ├── languages.ts      Language registry: extensions → grammar → node types
 │   ├── grammars.ts       Load tree-sitter WASM grammars from grammars/
 │   ├── parse.ts          Parse a file into an AST

@@ -61,6 +61,7 @@ describe('vg init', () => {
     expect(yml).toContain('uses: vibgrate/cli@v1');
     expect(yml).toContain('upload-sarif: true');
     expect(yml).toContain('security-events: write');
+    expect(yml).not.toContain('baseline:');
     expect(logs.join('\n')).toContain('.github/workflows/vibgrate.yml');
   });
 
@@ -76,6 +77,16 @@ describe('vg init', () => {
     await initCommand.parseAsync([dir, '--ci', 'github'], { from: 'user' });
     expect(fs.readFileSync(file, 'utf8')).toBe('name: mine\n');
     expect(logs.join('\n')).toMatch(/already exists, skipping/);
+  });
+
+  it('--baseline --ci github writes the baseline first and points the workflow at it', async () => {
+    await run(['--ci', 'github', '--baseline']);
+    expect(fs.existsSync(path.join(dir, '.vibgrate', 'baseline.json'))).toBe(true);
+    const yml = fs.readFileSync(path.join(dir, '.github', 'workflows', 'vibgrate.yml'), 'utf8');
+    expect(yml).toContain('baseline: .vibgrate/baseline.json');
+    expect(yml).toContain('# max-worsening: 5');
+    expect(yml).toContain('# max-score: 40');
+    expect(logs.join('\n')).toMatch(/Commit .*\.vibgrate\/baseline\.json/);
   });
 
   it('rejects an unknown CI provider with an actionable message before writing anything', async () => {

@@ -13,14 +13,7 @@ import * as path from 'node:path';
 import * as crypto from 'node:crypto';
 import { dssePae, DSSE_PAYLOAD_TYPE, keyId, generateKeypair, type DsseEnvelope } from '../../../engine/attest.js';
 import { CliError, ExitCode } from '../../../util/exit.js';
-import {
-  BUNDLE_WRITE_NEXT,
-  SIGNING_KEY_WRITE_NEXT,
-  ensureOutputDir,
-  stringifyForOutput,
-  writeJsonOutputSync,
-  writeOutputTextSync,
-} from '../../../util/json-output.js';
+import { rethrowOutputWrite, serializeJsonOutput, writeOutputFileSync } from '../../../util/output-file.js';
 import { exposureSubjectDigest } from './exposure.js';
 import type { Advisory, ExposureResult, Regime, Release } from './types.js';
 
@@ -181,9 +174,9 @@ export function resolveSigningKey(root: string, explicit?: string): { key: crypt
   if (!fs.existsSync(keyPath)) {
     if (chosen) throw new CliError(`signing key not found: ${chosen}`, ExitCode.USAGE_ERROR);
     const kp = generateKeypair();
-    ensureOutputDir(path.dirname(keyPath), { displayPath: keyPath, next: SIGNING_KEY_WRITE_NEXT });
-    writeOutputTextSync(keyPath, kp.privatePem, { mode: 0o600, next: SIGNING_KEY_WRITE_NEXT });
-    writeOutputTextSync(`${keyPath}.pub`, kp.publicPem, { next: SIGNING_KEY_WRITE_NEXT });
+    fs.mkdirSync(path.dirname(keyPath), { recursive: true });
+    fs.writeFileSync(keyPath, kp.privatePem, { mode: 0o600 });
+    fs.writeFileSync(`${keyPath}.pub`, kp.publicPem);
     minted = true;
   }
   let key: crypto.KeyObject;
@@ -213,10 +206,16 @@ export interface WriteBundleInput {
 /** Write a self-contained, third-party-verifiable evidence bundle to disk. */
 export function writeBundle(input: WriteBundleInput): string {
   const dir = input.outDir;
-  ensureOutputDir(path.join(dir, 'inputs', 'releases'), { displayPath: dir, next: BUNDLE_WRITE_NEXT });
+  const bundleOut = { flag: '--bundle' };
+  try {
+    fs.mkdirSync(path.join(dir, 'inputs', 'releases'), { recursive: true });
+  } catch (err) {
+    rethrowOutputWrite(dir, err, bundleOut);
+  }
 
-  const write = (rel: string, data: unknown): void => {
-    writeJsonOutputSync(path.join(dir, rel), data, { next: BUNDLE_WRITE_NEXT });
+  const write = (rel: string, data: unknown) => {
+    const file = path.join(dir, rel);
+    writeOutputFileSync(file, `${serializeJsonOutput(file, data, { ...bundleOut, space: 2 })}\n`, bundleOut);
   };
 
   write('result.json', input.result);
@@ -246,16 +245,15 @@ export function writeBundle(input: WriteBundleInput): string {
   });
 
   if (input.envelope) {
-    const envPath = path.join(dir, 'evidence.intoto.jsonl');
-    const line = stringifyForOutput(input.envelope, envPath, { next: BUNDLE_WRITE_NEXT });
-    writeOutputTextSync(envPath, `${line}\n`, { next: BUNDLE_WRITE_NEXT });
+    const envFile = path.join(dir, 'evidence.intoto.jsonl');
+    writeOutputFileSync(envFile, `${serializeJsonOutput(envFile, input.envelope, bundleOut)}\n`, bundleOut);
   }
 
   if (input.timestampToken) {
-    writeOutputTextSync(path.join(dir, 'timestamp.tsr'), input.timestampToken, { next: BUNDLE_WRITE_NEXT });
+    writeOutputFileSync(path.join(dir, 'timestamp.tsr'), input.timestampToken, bundleOut);
   }
 
-  writeOutputTextSync(path.join(dir, 'VERIFY.md'), verifyDoc(input), { next: BUNDLE_WRITE_NEXT });
+  writeOutputFileSync(path.join(dir, 'VERIFY.md'), verifyDoc(input), bundleOut);
   return dir;
 }
 

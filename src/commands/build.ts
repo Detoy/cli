@@ -22,10 +22,11 @@ import { renderReport } from '../engine/report.js';
 import { renderHtml } from '../engine/html.js';
 import { UsageError, mergeExcludes } from '../engine/discover.js';
 import { ResourceLimitError } from '../engine/limits.js';
-import { UnsafeRootError } from '../engine/root-safety.js';
+import { UnsafeRootError } from '../core-open/utils/root-safety.js';
 import { CliError, ExitCode, usageError } from '../util/exit.js';
 import { resolveSelfJsEntry } from '../util/cli-invocation.js';
 import { c, info, out, json } from '../util/output.js';
+import { formatWarningLine } from '../core-open/warnings.js';
 import { printLogo } from '../util/logo.js';
 import { ProgressBar } from '../util/progress.js';
 import { applyGlobalOptions, readGlobal, type GlobalOpts } from '../cli-options.js';
@@ -54,7 +55,6 @@ interface BuildCmdOpts {
   pub?: string;
   /** Commander `--no-publish` arrives as `publish: false`. */
   publish?: boolean;
-  allowUnsafeRoot?: boolean;
 }
 
 export function registerBuild(program: Command): void {
@@ -64,10 +64,6 @@ export function registerBuild(program: Command): void {
     .argument('[paths...]', 'folders or files to map (default: current folder)')
     .option('--only <langs>', 'restrict to languages, e.g. ts,py,go')
     .option('--exclude <glob>', 'extra ignore glob (repeatable)', collect, [])
-    .option(
-      '--allow-unsafe-root',
-      'Map a filesystem root, an OS-image layout, or a tree over the walk budget anyway',
-    )
     .option('--no-html', 'do not write graph.html')
     .option('--no-report', 'do not write GRAPH_REPORT.md')
     .option('--no-ground', 'do not attach grounding (Phase 2)')
@@ -134,7 +130,6 @@ export async function runBuild(
       paths: paths.length ? paths : undefined,
       only,
       exclude: opts.exclude,
-      allowUnsafeRoot: opts.allowUnsafeRoot,
       jobs,
       noCache: global.noCache,
       deep: global.deep,
@@ -155,9 +150,8 @@ export async function runBuild(
   } catch (err) {
     bar?.done();
     if (err instanceof UsageError) throw usageError(err.message);
-    if (err instanceof ResourceLimitError || err instanceof UnsafeRootError) {
-      throw new CliError(err.message, ExitCode.ERROR);
-    }
+    if (err instanceof ResourceLimitError) throw new CliError(err.message, ExitCode.ERROR);
+    if (err instanceof UnsafeRootError) throw new CliError(err.message, ExitCode.ERROR);
     throw err;
   }
   bar?.done();
@@ -288,6 +282,7 @@ export async function runBuild(
       attestation,
       timingMs: result.timing.totalMs,
       warnings: result.warnings,
+      ...(result.codedWarnings.length > 0 ? { codedWarnings: result.codedWarnings } : {}),
       activity: activity.toJSON(),
     });
     return;
@@ -346,6 +341,13 @@ export async function runBuild(
     .join('  ');
   info(`  → ${artifactList}`);
   if (result.warnings.length) {
+    for (const warning of result.codedWarnings) {
+      info(c.yellow(`  ${formatWarningLine(warning)}`));
+    }
+    const stamped = new Set(result.codedWarnings.map((warning) => `${warning.message} [${warning.code}]`));
+    for (const line of result.warnings) {
+      if (!stamped.has(line)) info(c.yellow(`  warning: ${line}`));
+    }
     info(c.yellow(`  ${result.warnings.length} parse warning(s) — run with --json for detail`));
   }
   if (attestation) {

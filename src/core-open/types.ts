@@ -4,6 +4,7 @@
 // ── Core types for Vibgrate CLI ──
 
 import type { DriftBudgetConfig } from './drift-budget.js';
+import type { CodedWarning } from './warnings.js';
 
 export type DepSection = 'dependencies' | 'devDependencies' | 'peerDependencies' | 'optionalDependencies';
 
@@ -478,6 +479,11 @@ export interface CvssDiagnostic {
   /** Stable code, identical for every unparseable vector. */
   code: 'cvss-vector-parse-failed';
   /**
+   * Degrade-and-continue warning code. Stable across releases.
+   * `code` stays `cvss-vector-parse-failed`.
+   */
+  warnCode: 'VG_WARN_CVSS_UNPARSEABLE';
+  /**
    * What failed and what to do next. Deterministic for a given vector.
    * Credential-shaped text from the vector is redacted.
    */
@@ -787,6 +793,12 @@ export interface ScanArtifact {
   drift: DriftScore;
   findings: Finding[];
   /**
+   * Degrade-and-continue notices from this scan (skipped paths, an unreadable
+   * baseline). Omitted when there are none — absent is not an empty list.
+   * Sorted by code, then by message. Does not change the exit code.
+   */
+  degradations?: CodedWarning[];
+  /**
    * Repo-relative path (or basename, when the file is outside the repo) of the
    * `--baseline` snapshot this scan compared against.
    */
@@ -921,17 +933,6 @@ export interface ScanOptions {
   /** Additional exclude glob patterns (e.g. from the CLI `--exclude` flag).
    *  Merged with `exclude` from the config file. */
   exclude?: string[];
-  /**
-   * Scan a filesystem root, an OS-image layout, or a tree over the walk
-   * budget. Also enabled by `VG_ALLOW_UNSAFE_ROOT=1` or `--allow-unsafe-root`.
-   */
-  allowUnsafeRoot?: boolean;
-  /**
-   * Ceiling on directory entries the scan walk may visit. Overrides
-   * `VG_MAX_WALK_ENTRIES` when set. `0` disables the budget. Ignored when
-   * `allowUnsafeRoot` is set.
-   */
-  maxWalkEntries?: number;
   /** Version string to embed in scan artifacts (e.g. the CLI or extension version). */
   vibgrateVersion?: string;
   /** Authoritative repository name override. When set, takes precedence over the
