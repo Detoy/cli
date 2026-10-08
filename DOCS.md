@@ -2549,6 +2549,8 @@ vg scan [path] [--vulns] [--full] [--iac] [--format text|json|sarif|md] [--out <
 | `--quiet` | — | Suppress promotional output; scan results are unaffected |
 | `--allow-unsafe-root` | — | Scan a filesystem root, an OS-image layout, or a tree over the walk budget anyway. See [Unsafe roots](#unsafe-roots) |
 
+Switches (flags that take no value, such as `--vulns`, `--offline` or `--no-graph`) are off unless you pass them. They do not accept a value or an invented `--no-` form: `--vulns=false`, `--vulns=true` and `--no-vulns` stop with exit code `5` and name the form that works. In a CI template, add or leave out the flag itself rather than passing `true` or `false`.
+
 By default, the scan writes `.vibgrate/scan_result.json`. Use `--no-local-artifacts` or `--max-privacy` to suppress local JSON artifact files.
 
 ### Unsafe roots
